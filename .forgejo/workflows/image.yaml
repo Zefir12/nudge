@@ -1,0 +1,74 @@
+# Builds the image (Dockerfile: frontend, then the Go binary with the frontend embedded).
+# On a pull request it only builds, as a check, and only when the PR touches what the
+# image build depends on beyond the code (ci.yaml already compiles and tests that). On a
+# push to develop it also pushes it to the registry as `develop-<sha>` and `develop`; run
+# by hand for a branch, it pushes `<branch>-<sha>` only. Release tags (`latest`, …) stay
+# `make publish*`'s, on main.
+# Jobs get no Docker socket, so kaniko builds the image: no daemon, no privileges, and
+# it pushes straight to the registry.
+name: image
+
+on:
+  push:
+    branches: [develop]
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - backend/go.mod
+      - backend/go.sum
+      - frontend/package.json
+      - frontend/package-lock.json
+      - .forgejo/workflows/image.yaml
+  workflow_dispatch: # push a branch's image to try it on a host
+
+# Pull requests cancel their older builds; pushes for a branch queue up, so `develop`
+# ends on the newest commit.
+concurrency:
+  group: image-${{ forgejo.ref }}
+  cancel-in-progress: ${{ forgejo.event_name == 'pull_request' }}
+
+jobs:
+  image:
+    name: image
+    runs-on: docker
+    timeout-minutes: 30
+    container:
+      image: node:24
+    env:
+      IMAGE: registrydedic.zefirlabs.net/nudge
+      PUSH: ${{ forgejo.event_name != 'pull_request' }}
+
+    steps:
+      - name: Checkout
+        uses: https://data.forgejo.org/actions/checkout@v6
+
+      # TAG is pushed on every push; MOVING (`develop`) only from develop.
+      - name: Tag
+        run: |
+          branch=$(echo "${{ forgejo.ref_name }}" | tr -c 'A-Za-z0-9_.\n-' '-')
+          echo "TAG=$branch-$(git rev-parse --short=12 HEAD)" >> "$FORGEJO_ENV"
+          if [ "$branch" = develop ]; then echo "MOVING=develop" >> "$FORGEJO_ENV"; fi
+
+      # Runs in its own container with the workspace mounted. Credentials go into kaniko's
+      # config only on the runs that push; pull requests build without pushing.
+      - name: Build and push
+        uses: docker://gcr.io/kaniko-project/executor:v1.24.0-debug
+        env:
+          REGISTRY_USER: ${{ secrets.REGISTRY_USER }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        with:
+          entrypoint: /busybox/sh
+          args: |
+            -euc '
+            if [ "$PUSH" = true ]; then
+              auth=$(printf "%s:%s" "$REGISTRY_USER" "$REGISTRY_PASSWORD" | base64 | tr -d "\n");
+              printf "{\"auths\":{\"%s\":{\"auth\":\"%s\"}}}" "${IMAGE%%/*}" "$auth" > /kaniko/.docker/config.json;
+              set -- --destination "$IMAGE:$TAG";
+              if [ -n "${MOVING:-}" ]; then set -- "$@" --destination "$IMAGE:$MOVING"; fi;
+            else
+              set -- --no-push;
+            fi;
+            /kaniko/executor --context "dir://$PWD" --dockerfile "$PWD/Dockerfile" \
+              --build-arg "VERSION=$TAG" --single-snapshot "$@"
+            '

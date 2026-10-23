@@ -1,0 +1,91 @@
+# Runs the same checks as `make test lint` (backend/ and frontend/). The Makefile wraps the
+# tools in `docker run`, which the runner can't use (no Docker socket), so the jobs run
+# them directly in the same images the Makefile uses.
+name: ci
+
+# Pull requests, plus pushes to main as the release check.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ forgejo.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (go test -race)
+    runs-on: docker
+    timeout-minutes: 10
+    container:
+      image: golang:1.27.3 # keep in sync with backend/go.mod, Dockerfile and the Makefile
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      # The Go image has no Node, which JavaScript actions such as checkout need.
+      - name: Install Node for actions
+        working-directory: /
+        run: apt-get update -qq && apt-get install -y -qq --no-install-recommends nodejs
+
+      - name: Checkout
+        uses: https://data.forgejo.org/actions/checkout@v6
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Build
+        run: go build ./...
+
+      - name: Tests
+        run: go test -race ./...
+
+  lint:
+    name: lint (golangci-lint)
+    runs-on: docker
+    timeout-minutes: 10
+    container:
+      image: golangci/golangci-lint:v2.15.0 # keep in sync with the Makefile
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Install Node for actions
+        working-directory: /
+        run: apt-get update -qq && apt-get install -y -qq --no-install-recommends nodejs
+
+      - name: Checkout
+        uses: https://data.forgejo.org/actions/checkout@v6
+
+      - name: Lint
+        run: golangci-lint run ./...
+
+  web:
+    name: web (vp check, vue-tsc, vp test)
+    runs-on: docker
+    timeout-minutes: 10
+    container:
+      image: node:24.22.1 # keep in sync with the Makefile and Dockerfile
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: https://data.forgejo.org/actions/checkout@v6
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Check (format, lint)
+        run: npx vp check
+
+      - name: Types
+        run: npx vue-tsc --noEmit
+
+      - name: Tests
+        run: npx vp test run
+
+      - name: Build
+        run: npx vp build
