@@ -122,6 +122,44 @@ func TestServeCreatesDatabase(t *testing.T) {
 	}
 }
 
+func TestServeAdminPassword(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		password string
+		wantCode int
+		wantLog  string
+	}{
+		{name: "creates admin", password: "longenough", wantCode: 0, wantLog: "created admin user"},
+		{name: "too short", password: "short", wantCode: 1, wantLog: "NUDGE_ADMIN_PASSWORD: create admin: password must be"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			// A cancelled context: serve still finishes startup, then shuts down.
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			dir := t.TempDir()
+			var stdout, stderr bytes.Buffer
+			getenv := func(k string) string {
+				if k == "NUDGE_ADMIN_PASSWORD" {
+					return tt.password
+				}
+				return ""
+			}
+			if code := realMain(ctx, []string{"serve", "-addr", "127.0.0.1:0", "-data", dir}, getenv, &stdout, &stderr); code != tt.wantCode {
+				t.Fatalf("code = %d, want %d (stderr %q)", code, tt.wantCode, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), tt.wantLog) {
+				t.Errorf("stderr %q does not contain %q", stderr.String(), tt.wantLog)
+			}
+			if strings.Contains(stderr.String(), tt.password) {
+				t.Error("password logged")
+			}
+		})
+	}
+}
+
 func TestServeFailsOnBadDataDir(t *testing.T) {
 	t.Parallel()
 	file := filepath.Join(t.TempDir(), "file")

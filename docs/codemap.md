@@ -10,16 +10,19 @@ docs/config/; grep there, not in README. The API reference is docs/api.md; the d
 
 ## Request path
 `main.realMain` picks the subcommand → `config.LoadServer` → `serve` runs
-`prepareDataDir` and `store.Open` (migrations), then builds
-`api.New(api.Options{Web: web.Handler(web.Dist())})` → `http.ServeMux`: `/api/v1/...`
-handlers on `api.server`, `/api/` catch-all `notFound` (JSON 404), everything else
-`web.Handler` (static file or index.html for SPA routes).
+`prepareDataDir` and `store.Open` (migrations), `auth.New` (+ `EnsureAdmin`,
+`RunCleanup`), then builds `api.New(api.Options{Auth: …, Web: web.Handler(web.Dist())})`
+→ root `http.ServeMux`: `/api/` goes through `server.protect` (cross-origin check, then
+a session unless the route's pattern is in `publicRoutes`) to the API mux (`/api/v1/...`
+handlers on `api.server`, `/api/` catch-all `notFound`); everything else `web.Handler`
+(static file or index.html for SPA routes).
 
 ## Backend packages (backend/)
 | Package | What | Entry points |
 |---|---|---|
 | `cmd/nudge` | subcommands, wiring, graceful shutdown | `realMain`, `serve` |
-| `internal/api` | HTTP API under /api/v1 | `New`, `Options`, `server.writeJSON`, `server.writeError` |
+| `internal/api` | HTTP API under /api/v1 | `New`, `Options`, `publicRoutes`, `server.protect`, `userFrom`, `server.decodeJSON`, `server.writeJSON`, `server.writeError`, `server.internalError` |
+| `internal/auth` | users, argon2id, sessions, login rate limit | `New`, `Options`, `Service.Login`, `SessionUser`, `CreateFirstUser`, `EnsureAdmin`, `RunCleanup` |
 | `internal/config` | flags with NUDGE_* env fallbacks | `LoadServer`, `Server` |
 | `internal/store` | SQLite (`<data>/nudge.db`), embedded migrations | `Open`, `Store.DB`, `migrations/NNNN_name.sql` |
 | `internal/web` | embedded frontend, SPA fallback | `Dist`, `Handler` |
@@ -45,6 +48,8 @@ handlers on `api.server`, `/api/` catch-all `notFound` (JSON 404), everything el
   `config_test.go`, README table, docs/config/<topic>.md.
 - **Schema change:** new `internal/store/migrations/NNNN_name.sql` with the next number
   (never edit an applied one); it runs in one transaction at start.
-- **Test helpers:** `api.newTestHandler()` (api_test.go); `fstest.MapFS` for web
+- **Test helpers:** `api.newTestHandler(t)` (api_test.go: empty database, returns the
+  `auth.Service`; create a user with `CreateFirstUser`, get a cookie from a login via
+  `do`/`sessionCookieOf` in auth_test.go); `auth.newTestService(t)` with `fakeClock`; `fstest.MapFS` for web
   handler tests; `realMain` with a fake `getenv` and buffers for CLI tests;
   `store.Open(ctx, t.TempDir())` for a migrated database.
