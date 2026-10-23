@@ -1,0 +1,45 @@
+# Code map
+
+Where things are, so a session can open the right lines instead of whole files. Keep it
+short: one entry per package, its entry points, and the recipes that come up again.
+Update it when a package, entry point or recipe changes.
+
+User docs: README.md has setup and flags/env. Each config topic has its own page in
+docs/config/; grep there, not in README. The API reference is docs/api.md; the design
+(environments, agent tunnel, auth) is docs/architecture.md.
+
+## Request path
+`main.realMain` picks the subcommand → `config.LoadServer` → `serve` builds
+`api.New(api.Options{Web: web.Handler(web.Dist())})` → `http.ServeMux`: `/api/v1/...`
+handlers on `api.server`, `/api/` catch-all `notFound` (JSON 404), everything else
+`web.Handler` (static file or index.html for SPA routes).
+
+## Backend packages (backend/)
+| Package | What | Entry points |
+|---|---|---|
+| `cmd/nudge` | subcommands, wiring, graceful shutdown | `realMain`, `serve` |
+| `internal/api` | HTTP API under /api/v1 | `New`, `Options`, `server.writeJSON`, `server.writeError` |
+| `internal/config` | flags with NUDGE_* env fallbacks | `LoadServer`, `Server` |
+| `internal/web` | embedded frontend, SPA fallback | `Dist`, `Handler` |
+| `internal/version` | build version via ldflags | `Version` |
+
+## Frontend (frontend/src)
+| Path | What |
+|---|---|
+| `main.ts`, `App.vue` | app setup, layout (sidebar + `RouterView`) |
+| `router.ts` | routes; add one per view |
+| `api/client.ts` | `apiFetch<T>`, `ApiError`, one typed function per endpoint |
+| `views/` | one component per route |
+| `components/` | reusable pieces |
+| `style.css` | design tokens (CSS variables, light/dark) and base styles |
+
+## Recipes
+- **New API endpoint:** handler method on `api.server` in a file per area
+  (`internal/api/containers.go`), route in `api.New`, table test next to it with
+  `httptest`, row in docs/api.md, typed function in `frontend/src/api/client.ts`.
+- **New view:** `frontend/src/views/FooView.vue`, route in `router.ts`, nav link in
+  `App.vue`, `FooView.test.ts` stubbing `fetch` with `vi.stubGlobal`.
+- **New config option:** field + flag in `internal/config`, test row in
+  `config_test.go`, README table, docs/config/<topic>.md.
+- **Test helpers:** `api.newTestHandler()` (api_test.go); `fstest.MapFS` for web
+  handler tests; `realMain` with a fake `getenv` and buffers for CLI tests.
