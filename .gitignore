@@ -1,0 +1,30 @@
+# Build output
+/bin/
+/dist/
+*.test
+*.out
+coverage.*
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+# The embedded copy of frontend/dist (make web-build); only the placeholder is committed.
+backend/internal/web/dist/*
+!backend/internal/web/dist/.gitkeep
+
+# Local data from `make run`
+/.data/
+
+# Local config (never commit secrets)
+.env
+.env.*
+!.env.example
+
+# Claude Code personal files
+CLAUDE.local.md
+.claude/settings.local.json
+
+# Editors
+.idea/
+.vscode/*
+!.vscode/extensions.json

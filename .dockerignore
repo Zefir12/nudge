@@ -1,0 +1,11 @@
+.git
+.claude
+.forgejo
+.data
+docs
+*.md
+.env
+.env.*
+frontend/node_modules
+frontend/dist
+backend/internal/web/dist
