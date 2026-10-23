@@ -3,8 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"git.zefirlabs.net/zefir/nudge/backend/internal/store"
 )
 
 func TestRealMain(t *testing.T) {
@@ -50,5 +54,86 @@ func TestServeStopsOnCancel(t *testing.T) {
 	getenv := func(string) string { return "" }
 	if code := realMain(ctx, []string{"serve", "-addr", "127.0.0.1:0", "-data", t.TempDir()}, getenv, &stdout, &stderr); code != 0 {
 		t.Fatalf("code = %d, want 0 (stderr %q)", code, stderr.String())
+	}
+}
+
+func TestPrepareDataDir(t *testing.T) {
+	t.Parallel()
+	t.Run("creates missing directory with 0700", func(t *testing.T) {
+		t.Parallel()
+		dir := filepath.Join(t.TempDir(), "a", "data")
+		if err := prepareDataDir(dir); err != nil {
+			t.Fatalf("prepareDataDir: %v", err)
+		}
+		fi, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if perm := fi.Mode().Perm(); perm != 0o700 {
+			t.Errorf("mode = %o, want 700", perm)
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 0 {
+			t.Errorf("write test left %d files behind", len(entries))
+		}
+	})
+	t.Run("path is a file", func(t *testing.T) {
+		t.Parallel()
+		file := filepath.Join(t.TempDir(), "file")
+		if err := os.WriteFile(file, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := prepareDataDir(filepath.Join(file, "data")); err == nil {
+			t.Fatal("prepareDataDir under a file succeeded")
+		}
+	})
+	t.Run("not writable", func(t *testing.T) {
+		t.Parallel()
+		if os.Geteuid() == 0 {
+			t.Skip("root can write to read-only directories")
+		}
+		dir := t.TempDir()
+		if err := os.Chmod(dir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+		err := prepareDataDir(dir)
+		if err == nil || !strings.Contains(err.Error(), "not writable") {
+			t.Fatalf("err = %v, want a not writable error", err)
+		}
+	})
+}
+
+func TestServeCreatesDatabase(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	dir := filepath.Join(t.TempDir(), "data")
+	var stdout, stderr bytes.Buffer
+	getenv := func(string) string { return "" }
+	if code := realMain(ctx, []string{"serve", "-addr", "127.0.0.1:0", "-data", dir}, getenv, &stdout, &stderr); code != 0 {
+		t.Fatalf("code = %d, want 0 (stderr %q)", code, stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, store.FileName)); err != nil {
+		t.Errorf("database not created: %v", err)
+	}
+}
+
+func TestServeFailsOnBadDataDir(t *testing.T) {
+	t.Parallel()
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	getenv := func(string) string { return "" }
+	if code := realMain(context.Background(), []string{"serve", "-addr", "127.0.0.1:0", "-data", file}, getenv, &stdout, &stderr); code != 1 {
+		t.Fatalf("code = %d, want 1 (stderr %q)", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "data directory") {
+		t.Errorf("stderr %q does not mention the data directory", stderr.String())
 	}
 }

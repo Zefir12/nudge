@@ -12,14 +12,13 @@ RUN npm run build
 FROM golang:1.27.3 AS builder
 
 WORKDIR /src/backend
-# go.sum* because the module has no go.sum until it gets its first dependency.
-COPY backend/go.mod backend/go.sum* ./
+COPY backend/go.mod backend/go.sum ./
 RUN go mod download
 
 COPY backend/ ./
 COPY --from=web /web/dist/ ./internal/web/dist/
 ARG VERSION=dev
-# Static binary: modernc.org/sqlite (phase 1) is pure Go, so no cgo is needed.
+# Static binary: modernc.org/sqlite is pure Go, so no cgo is needed.
 RUN CGO_ENABLED=0 go build -trimpath \
 	-ldflags "-s -w -X git.zefirlabs.net/zefir/nudge/backend/internal/version.Version=${VERSION}" \
 	-o /out/nudge ./cmd/nudge

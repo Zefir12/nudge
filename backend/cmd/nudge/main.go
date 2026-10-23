@@ -13,11 +13,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/api"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/config"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/store"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/version"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/web"
 )
@@ -71,7 +73,25 @@ func realMain(ctx context.Context, args []string, getenv func(string) string, st
 	}
 }
 
-func serve(ctx context.Context, cfg config.Server, log *slog.Logger) error {
+func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error) {
+	if err := prepareDataDir(cfg.DataDir); err != nil {
+		return err
+	}
+	// Not cancelled by a signal: migrations are short, and a signal during startup should
+	// still end in a clean shutdown below rather than a failed start. The timeout bounds
+	// a database locked by another process.
+	openCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	st, err := store.Open(openCtx, cfg.DataDir)
+	cancel()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cerr := st.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
+
 	srv := &http.Server{
 		Addr: cfg.Addr,
 		Handler: api.New(api.Options{
@@ -100,6 +120,27 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) error {
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("shutdown: %w", err)
+	}
+	return nil
+}
+
+// prepareDataDir creates the data directory (0700) if it is missing and checks that it
+// is writable, so a bad volume fails at start with a clear message instead of on the
+// first write.
+func prepareDataDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create data directory: %w", err)
+	}
+	f, err := os.CreateTemp(dir, ".write-test-*")
+	if err != nil {
+		return fmt.Errorf("data directory %s is not writable: %w", dir, err)
+	}
+	name := f.Name()
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("data directory %s is not writable: %w", dir, err)
+	}
+	if err := os.Remove(name); err != nil {
+		return fmt.Errorf("data directory %s: remove %s: %w", dir, filepath.Base(name), err)
 	}
 	return nil
 }

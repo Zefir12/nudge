@@ -9,7 +9,8 @@ docs/config/; grep there, not in README. The API reference is docs/api.md; the d
 (environments, agent tunnel, auth) is docs/architecture.md.
 
 ## Request path
-`main.realMain` picks the subcommand → `config.LoadServer` → `serve` builds
+`main.realMain` picks the subcommand → `config.LoadServer` → `serve` runs
+`prepareDataDir` and `store.Open` (migrations), then builds
 `api.New(api.Options{Web: web.Handler(web.Dist())})` → `http.ServeMux`: `/api/v1/...`
 handlers on `api.server`, `/api/` catch-all `notFound` (JSON 404), everything else
 `web.Handler` (static file or index.html for SPA routes).
@@ -20,6 +21,7 @@ handlers on `api.server`, `/api/` catch-all `notFound` (JSON 404), everything el
 | `cmd/nudge` | subcommands, wiring, graceful shutdown | `realMain`, `serve` |
 | `internal/api` | HTTP API under /api/v1 | `New`, `Options`, `server.writeJSON`, `server.writeError` |
 | `internal/config` | flags with NUDGE_* env fallbacks | `LoadServer`, `Server` |
+| `internal/store` | SQLite (`<data>/nudge.db`), embedded migrations | `Open`, `Store.DB`, `migrations/NNNN_name.sql` |
 | `internal/web` | embedded frontend, SPA fallback | `Dist`, `Handler` |
 | `internal/version` | build version via ldflags | `Version` |
 
@@ -41,5 +43,8 @@ handlers on `api.server`, `/api/` catch-all `notFound` (JSON 404), everything el
   `App.vue`, `FooView.test.ts` stubbing `fetch` with `vi.stubGlobal`.
 - **New config option:** field + flag in `internal/config`, test row in
   `config_test.go`, README table, docs/config/<topic>.md.
+- **Schema change:** new `internal/store/migrations/NNNN_name.sql` with the next number
+  (never edit an applied one); it runs in one transaction at start.
 - **Test helpers:** `api.newTestHandler()` (api_test.go); `fstest.MapFS` for web
-  handler tests; `realMain` with a fake `getenv` and buffers for CLI tests.
+  handler tests; `realMain` with a fake `getenv` and buffers for CLI tests;
+  `store.Open(ctx, t.TempDir())` for a migrated database.

@@ -13,6 +13,13 @@ Planned (see PLAN.md): `NUDGE_ADMIN_PASSWORD` (create the admin at startup, phas
 `NUDGE_TLS_CERT` / `NUDGE_TLS_KEY` (serve HTTPS, phase 2), `NUDGE_PUBLIC_URL` (the URL
 agents and links use, phase 2).
 
+## Data directory
+`nudge serve` creates the data directory (mode 0700) if it is missing and exits with an
+error if it cannot write there. The database is `<data>/nudge.db` (SQLite in WAL mode, so
+`nudge.db-wal` and `nudge.db-shm` sit next to it); schema migrations run at start. Back
+up the whole directory while the server is stopped. A database migrated by a newer nudge
+is refused by an older one.
+
 ## Docker access
 The server manages the Docker host whose socket is mounted at `/var/run/docker.sock`
 (`DOCKER_HOST` overrides it). Socket access is root-equivalent on that host; the
