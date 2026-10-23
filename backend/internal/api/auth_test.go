@@ -227,3 +227,21 @@ func TestConcurrentSetup(t *testing.T) {
 		t.Errorf("created = %d, want 1", created)
 	}
 }
+
+func TestClientIP(t *testing.T) {
+	t.Parallel()
+	tests := []struct{ remote, want string }{
+		{"192.0.2.7:4242", "192.0.2.7"},
+		{"[::ffff:192.0.2.7]:4242", "192.0.2.7"},
+		{"[2001:db8:1:2:aaaa:bbbb:cccc:dddd]:4242", "2001:db8:1:2::/64"},
+		{"[fe80::1%eth0]:4242", "fe80::/64"},
+		{"pipe", "pipe"},
+	}
+	for _, tt := range tests {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = tt.remote
+		if got := clientIP(r); got != tt.want {
+			t.Errorf("clientIP(%q) = %q, want %q", tt.remote, got, tt.want)
+		}
+	}
+}

@@ -26,35 +26,19 @@ func newLimiter(limit int, period time.Duration, maxKeys int) *limiter {
 	return &limiter{limit: limit, window: period, max: maxKeys, entries: make(map[string]*window)}
 }
 
-// blocked reports whether key is blocked at now and, if so, for how much longer.
-func (l *limiter) blocked(key string, now time.Time) (time.Duration, bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	w, ok := l.entries[key]
-	if !ok {
-		return 0, false
-	}
-	end := w.start.Add(l.window)
-	if !now.Before(end) {
-		delete(l.entries, key)
-		return 0, false
-	}
-	if w.failures < l.limit {
-		return 0, false
-	}
-	return end.Sub(now), true
-}
-
-// fail records a failed attempt for key.
-func (l *limiter) fail(key string, now time.Time) {
+// reserve counts an attempt for key at now, unless key already reached the limit; then
+// it reports false and how long the block lasts. An attempt that turns out fine is
+// handed back with release (or reset).
+func (l *limiter) reserve(key string, now time.Time) (time.Duration, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	w, ok := l.entries[key]
 	if ok && !now.Before(w.start.Add(l.window)) {
+		delete(l.entries, key)
 		ok = false
 	}
 	if !ok {
-		if _, exists := l.entries[key]; !exists && len(l.entries) >= l.max {
+		if len(l.entries) >= l.max {
 			l.pruneLocked(now)
 			if len(l.entries) >= l.max {
 				l.evictOldestLocked()
@@ -63,7 +47,25 @@ func (l *limiter) fail(key string, now time.Time) {
 		w = &window{start: now}
 		l.entries[key] = w
 	}
+	if w.failures >= l.limit {
+		return w.start.Add(l.window).Sub(now), false
+	}
 	w.failures++
+	return 0, true
+}
+
+// release hands back an attempt reserved at reservedAt, if its window still exists.
+func (l *limiter) release(key string, reservedAt time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	w, ok := l.entries[key]
+	if !ok || w.start.After(reservedAt) || w.failures == 0 {
+		return
+	}
+	w.failures--
+	if w.failures == 0 {
+		delete(l.entries, key)
+	}
 }
 
 // reset forgets key, after a successful login.

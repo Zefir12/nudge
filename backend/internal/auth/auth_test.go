@@ -365,20 +365,122 @@ func TestLimiterBounded(t *testing.T) {
 	now := time.Unix(0, 0)
 	l := newLimiter(1, time.Minute, 3)
 	for i, k := range []string{"a", "b", "c", "d"} {
-		l.fail(k, now.Add(time.Duration(i)*time.Second))
+		if _, ok := l.reserve(k, now.Add(time.Duration(i)*time.Second)); !ok {
+			t.Fatalf("first reserve of %s refused", k)
+		}
 	}
 	if l.len() != 3 {
 		t.Errorf("len = %d, want 3", l.len())
 	}
-	if _, blocked := l.blocked("a", now.Add(5*time.Second)); blocked {
-		t.Error("oldest key a not evicted")
-	}
-	if _, blocked := l.blocked("d", now.Add(5*time.Second)); !blocked {
+	if _, ok := l.reserve("d", now.Add(5*time.Second)); ok {
 		t.Error("newest key d not blocked")
 	}
+	if _, ok := l.reserve("a", now.Add(5*time.Second)); !ok {
+		t.Error("oldest key a not evicted")
+	}
 	// Expired windows go first.
-	l.fail("e", now.Add(2*time.Minute))
+	l.reserve("e", now.Add(2*time.Minute))
 	if l.len() != 1 {
 		t.Errorf("len after expiry = %d, want 1", l.len())
+	}
+}
+
+func TestLimiterRelease(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(0, 0)
+	l := newLimiter(2, time.Minute, 10)
+	l.reserve("k", now)
+	l.reserve("k", now)
+	if _, ok := l.reserve("k", now); ok {
+		t.Fatal("third attempt allowed")
+	}
+	l.release("k", now)
+	if _, ok := l.reserve("k", now); !ok {
+		t.Error("released attempt not handed back")
+	}
+	// A release from an earlier window doesn't touch the new one.
+	later := now.Add(2 * time.Minute)
+	l.reserve("k", later)
+	l.release("k", now)
+	l.reserve("k", later)
+	if _, ok := l.reserve("k", later); ok {
+		t.Error("stale release freed an attempt in the new window")
+	}
+	l.release("missing", now) // no panic, no entry
+	if l.len() != 1 {
+		t.Errorf("len = %d, want 1", l.len())
+	}
+}
+
+func TestLoginParallelRespectsLimit(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, _ := newTestService(t)
+	if _, err := s.CreateFirstUser(ctx, "admin", "longenough"); err != nil {
+		t.Fatal(err)
+	}
+	const n = 40
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() { _, errs[i] = s.Login(ctx, ip(i), "admin", "wrong-password") })
+	}
+	wg.Wait()
+	guesses := 0
+	for _, err := range errs {
+		var rl *RateLimitedError
+		switch {
+		case errors.Is(err, ErrInvalidCredentials):
+			guesses++
+		case errors.As(err, &rl), errors.Is(err, ErrBusy):
+		default:
+			t.Errorf("err = %v", err)
+		}
+	}
+	if guesses > userFailureLimit {
+		t.Errorf("%d password guesses, limit %d", guesses, userFailureLimit)
+	}
+}
+
+func TestLoginBusy(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, _ := newTestService(t)
+	if _, err := s.CreateFirstUser(ctx, "admin", "longenough"); err != nil {
+		t.Fatal(err)
+	}
+	for range maxConcurrentHashes {
+		s.hashes <- struct{}{}
+	}
+	for range maxHashWaiters {
+		s.waiters <- struct{}{}
+	}
+	if _, err := s.Login(ctx, "10.0.0.1", "admin", "longenough"); !errors.Is(err, ErrBusy) {
+		t.Fatalf("err = %v, want ErrBusy", err)
+	}
+	if n := s.ipLimit.len() + s.userLimit.len(); n != 0 {
+		t.Errorf("a busy refusal was counted: %d limiter keys", n)
+	}
+}
+
+func TestLoginCounting(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, _ := newTestService(t)
+	if _, err := s.CreateFirstUser(ctx, "admin", "longenough"); err != nil {
+		t.Fatal(err)
+	}
+	// Successful logins don't use up the IP's attempts.
+	for i := range ipFailureLimit + 5 {
+		if _, err := s.Login(ctx, "10.0.0.1", "admin", "longenough"); err != nil {
+			t.Fatalf("login %d: %v", i, err)
+		}
+	}
+	// Unknown usernames count for the IP only.
+	if _, err := s.Login(ctx, "10.0.0.2", "ghost", "longenough"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatal(err)
+	}
+	if s.userLimit.len() != 0 || s.ipLimit.len() != 1 {
+		t.Errorf("limiter keys: user %d, ip %d; want 0, 1", s.userLimit.len(), s.ipLimit.len())
 	}
 }

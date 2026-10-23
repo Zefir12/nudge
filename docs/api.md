@@ -39,6 +39,10 @@ valid for 7 days. `GET /api/v1/auth/me` returns the same user object.
   (at most 1024 bytes). Invalid input is `400` with the reason.
 - Usernames are case-insensitive. A wrong password and an unknown user both get
   `401 {"error":"invalid username or password"}`.
-- Failed logins are limited to 20 per client IP and 10 per username in 15 minutes; then
-  login answers `429` with `Retry-After` (seconds), even with the right password. Behind
-  a reverse proxy all clients share the proxy's IP.
+- Failed logins are limited to 20 per client IP (per /64 for IPv6) and 10 per existing
+  username in 15 minutes; then login answers `429` with `Retry-After` (seconds), even
+  with the right password. So ten wrong guesses lock that user out for up to 15 minutes;
+  sessions already open keep working. Behind a reverse proxy all clients share the
+  proxy's IP.
+- When too many logins wait for a password check, login answers `503` with
+  `Retry-After: 1`.

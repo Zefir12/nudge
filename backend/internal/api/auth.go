@@ -6,6 +6,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"time"
 
@@ -96,6 +97,13 @@ func (s *server) startSession(w http.ResponseWriter, r *http.Request, c credenti
 		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(limited.RetryAfter.Seconds()))))
 		s.writeError(w, http.StatusTooManyRequests, "too many failed login attempts, try again later")
 		return
+	case errors.Is(err, auth.ErrBusy):
+		w.Header().Set("Retry-After", "1")
+		s.writeError(w, http.StatusServiceUnavailable, "too many concurrent logins, try again")
+		return
+	case errors.Is(err, context.Canceled):
+		// The client went away; nothing to answer or log.
+		return
 	case errors.Is(err, auth.ErrInvalidCredentials):
 		s.log.Warn("login failed", "ip", ip)
 		s.writeError(w, http.StatusUnauthorized, "invalid username or password")
@@ -158,12 +166,21 @@ func isTLS(r *http.Request) bool {
 	return r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
 }
 
-// clientIP is the peer address. Forwarded headers are ignored: they are forgeable, so
-// behind a reverse proxy every client shares the proxy's rate limit.
+// clientIP is the peer address, as its /64 for IPv6 (one client usually holds a whole
+// /64). Forwarded headers are ignored: they are forgeable, so behind a reverse proxy
+// every client shares the proxy's rate limit.
 func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
 	}
-	return host
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return host
+	}
+	addr = addr.Unmap()
+	if addr.Is4() {
+		return addr.String()
+	}
+	return netip.PrefixFrom(addr.WithZone(""), 64).Masked().String()
 }

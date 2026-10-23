@@ -30,8 +30,10 @@ const (
 	maxUsernameLen = 64
 	// touchInterval throttles last_seen_at writes on session lookups.
 	touchInterval = time.Minute
-	// maxConcurrentHashes bounds argon2id's memory use under a login flood.
+	// maxConcurrentHashes bounds argon2id's memory use under a login flood;
+	// maxHashWaiters bounds the requests queued behind them.
 	maxConcurrentHashes = 4
+	maxHashWaiters      = 64
 
 	ipFailureLimit   = 20
 	userFailureLimit = 10
@@ -46,6 +48,8 @@ var (
 	ErrSetupDone = errors.New("setup is already done")
 	// ErrNoSession means the token is unknown or expired.
 	ErrNoSession = errors.New("no valid session")
+	// ErrBusy means too many logins are waiting for a password check.
+	ErrBusy = errors.New("too many concurrent logins")
 )
 
 // InputError is a rejected username or password; its message is safe to show.
@@ -92,6 +96,7 @@ type Service struct {
 	ttl    time.Duration
 
 	hashes    chan struct{}
+	waiters   chan struct{}
 	ipLimit   *limiter
 	userLimit *limiter
 
@@ -109,6 +114,7 @@ func New(opts Options) *Service {
 		params:    opts.Params,
 		ttl:       opts.SessionTTL,
 		hashes:    make(chan struct{}, maxConcurrentHashes),
+		waiters:   make(chan struct{}, maxHashWaiters),
 		ipLimit:   newLimiter(ipFailureLimit, failureWindow, maxLimiterKeys),
 		userLimit: newLimiter(userFailureLimit, failureWindow, maxLimiterKeys),
 	}
@@ -124,6 +130,8 @@ func New(opts Options) *Service {
 	if s.ttl == 0 {
 		s.ttl = DefaultSessionTTL
 	}
+	// Hash the dummy now, so the first unknown-user login isn't slower than later ones.
+	_, _ = s.dummy()
 	return s
 }
 
@@ -184,21 +192,18 @@ func (s *Service) EnsureAdmin(ctx context.Context, password string) (bool, error
 	return true, nil
 }
 
-// Login checks the credentials and starts a session. ip and username are rate-limited
-// separately; an unknown user costs as much time as a wrong password.
+// Login checks the credentials and starts a session. ip and the username of an
+// existing user are rate-limited separately; each attempt is counted before the
+// password check, so parallel requests can't exceed the limit. An unknown user costs as
+// much time as a wrong password.
 func (s *Service) Login(ctx context.Context, ip, username, password string) (Session, error) {
 	now := s.now()
-	userKey := strings.ToLower(username)
-	if d, blocked := s.ipLimit.blocked(ip, now); blocked {
+	if d, ok := s.ipLimit.reserve(ip, now); !ok {
 		return Session{}, &RateLimitedError{RetryAfter: d}
 	}
 	if len(username) > maxUsernameLen || len(password) > maxPasswordLen {
-		// No such user can exist; don't let long keys into the limiter.
-		s.ipLimit.fail(ip, now)
+		// No such user can exist; the IP keeps the failure.
 		return Session{}, ErrInvalidCredentials
-	}
-	if d, blocked := s.userLimit.blocked(userKey, now); blocked {
-		return Session{}, &RateLimitedError{RetryAfter: d}
 	}
 
 	var u User
@@ -209,22 +214,31 @@ func (s *Service) Login(ctx context.Context, ip, username, password string) (Ses
 	).Scan(&u.ID, &u.Username, &hash, &created)
 	known := err == nil
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		s.ipLimit.release(ip, now)
 		return Session{}, fmt.Errorf("look up user: %w", err)
 	}
-	if !known {
-		if hash, err = s.dummy(); err != nil {
-			return Session{}, err
+	// Only real users get a window, so made-up names can't evict theirs.
+	userKey := strings.ToLower(u.Username)
+	if known {
+		if d, ok := s.userLimit.reserve(userKey, now); !ok {
+			return Session{}, &RateLimitedError{RetryAfter: d}
 		}
+	} else if hash, err = s.dummy(); err != nil {
+		return Session{}, err
 	}
 	ok, err := s.verify(ctx, hash, password)
 	if err != nil {
+		// Not the client's fault (busy, cancelled): don't count it.
+		s.ipLimit.release(ip, now)
+		if known {
+			s.userLimit.release(userKey, now)
+		}
 		return Session{}, err
 	}
 	if !known || !ok {
-		s.ipLimit.fail(ip, now)
-		s.userLimit.fail(userKey, now)
 		return Session{}, ErrInvalidCredentials
 	}
+	s.ipLimit.release(ip, now)
 	s.userLimit.reset(userKey)
 	u.CreatedAt = time.Unix(created, 0)
 	return s.newSession(ctx, u)
@@ -269,8 +283,9 @@ func (s *Service) SessionUser(ctx context.Context, token string) (User, error) {
 		return User{}, ErrNoSession
 	}
 	if now-lastSeen >= int64(touchInterval/time.Second) {
+		// Best effort: a busy database must not fail an authenticated request.
 		if _, err := s.db.ExecContext(ctx, `UPDATE sessions SET last_seen_at = ? WHERE id_hash = ?`, now, id); err != nil {
-			return User{}, fmt.Errorf("touch session: %w", err)
+			s.log.Warn("touch session", "err", err)
 		}
 	}
 	u.CreatedAt = time.Unix(created, 0)
@@ -347,7 +362,14 @@ func (s *Service) verify(ctx context.Context, hash, password string) (bool, erro
 	return ok, nil
 }
 
+// acquire takes a hashing slot, waiting in a bounded queue; a full queue is ErrBusy.
 func (s *Service) acquire(ctx context.Context) error {
+	select {
+	case s.waiters <- struct{}{}:
+	default:
+		return ErrBusy
+	}
+	defer func() { <-s.waiters }()
 	select {
 	case s.hashes <- struct{}{}:
 		return nil
