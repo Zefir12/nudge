@@ -1,0 +1,14 @@
+# nudge server: `docker compose -f deploy/compose.yml up -d`, then open http://<host>:8080.
+services:
+  nudge:
+    image: registrydedic.zefirlabs.net/nudge:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      # Root-equivalent access to the host's Docker. No --privileged needed.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - nudge-data:/data
+
+volumes:
+  nudge-data:
