@@ -21,6 +21,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/api"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/config"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/store"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/version"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/web"
@@ -107,6 +108,25 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 			log.Info("created admin user from NUDGE_ADMIN_PASSWORD", "username", auth.AdminUsername)
 		}
 	}
+	connect, err := environments.LocalConnect(cfg.DockerHost)
+	if err != nil {
+		return err
+	}
+	envs := environments.New(environments.Options{DB: st.DB(), Log: log, Connect: connect})
+	defer func() {
+		if cerr := envs.Close(); cerr != nil {
+			log.Warn("closing Docker clients", "err", cerr)
+		}
+	}()
+	// Part of startup like the admin above; EnsureLocal bounds its own ping.
+	created, err := envs.EnsureLocal(context.WithoutCancel(ctx))
+	if err != nil {
+		return err
+	}
+	if created {
+		log.Info("created local environment", "docker_host", cfg.DockerHost)
+	}
+
 	// The cleanup stops before the deferred st.Close above.
 	var wg sync.WaitGroup
 	cleanupCtx, stopCleanup := context.WithCancel(ctx)
@@ -122,6 +142,7 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 			Log:     log,
 			Version: version.Version,
 			Auth:    authSvc,
+			Envs:    envs,
 			Web:     web.Handler(web.Dist()),
 		}),
 		ReadHeaderTimeout: 10 * time.Second,

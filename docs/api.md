@@ -46,3 +46,26 @@ valid for 7 days. `GET /api/v1/auth/me` returns the same user object.
   proxy's IP.
 - When too many logins wait for a password check, login answers `503` with
   `Retry-After: 1`.
+
+### Environments
+An environment is a Docker host; `{env}` in paths is its numeric `id`.
+`GET /api/v1/environments` answers
+`[{"id": 1, "name": "local", "kind": "local", "online": true, "created_at": "...", "last_seen_at": "..."}]`.
+`kind` is `local` (the server's own Docker socket) or `agent` (phase 2). `online` comes
+from pinging each host (3 s timeout) during the request; `last_seen_at` is the last time
+the host answered (updated at most once a minute, `null` if it never did).
+
+`GET /api/v1/environments/{env}` adds the host's details under `docker`:
+`{"name": "host1", "version": "28.5.1", "api_version": "1.51", "min_api_version": "1.24",
+"os": "Debian GNU/Linux 13", "os_type": "linux", "kernel_version": "6.8.0",
+"architecture": "x86_64", "ncpu": 8, "mem_total": 17179869184, "containers": 5,
+"containers_running": 3, "containers_paused": 0, "containers_stopped": 2, "images": 7,
+"storage_driver": "overlay2", "docker_root_dir": "/var/lib/docker"}`
+(`mem_total` in bytes). Only these fields are passed on; Docker's proxy and registry
+settings are not.
+
+Docker errors (every environment route):
+- `404` unknown environment.
+- `502` the host is unreachable, or its daemon answered with an error. The daemon's
+  message is logged, never returned, since it can contain secrets.
+- `504` the host did not answer within 10 s.

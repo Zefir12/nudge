@@ -10,6 +10,7 @@ import (
 	"net/http"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 )
 
 // Options are the API's dependencies.
@@ -17,6 +18,7 @@ type Options struct {
 	Log     *slog.Logger
 	Version string
 	Auth    *auth.Service
+	Envs    *environments.Service
 	// Web serves every path outside /api/.
 	Web http.Handler
 }
@@ -34,7 +36,7 @@ var publicRoutes = map[string]bool{
 
 // New returns the server's root handler: the API plus the web UI.
 func New(opts Options) http.Handler {
-	s := &server{log: opts.Log, version: opts.Version, auth: opts.Auth}
+	s := &server{log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs}
 	api := http.NewServeMux()
 	api.HandleFunc("GET /api/v1/health", s.health)
 	api.HandleFunc("GET /api/v1/setup", s.setupStatus)
@@ -42,6 +44,8 @@ func New(opts Options) http.Handler {
 	api.HandleFunc("POST /api/v1/auth/login", s.login)
 	api.HandleFunc("POST /api/v1/auth/logout", s.logout)
 	api.HandleFunc("GET /api/v1/auth/me", s.me)
+	api.HandleFunc("GET /api/v1/environments", s.listEnvironments)
+	api.HandleFunc("GET /api/v1/environments/{env}", s.getEnvironment)
 	api.HandleFunc("/api/", s.notFound)
 
 	mux := http.NewServeMux()
@@ -54,6 +58,7 @@ type server struct {
 	log     *slog.Logger
 	version string
 	auth    *auth.Service
+	envs    *environments.Service
 }
 
 // protect refuses cross-origin writes (Sec-Fetch-Site, else Origin against Host) and

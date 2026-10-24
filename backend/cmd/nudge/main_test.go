@@ -3,6 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,7 +56,7 @@ func TestServeStopsOnCancel(t *testing.T) {
 	cancel()
 	var stdout, stderr bytes.Buffer
 	getenv := func(string) string { return "" }
-	if code := realMain(ctx, []string{"serve", "-addr", "127.0.0.1:0", "-data", t.TempDir()}, getenv, &stdout, &stderr); code != 0 {
+	if code := realMain(ctx, []string{"serve", "-addr", "127.0.0.1:0", "-docker-host", noDocker(t), "-data", t.TempDir()}, getenv, &stdout, &stderr); code != 0 {
 		t.Fatalf("code = %d, want 0 (stderr %q)", code, stderr.String())
 	}
 }
@@ -114,7 +118,7 @@ func TestServeCreatesDatabase(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "data")
 	var stdout, stderr bytes.Buffer
 	getenv := func(string) string { return "" }
-	if code := realMain(ctx, []string{"serve", "-addr", "127.0.0.1:0", "-data", dir}, getenv, &stdout, &stderr); code != 0 {
+	if code := realMain(ctx, []string{"serve", "-addr", "127.0.0.1:0", "-docker-host", noDocker(t), "-data", dir}, getenv, &stdout, &stderr); code != 0 {
 		t.Fatalf("code = %d, want 0 (stderr %q)", code, stderr.String())
 	}
 	if _, err := os.Stat(filepath.Join(dir, store.FileName)); err != nil {
@@ -147,7 +151,7 @@ func TestServeAdminPassword(t *testing.T) {
 				}
 				return ""
 			}
-			if code := realMain(ctx, []string{"serve", "-addr", "127.0.0.1:0", "-data", dir}, getenv, &stdout, &stderr); code != tt.wantCode {
+			if code := realMain(ctx, []string{"serve", "-addr", "127.0.0.1:0", "-docker-host", noDocker(t), "-data", dir}, getenv, &stdout, &stderr); code != tt.wantCode {
 				t.Fatalf("code = %d, want %d (stderr %q)", code, tt.wantCode, stderr.String())
 			}
 			if !strings.Contains(stderr.String(), tt.wantLog) {
@@ -168,10 +172,49 @@ func TestServeFailsOnBadDataDir(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 	getenv := func(string) string { return "" }
-	if code := realMain(context.Background(), []string{"serve", "-addr", "127.0.0.1:0", "-data", file}, getenv, &stdout, &stderr); code != 1 {
+	if code := realMain(context.Background(), []string{"serve", "-addr", "127.0.0.1:0", "-docker-host", noDocker(t), "-data", file}, getenv, &stdout, &stderr); code != 1 {
 		t.Fatalf("code = %d, want 1 (stderr %q)", code, stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "data directory") {
 		t.Errorf("stderr %q does not mention the data directory", stderr.String())
+	}
+}
+
+// noDocker is a Docker host that doesn't exist, so serve never reaches the host's daemon.
+func noDocker(t *testing.T) string {
+	t.Helper()
+	return "unix://" + filepath.Join(t.TempDir(), "none.sock")
+}
+
+func TestServeCreatesLocalEnvironment(t *testing.T) {
+	t.Parallel()
+	// A fake Docker API on a unix socket: every request gets a 200.
+	sock := filepath.Join(t.TempDir(), "docker.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Api-Version", "1.51")
+		_, _ = io.WriteString(w, "OK")
+	}))
+	srv.Listener = ln
+	srv.Start()
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var stdout, stderr bytes.Buffer
+	getenv := func(k string) string {
+		if k == "DOCKER_HOST" {
+			return "unix://" + sock
+		}
+		return ""
+	}
+	if code := realMain(ctx, []string{"serve", "-addr", "127.0.0.1:0", "-data", t.TempDir()}, getenv, &stdout, &stderr); code != 0 {
+		t.Fatalf("code = %d, want 0 (stderr %q)", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "created local environment") {
+		t.Errorf("stderr %q does not report the local environment", stderr.String())
 	}
 }

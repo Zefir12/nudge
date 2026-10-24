@@ -17,21 +17,22 @@ func TestLoadServer(t *testing.T) {
 	}{
 		{
 			name: "defaults",
-			want: Server{Addr: ":8080", DataDir: "/data", LogLevel: slog.LevelInfo},
+			want: Server{Addr: ":8080", DataDir: "/data", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock"},
 		},
 		{
 			name: "env",
-			env:  map[string]string{"NUDGE_ADDR": ":9000", "NUDGE_DATA": "/var/lib/nudge", "NUDGE_LOG_LEVEL": "debug", "NUDGE_ADMIN_PASSWORD": "s3cret-pw"},
-			want: Server{Addr: ":9000", DataDir: "/var/lib/nudge", LogLevel: slog.LevelDebug, AdminPassword: "s3cret-pw"},
+			env:  map[string]string{"NUDGE_ADDR": ":9000", "NUDGE_DATA": "/var/lib/nudge", "NUDGE_LOG_LEVEL": "debug", "NUDGE_ADMIN_PASSWORD": "s3cret-pw", "DOCKER_HOST": "tcp://10.0.0.2:2375"},
+			want: Server{Addr: ":9000", DataDir: "/var/lib/nudge", LogLevel: slog.LevelDebug, AdminPassword: "s3cret-pw", DockerHost: "tcp://10.0.0.2:2375"},
 		},
 		{
 			name: "flag wins over env",
 			args: []string{"-addr", "127.0.0.1:1234"},
 			env:  map[string]string{"NUDGE_ADDR": ":9000"},
-			want: Server{Addr: "127.0.0.1:1234", DataDir: "/data", LogLevel: slog.LevelInfo},
+			want: Server{Addr: "127.0.0.1:1234", DataDir: "/data", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock"},
 		},
 		{name: "bad log level", args: []string{"-log-level", "loud"}, wantErr: true},
 		{name: "empty addr", args: []string{"-addr", ""}, wantErr: true},
+		{name: "empty docker host", args: []string{"-docker-host", ""}, wantErr: true},
 		{name: "empty data dir", args: []string{"-data", ""}, wantErr: true},
 		{name: "stray argument", args: []string{"extra"}, wantErr: true},
 		{name: "unknown flag", args: []string{"-nope"}, wantErr: true},
