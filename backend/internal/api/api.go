@@ -13,6 +13,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/audit"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/events"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/registries"
 )
 
@@ -56,6 +57,7 @@ func New(opts Options) http.Handler {
 	s := &server{
 		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries, audit: opts.Audit,
 		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, recreating: map[string]bool{},
+		events: events.New(events.Options{Log: opts.Log}),
 	}
 	api := http.NewServeMux()
 	api.HandleFunc("GET /api/v1/health", s.health)
@@ -93,6 +95,7 @@ func New(opts Options) http.Handler {
 	api.HandleFunc("GET /api/v1/environments/{env}/containers/{id}/logs", s.containerLogs)
 	api.HandleFunc("GET /api/v1/environments/{env}/containers/{id}/stats", s.containerStats)
 	api.HandleFunc("GET /api/v1/environments/{env}/stats", s.environmentStats)
+	api.HandleFunc("GET /api/v1/environments/{env}/events", s.environmentEvents)
 	api.HandleFunc("GET /api/v1/environments/{env}/images", s.listImages)
 	api.HandleFunc("POST /api/v1/environments/{env}/images/pull", s.pullImage)
 	api.HandleFunc("POST /api/v1/environments/{env}/images/prune", s.pruneImages)
@@ -124,6 +127,8 @@ type server struct {
 
 	registries *registries.Service
 	audit      *audit.Service
+	// events fans each environment's Docker events out to the clients watching it.
+	events *events.Hub
 
 	publicURL     string
 	secureCookies bool

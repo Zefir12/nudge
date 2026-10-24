@@ -4,7 +4,7 @@ import { createMemoryHistory } from 'vue-router';
 
 import { createAppRouter } from '../router';
 import { currentUser } from '../session';
-import { admin, stubApi } from '../test-utils';
+import { admin, stubApi, stubSockets } from '../test-utils';
 import NetworksView from './NetworksView.vue';
 
 const net = (name: string) => ({
@@ -22,6 +22,7 @@ const net = (name: string) => ({
 
 beforeEach(() => {
   currentUser.value = admin;
+  stubSockets();
 });
 
 afterEach(() => {

@@ -5,12 +5,15 @@ import { RouterLink } from 'vue-router';
 import { listNetworks, pruneNetworks } from '../api/client';
 import LoadState from '../components/LoadState.vue';
 import NetworkCreate from '../components/NetworkCreate.vue';
+import { useLiveReload } from '../composables/useEvents';
 import { useLoad } from '../composables/useLoad';
 import { useParams } from '../composables/params';
 import { matches } from '../format';
 
 const { env } = useParams();
 const { data, error, reload } = useLoad(env, listNetworks);
+// Docker events refresh the list, so changes made elsewhere show up by themselves.
+useLiveReload(env, ['network'], reload);
 
 const query = ref('');
 

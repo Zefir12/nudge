@@ -25,6 +25,7 @@ const sections = [
   { name: 'images', label: 'Images' },
   { name: 'volumes', label: 'Volumes' },
   { name: 'networks', label: 'Networks' },
+  { name: 'events', label: 'Events' },
 ];
 
 async function onLogout() {

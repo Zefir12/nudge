@@ -20,13 +20,16 @@ type Fake struct {
 	InfoErr       error
 	VersionResult client.ServerVersionResult
 	VersionErr    error
+	// EventsResult is the event stream Events answers with; nil channels send nothing.
+	EventsResult client.EventsResult
 	Resources
 
-	mu      sync.Mutex
-	pings   int
-	closed  bool
-	actions []Action
-	created []string
+	mu           sync.Mutex
+	pings        int
+	eventStreams int
+	closed       bool
+	actions      []Action
+	created      []string
 
 	logOptions   []client.ContainerLogsOptions
 	statsOptions []client.ContainerStatsOptions
@@ -57,6 +60,21 @@ func (f *Fake) ServerVersion(ctx context.Context, _ client.ServerVersionOptions)
 		return client.ServerVersionResult{}, err
 	}
 	return f.VersionResult, f.VersionErr
+}
+
+// Events counts the call and answers with EventsResult.
+func (f *Fake) Events(_ context.Context, _ client.EventsListOptions) client.EventsResult {
+	f.mu.Lock()
+	f.eventStreams++
+	f.mu.Unlock()
+	return f.EventsResult
+}
+
+// EventStreams returns how often Events was called.
+func (f *Fake) EventStreams() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.eventStreams
 }
 
 // Close records the call.

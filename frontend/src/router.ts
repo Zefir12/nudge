@@ -15,6 +15,7 @@ import ContainersView from './views/ContainersView.vue';
 import ContainerView from './views/ContainerView.vue';
 import DashboardView from './views/DashboardView.vue';
 import EnvironmentsView from './views/EnvironmentsView.vue';
+import EventsView from './views/EventsView.vue';
 import HomeView from './views/HomeView.vue';
 import ImagesView from './views/ImagesView.vue';
 import ImageView from './views/ImageView.vue';
@@ -53,6 +54,7 @@ export function createAppRouter(history: RouterHistory) {
       { path: '/env/:env/volumes/:id', name: 'volume', component: VolumeView },
       { path: '/env/:env/networks', name: 'networks', component: NetworksView },
       { path: '/env/:env/networks/:id', name: 'network', component: NetworkView },
+      { path: '/env/:env/events', name: 'events', component: EventsView },
       { path: '/environments', name: 'environments', component: EnvironmentsView },
       { path: '/registries', name: 'registries', component: RegistriesView },
       { path: '/tokens', name: 'tokens', component: TokensView },

@@ -532,6 +532,37 @@ export const streamStats = (env: string, id: string, h: StatsHandlers) =>
     h.onEnd,
   );
 
+// DockerEvent is one event of an environment's Docker host. id is a container or image
+// ID, or a volume or network name; name is the object's name when the event has one.
+export interface DockerEvent {
+  time: string;
+  type: string;
+  action: string;
+  id: string;
+  name?: string;
+  attributes?: Record<string, string>;
+}
+
+export interface EventHandlers {
+  onEvent: (e: DockerEvent) => void;
+  // onEnd runs once when the stream ends, always with an error: it has no natural end.
+  onEnd: (error?: string) => void;
+}
+
+// streamEvents opens the environment's event WebSocket, all events or only those of the
+// given object types, and returns a function that closes it.
+export function streamEvents(env: string, types: string[], h: EventHandlers) {
+  const q = new URLSearchParams();
+  if (types.length) q.set('type', types.join(','));
+  return openStream<DockerEvent>(
+    envPath(env, `/events${types.length ? `?${q}` : ''}`),
+    'event',
+    (m) => m.action !== undefined,
+    h.onEvent,
+    h.onEnd,
+  );
+}
+
 export interface ContainerUsage extends StatsSample {
   id: string;
   name: string;

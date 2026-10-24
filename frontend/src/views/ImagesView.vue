@@ -5,12 +5,15 @@ import { RouterLink } from 'vue-router';
 import { listImages, pruneImages } from '../api/client';
 import ImagePull from '../components/ImagePull.vue';
 import LoadState from '../components/LoadState.vue';
+import { useLiveReload } from '../composables/useEvents';
 import { useLoad } from '../composables/useLoad';
 import { useParams } from '../composables/params';
 import { formatBytes, formatDate, matches, shortId } from '../format';
 
 const { env } = useParams();
 const { data, error, reload } = useLoad(env, listImages);
+// Docker events refresh the list, so changes made elsewhere show up by themselves.
+useLiveReload(env, ['image'], reload);
 
 const query = ref('');
 const danglingOnly = ref(false);

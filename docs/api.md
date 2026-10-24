@@ -39,6 +39,7 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | GET | `/api/v1/environments/{env}/containers/{id}/logs` | session | WebSocket: a container's logs, one JSON frame per line; see Container logs |
 | GET | `/api/v1/environments/{env}/containers/{id}/stats` | session | WebSocket: a running container's usage, a sample about every second; see Stats |
 | GET | `/api/v1/environments/{env}/stats` | session | one usage sample of every running container, with totals; see Stats |
+| GET | `/api/v1/environments/{env}/events` | session | WebSocket: the environment's Docker events as they happen; see Events |
 | POST | `/api/v1/environments/{env}/images/pull` | session | pull `{"image": "nginx:1.29"}`, progress as JSON lines; see Image actions |
 | POST | `/api/v1/environments/{env}/images/prune` | session | remove untagged images, or with `?all=true` every unused one |
 | DELETE | `/api/v1/environments/{env}/images/{id}` | session | remove an image or tag (`?force=true`); `204` |
@@ -291,6 +292,23 @@ when the container stopped or `{"error": "..."}`.
 "block_write"}}`, sorted by name. It takes about a second (the daemon waits for a second
 reading) and samples 8 containers at a time, for at most a minute; a container that stops
 meanwhile, or isn't sampled in time, is left out and counted in `skipped`.
+
+### Events
+`GET /api/v1/environments/{env}/events` upgrades to a WebSocket like the log stream (same
+authentication, `Origin` check, pings and close behaviour). `type=container,image` (or
+repeated `type` params) keeps only those object types: `container`, `image`, `volume`,
+`network`, `daemon`, `plugin`; without it every event is sent. Before the upgrade: `400`
+unknown type, `404` unknown environment, `503` when 100 streams are already open for the
+environment. Only live events are sent, none from before the connection.
+
+Each event is a text frame `{"time": "2026-10-24T12:00:00.123456789Z", "type":
+"container", "action": "start", "id": "<container ID>", "name": "web", "attributes":
+{...}}`: `id` is a container or image ID or reference, or a volume or network name;
+`name` is there when the event has one; `attributes` are Docker's (labels, image, exit
+code, ...). Exec events carry only the action (`exec_start`), not the command. All clients
+of an environment share one Docker event stream. The stream has no natural end: it ends
+with `{"error": "..."}` when the Docker host ends it (unreachable, agent disconnected) or
+when the client falls more than 64 events behind; clients reconnect.
 
 ### Image actions
 - `POST /api/v1/environments/{env}/images/pull` with `{"image": "ghcr.io/org/app:1.2"}`
