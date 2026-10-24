@@ -47,6 +47,9 @@ var (
 // Options configure a Hub.
 type Options struct {
 	Log *slog.Logger
+	// Context ends every feed and subscription when it is done (server shutdown); nil
+	// means never.
+	Context context.Context
 	// Buffer is how many events a subscriber may lag behind before it is dropped.
 	Buffer int
 	// MaxSubscribers bounds the subscriptions per environment.
@@ -55,6 +58,7 @@ type Options struct {
 
 // Hub holds one feed per watched environment.
 type Hub struct {
+	ctx            context.Context
 	log            *slog.Logger
 	buffer         int
 	maxSubscribers int
@@ -86,7 +90,10 @@ func New(opts Options) *Hub {
 	if opts.MaxSubscribers <= 0 {
 		opts.MaxSubscribers = 100
 	}
-	return &Hub{log: opts.Log, buffer: opts.Buffer, maxSubscribers: opts.MaxSubscribers, feeds: map[int64]*feed{}}
+	if opts.Context == nil {
+		opts.Context = context.Background()
+	}
+	return &Hub{ctx: opts.Context, log: opts.Log, buffer: opts.Buffer, maxSubscribers: opts.MaxSubscribers, feeds: map[int64]*feed{}}
 }
 
 // Subscribe adds a subscriber to env's feed, opening the Docker stream from src when it
@@ -96,7 +103,7 @@ func (h *Hub) Subscribe(env int64, src Source) (*Subscription, error) {
 	defer h.mu.Unlock()
 	f := h.feeds[env]
 	if f == nil {
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(h.ctx)
 		f = &feed{subs: map[*Subscription]bool{}, cancel: cancel}
 		h.feeds[env] = f
 		// Events waits for the daemon's answer, so it runs outside the lock.
@@ -145,12 +152,13 @@ func (h *Hub) drop(s *Subscription, err error) {
 }
 
 // run passes the Docker stream's events to f's subscribers until the stream ends or ctx
-// (cancelled with the last subscriber) is done.
+// is done: cancelled with the last subscriber, or at shutdown, which ends the others.
 func (h *Hub) run(ctx context.Context, env int64, f *feed, src Source) {
 	res := src.Events(ctx, client.EventsListOptions{})
 	for {
 		select {
 		case <-ctx.Done():
+			h.end(ctx, env, f, nil)
 			return
 		case m, ok := <-res.Messages:
 			if !ok {
@@ -179,10 +187,7 @@ func (h *Hub) publish(f *feed, e Event) {
 
 // end closes every subscriber of f after its Docker stream ended.
 func (h *Hub) end(ctx context.Context, env int64, f *feed, err error) {
-	if ctx.Err() != nil {
-		return
-	}
-	if err != nil && !errors.Is(err, io.EOF) {
+	if ctx.Err() == nil && err != nil && !errors.Is(err, io.EOF) {
 		// The daemon's message stays in the log.
 		h.log.Warn("docker events", "env", env, "err", err)
 	}

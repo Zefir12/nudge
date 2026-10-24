@@ -20,16 +20,22 @@ afterEach(() => {
 
 function mountEvents(env = ref('1'), types: string[] = []) {
   const got: DockerEvent[] = [];
+  const reconnects = { n: 0 };
   let error = ref('');
   const wrapper = mount(
     defineComponent({
       setup() {
-        error = useEvents(env, types, (e) => got.push(e)).error;
+        error = useEvents(
+          env,
+          types,
+          (e) => got.push(e),
+          () => reconnects.n++,
+        ).error;
         return () => h('div');
       },
     }),
   );
-  return { wrapper, got, env, error: () => error.value };
+  return { wrapper, got, env, reconnects, error: () => error.value };
 }
 
 const event: DockerEvent = { time: '2026-10-24T12:00:00Z', type: 'image', action: 'pull', id: 'nginx' };
@@ -44,13 +50,14 @@ describe('useEvents', () => {
   });
 
   it('reconnects with a growing delay, reset by an event', async () => {
-    const { error } = mountEvents();
+    const { error, reconnects } = mountEvents();
     sockets[0]!.message({ error: "the environment's Docker host ended the event stream" });
     expect(error()).toContain('ended the event stream');
     await vi.advanceTimersByTimeAsync(999);
     expect(sockets).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(1);
     expect(sockets).toHaveLength(2);
+    expect(reconnects.n).toBe(1);
 
     sockets[1]!.onclose?.();
     await vi.advanceTimersByTimeAsync(1999);

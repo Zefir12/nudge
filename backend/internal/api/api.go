@@ -3,6 +3,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,9 @@ import (
 
 // Options are the API's dependencies.
 type Options struct {
+	// Context ends long-lived streams (Docker events) at shutdown, which
+	// http.Server.Shutdown leaves running; nil means never.
+	Context context.Context
 	Log     *slog.Logger
 	Version string
 	Auth    *auth.Service
@@ -57,7 +61,7 @@ func New(opts Options) http.Handler {
 	s := &server{
 		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries, audit: opts.Audit,
 		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, recreating: map[string]bool{},
-		events: events.New(events.Options{Log: opts.Log}),
+		events: events.New(events.Options{Context: opts.Context, Log: opts.Log}),
 	}
 	api := http.NewServeMux()
 	api.HandleFunc("GET /api/v1/health", s.health)

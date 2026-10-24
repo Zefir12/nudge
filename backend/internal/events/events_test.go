@@ -152,3 +152,20 @@ func TestStreamEnds(t *testing.T) {
 		t.Errorf("feeds = %d, want 1", h.Feeds())
 	}
 }
+
+func TestShutdownEndsSubscriptions(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	h := New(Options{Log: slog.New(slog.DiscardHandler), Context: ctx})
+	src := newFakeSource()
+	a, _ := h.Subscribe(1, src)
+	streamCtx := src.waitOpened(t)
+	cancel()
+	if _, ok := recv(t, a); ok {
+		t.Fatal("subscriber open after shutdown")
+	}
+	if !errors.Is(a.Err(), ErrStream) || streamCtx.Err() == nil || h.Feeds() != 0 {
+		t.Errorf("after shutdown: err %v, stream ctx %v, feeds %d", a.Err(), streamCtx.Err(), h.Feeds())
+	}
+	a.Close()
+}

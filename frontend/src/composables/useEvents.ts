@@ -8,8 +8,14 @@ const maxDelay = 30_000;
 
 // useEvents follows env's Docker events of the given types (all when empty) for as long
 // as the calling component lives, reopening the stream when it ends and when env changes.
-// error holds why the last stream ended while a reconnect is pending, else ''.
-export function useEvents(env: Readonly<Ref<string>>, types: string[], onEvent: (e: DockerEvent) => void) {
+// error holds why the last stream ended while a reconnect is pending, else ''. onReconnect
+// runs when a stream is reopened after one ended, since events may have been missed.
+export function useEvents(
+  env: Readonly<Ref<string>>,
+  types: string[],
+  onEvent: (e: DockerEvent) => void,
+  onReconnect?: () => void,
+) {
   const error = ref('');
   let close: (() => void) | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -31,7 +37,10 @@ export function useEvents(env: Readonly<Ref<string>>, types: string[], onEvent: 
       onEnd: (msg) => {
         close = null;
         error.value = msg ?? 'The event stream ended.';
-        timer = setTimeout(() => open(e), delay);
+        timer = setTimeout(() => {
+          open(e);
+          onReconnect?.();
+        }, delay);
         delay = Math.min(delay * 2, maxDelay);
       },
     });
@@ -52,7 +61,8 @@ export function useEvents(env: Readonly<Ref<string>>, types: string[], onEvent: 
 }
 
 // useLiveReload calls reload shortly after env's events of the given types, once for a
-// burst (a compose up or a prune sends many). Exec events change no list and are skipped.
+// burst (a compose up or a prune sends many), and after a reconnect. Exec events change
+// no list and are skipped.
 export function useLiveReload(
   env: Readonly<Ref<string>>,
   types: string[],
@@ -61,9 +71,16 @@ export function useLiveReload(
 ) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   onScopeDispose(() => clearTimeout(timer));
-  return useEvents(env, types, (e) => {
-    if (e.action.startsWith('exec_')) return;
+  const later = () => {
     clearTimeout(timer);
     timer = setTimeout(() => void reload(), wait);
-  });
+  };
+  return useEvents(
+    env,
+    types,
+    (e) => {
+      if (!e.action.startsWith('exec_')) later();
+    },
+    later,
+  );
 }
