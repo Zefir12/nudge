@@ -117,6 +117,23 @@ describe('ContainersView', () => {
     expect(wrapper.findAll('tbody tr')).toHaveLength(2);
   });
 
+  it('reloads the list after an action', async () => {
+    let state = 'running';
+    stubApi({
+      'GET /environments/1/containers': () => ({ body: [{ ...base, state }] }),
+      'POST /environments/1/containers/abc123/stop': () => {
+        state = 'exited';
+        return { status: 204 };
+      },
+    });
+    const { wrapper } = await mountAt('/env/1/containers');
+    const stop = wrapper.findAll('tbody button').find((b) => b.text() === 'Stop');
+    await stop!.trigger('click');
+    await flushPromises();
+    expect(wrapper.find('tbody tr').text()).toContain('exited');
+    expect(wrapper.findAll('tbody button').map((b) => b.text())).toEqual(['Start', 'Remove']);
+  });
+
   it('reloads when the environment changes', async () => {
     stubApi({
       'GET /environments/1/containers': { body: containers },

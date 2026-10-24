@@ -308,3 +308,15 @@ export const getVolume = (env: string, name: string) =>
 export const listNetworks = (env: string) => apiFetch<Network[]>(envPath(env, '/networks'));
 export const getNetwork = (env: string, id: string) =>
   apiFetch<NetworkDetail>(envPath(env, `/networks/${enc(id)}`));
+
+export type ContainerAction = 'start' | 'stop' | 'restart' | 'kill';
+export const containerAction = (env: string, id: string, action: ContainerAction) =>
+  apiFetch<void>(envPath(env, `/containers/${enc(id)}/${action}`), { method: 'POST' });
+// force kills a running container first; volumes also removes its anonymous volumes.
+export function removeContainer(env: string, id: string, opts: { force?: boolean; volumes?: boolean } = {}) {
+  const q = new URLSearchParams();
+  if (opts.force) q.set('force', 'true');
+  if (opts.volumes) q.set('volumes', 'true');
+  const query = q.size ? `?${q}` : '';
+  return apiFetch<void>(envPath(env, `/containers/${enc(id)}${query}`), { method: 'DELETE' });
+}

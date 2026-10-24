@@ -22,9 +22,10 @@ type Fake struct {
 	VersionErr    error
 	Resources
 
-	mu     sync.Mutex
-	pings  int
-	closed bool
+	mu      sync.Mutex
+	pings   int
+	closed  bool
+	actions []Action
 }
 
 // Ping counts the call and answers with PingErr.

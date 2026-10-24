@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -147,6 +149,130 @@ func (s *server) getContainer(w http.ResponseWriter, r *http.Request) {
 		}
 		return toContainerDetail(res.Container), nil
 	})
+}
+
+const (
+	// maxStopTimeout bounds ?timeout= (seconds) of stop and restart.
+	maxStopTimeout = 600
+	// defaultStopWait bounds a stop or restart without ?timeout=: Docker waits for the
+	// container's own grace period, 10 s unless the container sets another.
+	defaultStopWait = 2 * time.Minute
+)
+
+// signalName matches kill's ?signal=: a name (KILL, SIGHUP, SIGRTMIN+3) or a number.
+var signalName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+-]{0,15}$|^[0-9]{1,2}$`)
+
+func (s *server) startContainer(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.pathID(w, r, objectID, "container")
+	if !ok {
+		return
+	}
+	s.dockerAction(w, r, "container", "the container cannot be started in its current state", dockerTimeout, func(ctx context.Context, c docker.Client) error {
+		_, err := c.ContainerStart(ctx, id, client.ContainerStartOptions{})
+		return err
+	})
+}
+
+func (s *server) stopContainer(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.pathID(w, r, objectID, "container")
+	if !ok {
+		return
+	}
+	timeout, wait, ok := s.stopTimeout(w, r)
+	if !ok {
+		return
+	}
+	s.dockerAction(w, r, "container", "the container cannot be stopped in its current state", wait, func(ctx context.Context, c docker.Client) error {
+		_, err := c.ContainerStop(ctx, id, client.ContainerStopOptions{Timeout: timeout})
+		return err
+	})
+}
+
+func (s *server) restartContainer(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.pathID(w, r, objectID, "container")
+	if !ok {
+		return
+	}
+	timeout, wait, ok := s.stopTimeout(w, r)
+	if !ok {
+		return
+	}
+	s.dockerAction(w, r, "container", "the container cannot be restarted in its current state", wait, func(ctx context.Context, c docker.Client) error {
+		_, err := c.ContainerRestart(ctx, id, client.ContainerRestartOptions{Timeout: timeout})
+		return err
+	})
+}
+
+func (s *server) killContainer(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.pathID(w, r, objectID, "container")
+	if !ok {
+		return
+	}
+	signal := r.URL.Query().Get("signal")
+	if signal != "" && !signalName.MatchString(signal) {
+		s.writeError(w, http.StatusBadRequest, "invalid signal "+strconv.Quote(signal))
+		return
+	}
+	s.dockerAction(w, r, "container", "the container cannot be killed in its current state (is it running?)", dockerTimeout, func(ctx context.Context, c docker.Client) error {
+		_, err := c.ContainerKill(ctx, id, client.ContainerKillOptions{Signal: signal})
+		if docker.InvalidArgument(err) {
+			return &badRequestError{msg: "unknown signal " + strconv.Quote(signal)}
+		}
+		return err
+	})
+}
+
+func (s *server) removeContainer(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.pathID(w, r, objectID, "container")
+	if !ok {
+		return
+	}
+	force, ok := s.queryBool(w, r, "force")
+	if !ok {
+		return
+	}
+	volumes, ok := s.queryBool(w, r, "volumes")
+	if !ok {
+		return
+	}
+	// A forced remove kills the container first, which can take as long as a stop.
+	wait := dockerTimeout
+	if force {
+		wait = defaultStopWait
+	}
+	s.dockerAction(w, r, "container", "the container is running: stop it first, or remove it with force=true", wait, func(ctx context.Context, c docker.Client) error {
+		_, err := c.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: force, RemoveVolumes: volumes})
+		return err
+	})
+}
+
+// stopTimeout reads ?timeout= (seconds before Docker kills the container; nil leaves the
+// container's own) and returns it with how long the call may take.
+func (s *server) stopTimeout(w http.ResponseWriter, r *http.Request) (*int, time.Duration, bool) {
+	v := r.URL.Query().Get("timeout")
+	if v == "" {
+		return nil, defaultStopWait, true
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 || n > maxStopTimeout {
+		s.writeError(w, http.StatusBadRequest, fmt.Sprintf("timeout must be 0 to %d seconds", maxStopTimeout))
+		return nil, 0, false
+	}
+	return &n, time.Duration(n)*time.Second + dockerTimeout, true
+}
+
+// queryBool reads an optional true/false query parameter (false when absent).
+func (s *server) queryBool(w http.ResponseWriter, r *http.Request, name string) (bool, bool) {
+	v := r.URL.Query().Get(name)
+	if v == "" {
+		return false, true
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, name+" must be true or false")
+		return false, false
+	}
+	return b, true
 }
 
 func toContainerSummary(c container.Summary) containerSummaryResponse {

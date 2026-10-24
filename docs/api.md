@@ -168,6 +168,24 @@ doesn't exist, answers `404` `{"error": "container not found"}` (or `image`, `vo
   macvlan parent; unlike volume options they hold no credentials) and `"containers": [{"id",
   "name", "ipv4_address", "ipv6_address", "mac_address"}]` (addresses with prefix length).
 
+### Container actions
+Each answers `204` with no body once Docker has done it (a request whose client goes away
+still completes), `404` for an unknown container
+(as above), and `409` with the reason when the container's state doesn't allow it.
+
+- `POST /api/v1/environments/{env}/containers/{id}/start`.
+- `POST .../containers/{id}/stop` and `.../restart`: `?timeout=` (0 to 600 seconds) is how
+  long Docker waits before killing the container; without it the container's own stop
+  timeout applies (10 s unless it sets another). The request waits up to the timeout plus
+  10 s, or 2 minutes without one, then answers `504` (Docker carries on).
+- `POST .../containers/{id}/kill`: sends `?signal=` (a name such as `SIGHUP` or `HUP`, or
+  a number; default `SIGKILL`), `400` for a signal Docker doesn't know. `409` if the
+  container isn't running.
+- `DELETE /api/v1/environments/{env}/containers/{id}`: `?force=true` kills a running
+  container first (without it a running container answers `409`), `?volumes=true` also
+  removes its anonymous volumes. Invalid `timeout`, `signal`, `force` or `volumes` values
+  answer `400`.
+
 Docker errors (every environment route):
 - `404` unknown environment.
 - `503` the environment is offline: its Docker host can't be reached.

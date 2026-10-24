@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"regexp"
 	"slices"
@@ -27,25 +28,59 @@ var (
 // dockerCall looks up the environment, runs call with a bounded context and answers with
 // its result; a missing object is a 404 "<what> not found".
 func (s *server) dockerCall(w http.ResponseWriter, r *http.Request, what string, call func(ctx context.Context, c docker.Client) (any, error)) {
+	if resp, ok := s.runDocker(r.Context(), w, r, what, "", dockerTimeout, call); ok {
+		s.writeJSON(w, http.StatusOK, resp)
+	}
+}
+
+// dockerAction is dockerCall for a call that changes an object: it answers 204, and 409
+// with conflict as the message when the daemon refuses because of the object's state.
+// timeout bounds the call (some, like a stop, wait for the container). The call isn't
+// cancelled when the client goes away, so a restart isn't left half done.
+func (s *server) dockerAction(w http.ResponseWriter, r *http.Request, what, conflict string, timeout time.Duration, call func(ctx context.Context, c docker.Client) error) {
+	_, ok := s.runDocker(context.WithoutCancel(r.Context()), w, r, what, conflict, timeout, func(ctx context.Context, c docker.Client) (any, error) {
+		return nil, call(ctx, c)
+	})
+	if ok {
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// runDocker runs call under base for dockerCall and dockerAction and answers every
+// failure itself.
+func (s *server) runDocker(base context.Context, w http.ResponseWriter, r *http.Request, what, conflict string, timeout time.Duration, call func(ctx context.Context, c docker.Client) (any, error)) (any, bool) {
 	env, c, ok := s.environment(w, r)
 	if !ok {
-		return
+		return nil, false
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), dockerTimeout)
+	ctx, cancel := context.WithTimeout(base, timeout)
 	defer cancel()
 	resp, err := call(ctx, c)
-	if docker.NotFound(err) {
+	var bad *badRequestError
+	switch {
+	case errors.As(err, &bad):
+		s.envs.Seen(r.Context(), &env)
+		s.writeError(w, http.StatusBadRequest, bad.msg)
+	case err == nil:
+		s.envs.Seen(r.Context(), &env)
+		return resp, true
+	case docker.NotFound(err):
 		s.envs.Seen(r.Context(), &env)
 		s.writeError(w, http.StatusNotFound, what+" not found")
-		return
-	}
-	if err != nil {
+	case conflict != "" && docker.Conflict(err):
+		s.envs.Seen(r.Context(), &env)
+		s.writeError(w, http.StatusConflict, conflict)
+	default:
 		s.dockerError(w, r, env, what, err)
-		return
 	}
-	s.envs.Seen(r.Context(), &env)
-	s.writeJSON(w, http.StatusOK, resp)
+	return nil, false
 }
+
+// badRequestError is returned by a Docker call to answer 400 with msg, for input only the
+// daemon can check (such as a signal name).
+type badRequestError struct{ msg string }
+
+func (e *badRequestError) Error() string { return e.msg }
 
 // pathID returns the {id} path value if it matches pattern, else answers 404 itself.
 func (s *server) pathID(w http.ResponseWriter, r *http.Request, pattern *regexp.Regexp, what string) (string, bool) {

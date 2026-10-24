@@ -49,6 +49,9 @@ func fakeDockerAPI() http.Handler {
 	reply("GET /volumes/data", volume.Volume{Name: "data", Driver: "local"})
 	reply("GET /networks", []network.Summary{{Network: network.Network{ID: "n1", Name: "front"}}})
 	reply("GET /networks/front", network.Inspect{Network: network.Network{ID: "n1", Name: "front"}})
+	for _, pattern := range []string{"POST /containers/web/start", "POST /containers/web/stop", "POST /containers/web/restart", "POST /containers/web/kill", "DELETE /containers/web"} {
+		mux.HandleFunc(pattern, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.URL.Path = versioned.ReplaceAllString(r.URL.Path, "/")
 		mux.ServeHTTP(w, r)
@@ -178,6 +181,21 @@ func TestAgentEnvironmentDocker(t *testing.T) {
 			rec := do(t, at.h, request{method: "GET", path: env + tt.path, cookie: at.cookie})
 			if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), tt.want) {
 				t.Errorf("code = %d, body %s, want 200 with %s", rec.Code, rec.Body, tt.want)
+			}
+		})
+	}
+	for _, action := range []request{
+		{method: "POST", path: env + "/containers/web/start"},
+		{method: "POST", path: env + "/containers/web/stop?timeout=1"},
+		{method: "POST", path: env + "/containers/web/restart"},
+		{method: "POST", path: env + "/containers/web/kill?signal=TERM"},
+		{method: "DELETE", path: env + "/containers/web?force=true"},
+	} {
+		t.Run(action.method+" "+action.path, func(t *testing.T) {
+			t.Parallel()
+			action.cookie = at.cookie
+			if rec := do(t, at.h, action); rec.Code != http.StatusNoContent {
+				t.Errorf("code = %d (%s), want 204", rec.Code, rec.Body)
 			}
 		})
 	}

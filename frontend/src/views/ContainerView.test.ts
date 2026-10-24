@@ -112,6 +112,29 @@ describe('ContainerView', () => {
     expect(links).toContain('/env/1/images/sha256:0123456789abcdef');
   });
 
+  it('goes back to the list after removing the container', async () => {
+    const fetch = stubApi({
+      'GET /environments/1/containers/web': { body: detail },
+      [`DELETE /environments/1/containers/${detail.id}`]: { status: 204 },
+      'GET /environments/1/containers': { body: [] },
+    });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const router = createAppRouter(createMemoryHistory());
+    await router.push('/env/1/containers/web');
+    const wrapper = mount(ContainerView, { global: { plugins: [router] } });
+    await flushPromises();
+    await wrapper
+      .findAll('button')
+      .find((b) => b.text() === 'Remove')!
+      .trigger('click');
+    await flushPromises();
+    expect(fetch).toHaveBeenCalledWith(
+      `/api/v1/environments/1/containers/${detail.id}`,
+      expect.objectContaining({ method: 'DELETE' }),
+    );
+    expect(router.currentRoute.value.fullPath).toBe('/env/1/containers');
+  });
+
   it('shows a missing container', async () => {
     stubApi({
       'GET /environments/1/containers/gone': { status: 404, body: { error: 'container not found' } },

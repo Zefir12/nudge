@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import { RouterLink } from 'vue-router';
+import { RouterLink, useRouter } from 'vue-router';
 
 import { getContainer } from '../api/client';
+import ContainerActions from '../components/ContainerActions.vue';
 import KeyValues from '../components/KeyValues.vue';
 import LoadState from '../components/LoadState.vue';
 import StateBadge from '../components/StateBadge.vue';
@@ -11,6 +12,7 @@ import { useParams } from '../composables/params';
 import { formatDate, formatPort, shortId } from '../format';
 
 const { env, id } = useParams();
+const router = useRouter();
 const {
   data: c,
   error,
@@ -19,6 +21,8 @@ const {
   () => [env.value, id.value] as const,
   ([e, i]) => getContainer(e, i),
 );
+
+const onRemoved = () => router.push({ name: 'containers', params: { env: env.value } });
 
 const command = computed(() => (c.value ? [c.value.path, ...c.value.args].join(' ') : ''));
 const labels = computed(() =>
@@ -31,6 +35,16 @@ const labels = computed(() =>
   <LoadState :loading="!c" :error="error" :ready="c !== null" @retry="reload">
     <template v-if="c">
       <h1>{{ c.name }} <StateBadge :state="c.state.status" :health="c.state.health" /></h1>
+      <ContainerActions
+        class="detail-actions"
+        :env="env"
+        :id="c.id"
+        :name="c.name"
+        :state="c.state.status"
+        volumes-option
+        @changed="reload"
+        @removed="onRemoved"
+      />
       <section class="card">
         <h2>Overview</h2>
         <KeyValues
@@ -153,6 +167,10 @@ const labels = computed(() =>
 </template>
 
 <style scoped>
+.detail-actions {
+  margin-bottom: 1rem;
+}
+
 .card + .card {
   margin-top: 1rem;
 }
