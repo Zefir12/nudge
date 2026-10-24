@@ -8,7 +8,10 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/coder/websocket"
+
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/tunnel"
 )
 
 // agentImage is the image the docker run command starts; the agent is the same binary.
@@ -116,6 +119,45 @@ func (s *server) enrollAgent(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("agent enrolled", "env", creds.EnvironmentID, "agent", creds.AgentID, "replaced_credentials", creds.Replaced, "ip", clientIP(r))
 	w.Header().Set("Cache-Control", "no-store")
 	s.writeJSON(w, http.StatusCreated, enrollResponse{EnvironmentID: creds.EnvironmentID, AgentID: creds.AgentID, AgentSecret: creds.Secret})
+}
+
+// connectAgent is public: the agent authenticates with HTTP Basic auth, its agent ID as
+// the user name and its secret as the password, before the WebSocket upgrade. The request
+// then lasts as long as the tunnel.
+func (s *server) connectAgent(w http.ResponseWriter, r *http.Request) {
+	agentID, secret, ok := r.BasicAuth()
+	if !ok {
+		s.writeError(w, http.StatusUnauthorized, "agent credentials required")
+		return
+	}
+	env, err := s.envs.AuthenticateAgent(r.Context(), agentID, secret)
+	if errors.Is(err, environments.ErrInvalidCredentials) {
+		s.log.Warn("agent connect refused", "ip", clientIP(r))
+		s.writeError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	if err != nil {
+		s.internalError(w, "authenticate agent", err)
+		return
+	}
+	// Accept answers a failed upgrade itself.
+	ws, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		s.log.Warn("agent connect: websocket upgrade", "env", env.ID, "ip", clientIP(r), "err", err)
+		return
+	}
+	sess, err := tunnel.Accept(r.Context(), ws, tunnel.Hello{Version: s.version}, tunnel.Config{Log: s.log})
+	if err != nil {
+		s.log.Warn("agent connect: handshake", "env", env.ID, "ip", clientIP(r), "err", err)
+		return
+	}
+	peer := sess.Peer()
+	s.log.Info("agent connected", "env", env.ID, "agent", agentID, "hostname", peer.Hostname, "version", peer.Version, "ip", clientIP(r))
+	if err := s.envs.ServeAgent(r.Context(), env, agentID, sess); err != nil {
+		s.log.Warn("agent tunnel refused", "env", env.ID, "err", err)
+		return
+	}
+	s.log.Info("agent disconnected", "env", env.ID, "agent", agentID)
 }
 
 // envID parses the {env} path value, answering 404 itself when it isn't a number.

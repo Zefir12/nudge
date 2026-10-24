@@ -43,8 +43,12 @@ small interface over the client, so tests run against fakes.
    any WebSocket). The server answers with an agent ID and a long-lived **agent secret**
    (hashed on the server); the agent saves both to `/data/agent.json` (0600) and forgets
    the join token. Then it connects to `wss://<server>/api/v1/agents/connect`.
-3. Every later connect authenticates with ID + secret. A second connection for the same
-   agent replaces the first. Revoking the environment deletes the secret and drops the session.
+3. Every connect authenticates with ID + secret (HTTP Basic auth on the upgrade request).
+   A second connection for the same agent replaces the first. Revoking the environment
+   (or enrolling it again) deletes the old secret and drops the session. The sessions
+   live in `environments.Service` (`ServeAgent`), one per environment; the agent
+   environment's Docker client dials a new yamux stream on the current session per
+   connection, so a reconnect needs no new client.
 4. After the handshake the WebSocket is wrapped in a `net.Conn` and a yamux session where
    the **server is the yamux client**: it opens streams, and the agent accepts each one and
    pipes it to its local Docker socket. A small JSON hello at connect carries the agent's
