@@ -32,6 +32,8 @@ var publicRoutes = map[string]bool{
 	"POST /api/v1/auth/login": true,
 	// Logout clears the cookie even when the session has already expired.
 	"POST /api/v1/auth/logout": true,
+	// Agents enroll with a join token instead of a session.
+	"POST /api/v1/agents/enroll": true,
 }
 
 // New returns the server's root handler: the API plus the web UI.
@@ -48,7 +50,11 @@ func New(opts Options) http.Handler {
 	api.HandleFunc("POST /api/v1/tokens", s.createToken)
 	api.HandleFunc("DELETE /api/v1/tokens/{id}", s.deleteToken)
 	api.HandleFunc("GET /api/v1/environments", s.listEnvironments)
+	api.HandleFunc("POST /api/v1/environments", s.createEnvironment)
 	api.HandleFunc("GET /api/v1/environments/{env}", s.getEnvironment)
+	api.HandleFunc("POST /api/v1/environments/{env}/join-tokens", s.createJoinToken)
+	api.HandleFunc("DELETE /api/v1/environments/{env}/credentials", s.revokeAgent)
+	api.HandleFunc("POST /api/v1/agents/enroll", s.enrollAgent)
 	api.HandleFunc("GET /api/v1/environments/{env}/containers", s.listContainers)
 	api.HandleFunc("GET /api/v1/environments/{env}/containers/{id}", s.getContainer)
 	api.HandleFunc("GET /api/v1/environments/{env}/images", s.listImages)

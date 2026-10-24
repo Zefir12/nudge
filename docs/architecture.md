@@ -39,9 +39,10 @@ small interface over the client, so tests run against fakes.
 1. Admin creates an agent environment in the UI. The server stores a **join token**
    (random 32 bytes, stored as a SHA-256 hash, single use, expires after 24 h) and shows the
    `docker run` command for the agent.
-2. The agent connects to `wss://<server>/api/v1/agents/connect` and sends the join token.
-   The server answers with an agent ID and a long-lived **agent secret** (hashed on the
-   server); the agent saves both to `/data/agent.json` (0600) and forgets the join token.
+2. The agent sends the join token to `POST /api/v1/agents/enroll` (plain HTTPS, before
+   any WebSocket). The server answers with an agent ID and a long-lived **agent secret**
+   (hashed on the server); the agent saves both to `/data/agent.json` (0600) and forgets
+   the join token. Then it connects to `wss://<server>/api/v1/agents/connect`.
 3. Every later connect authenticates with ID + secret. A second connection for the same
    agent replaces the first. Revoking the environment deletes the secret and drops the session.
 4. After the handshake the WebSocket is wrapped in a `net.Conn` and a yamux session where

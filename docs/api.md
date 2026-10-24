@@ -71,7 +71,9 @@ nudge stores its SHA-256 hash. `GET /api/v1/tokens` lists the same objects witho
 An environment is a Docker host; `{env}` in paths is its numeric `id`.
 `GET /api/v1/environments` answers
 `[{"id": 1, "name": "local", "kind": "local", "online": true, "created_at": "...", "last_seen_at": "..."}]`.
-`kind` is `local` (the server's own Docker socket) or `agent` (phase 2). `online` comes
+`kind` is `local` (the server's own Docker socket) or `agent` (a remote host running
+`nudge agent`). Agent environments also carry `"agent": {"enrolled": true, "version":
+"..."}`: whether an agent holds credentials, and the version it reported. `online` comes
 from pinging each host (3 s timeout) during the request; `last_seen_at` is the last time
 the host answered (updated at most once a minute, `null` if it never did).
 
@@ -83,6 +85,28 @@ the host answered (updated at most once a minute, `null` if it never did).
 "storage_driver": "overlay2", "docker_root_dir": "/var/lib/docker"}`
 (`mem_total` in bytes). Only these fields are passed on; Docker's proxy and registry
 settings are not.
+
+### Agent environments
+- `POST /api/v1/environments` `{"name": "nas", "kind": "agent"}` creates an agent
+  environment (`kind` must be `agent`: the local one is created automatically) and answers
+  `201` with the environment plus its join token:
+  `"join_token": {"token": "nudge_join_…", "expires_at": "...", "docker_run": "docker run -d … nudge:latest agent"}`.
+  `docker_run` starts the agent on the remote host; its `NUDGE_SERVER_URL` comes from the
+  request's host until a public URL can be configured (#12). Names follow the token
+  rules (1 to 64 bytes, no control characters or surrounding spaces); `409` if taken.
+- `POST /api/v1/environments/{env}/join-tokens` replaces the environment's join token
+  (`201`, same object as `join_token`), for an agent that never enrolled or lost its
+  credentials. Existing credentials keep working until a new agent enrolls.
+- `DELETE /api/v1/environments/{env}/credentials` revokes the agent: deletes its
+  credentials and any pending join token (`204`). The environment stays.
+  Both answer `409` for a non-agent environment.
+- `POST /api/v1/agents/enroll` `{"join_token": "nudge_join_…"}`, public (the join token is
+  the credential), answers `201` `{"environment_id": 2, "agent_id": "agt_…", "agent_secret":
+  "nudge_agent_…"}` and replaces any credentials the environment had. The secret is shown
+  only this once. Unknown, used and expired tokens all answer `401`.
+
+Join tokens and agent secrets are 32 random bytes; nudge stores their SHA-256. A join
+token works once, within 24 h.
 
 ### Containers, images, volumes and networks
 Read-only lists and details of an environment's resources. Responses are nudge's own
