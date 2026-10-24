@@ -22,13 +22,14 @@ lets patterns in `publicRoutes` through without either credential) to the API mu
 ## Backend packages (backend/)
 | Package | What | Entry points |
 |---|---|---|
-| `cmd/nudge` | subcommands, wiring, graceful shutdown | `realMain`, `serve` |
+| `cmd/nudge` | subcommands, wiring, graceful shutdown | `realMain`, `serve`, `runAgent` |
 | `internal/api` | HTTP API under /api/v1; resource lists/details in containers.go, images.go, volumes.go, networks.go | `New`, `Options`, `publicRoutes`, `server.protect`, `userFrom`, `server.decodeJSON`, `server.writeJSON`, `server.writeError`, `server.internalError`, `server.dockerCall`, `server.pathID` |
 | `internal/auth` | users, argon2id, sessions, login rate limit, API tokens (tokens.go) | `New`, `Options`, `Service.Login`, `SessionUser`, `TokenUser`, `CreateToken`, `CreateFirstUser`, `EnsureAdmin`, `RunCleanup` |
 | `internal/docker` | Docker client over a dialer per kind; `Client` interface handlers use; `dockertest.Fake` | `New`, `LocalDialer`, `Client`, `Unreachable` |
 | `internal/environments` | environments table, Docker client per environment (cached), online checks, auto-created `local`; agent enrollment in agents.go (join tokens, agent ID + secret); agent tunnels in sessions.go (one per environment, Docker client dials a stream) | `New`, `Options.Connect`, `LocalConnect`, `EnsureLocal`, `Service.Client`, `Online`, `CreateAgent`, `RegenerateJoinToken`, `Enroll`, `AuthenticateAgent`, `Revoke`, `ServeAgent` |
 | `internal/tunnel` | WebSocket ↔ yamux tunnel: JSON hello (protocol version), server = yamux client, keepalives | `Accept` (server), `Connect` (agent), `Session.Open`/`Accept`/`Done`/`Close`, `ProtocolVersion`; `tunneltest.Connect` fake agent serving an `http.Handler` |
-| `internal/config` | flags with NUDGE_* env fallbacks | `LoadServer`, `Server` |
+| `internal/agent` | `nudge agent`: enroll with the join token, `agent.json` (credentials.go), dial the tunnel with backoff, pipe each stream to the Docker socket | `New`, `Options`, `Agent.Run`, `FatalError`, `Clock` |
+| `internal/config` | flags with NUDGE_* env fallbacks | `LoadServer`, `Server`, `LoadAgent`, `Agent` |
 | `internal/store` | SQLite (`<data>/nudge.db`), embedded migrations | `Open`, `Store.DB`, `migrations/NNNN_name.sql` |
 | `internal/web` | embedded frontend, SPA fallback | `Dist`, `Handler` |
 | `internal/version` | build version via ldflags | `Version` |
@@ -61,6 +62,9 @@ lets patterns in `publicRoutes` through without either credential) to the API mu
   (never edit an applied one); it runs in one transaction at start.
 - **Tunnel tests:** `newWSPair` (httptest + WebSocket) and `newPipePair` (`net.Pipe`) in
   tunnel_test.go, `echo` as a fake agent, `checkLeaks` (non-parallel tests only).
+- **Agent command tests:** agent/agent_test.go has `newFakeServer` (enroll + tunnel
+  endpoint over httptest, sessions on a channel), `fakeDocker`, `start` (runs an agent
+  with a `fakeClock` that records backoff delays) and `get` (HTTP over a stream).
 - **Agent environment tests:** `tunneltest.Connect` dials a server and serves a fake
   Docker HTTP API on each stream; api/connect_test.go has `newAgentTest` (enrolled agent,
   httptest server, `connect`/`waitOnline`) and `fakeDockerAPI`; environments/sessions_test.go
