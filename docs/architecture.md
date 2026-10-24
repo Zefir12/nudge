@@ -76,12 +76,91 @@ refuses `ws://` unless `NUDGE_INSECURE=1`.
 - Scripts: API tokens (`Authorization: Bearer nudge_...`), stored hashed, shown once.
 - Login attempts are rate-limited per IP and username, with bounded memory.
 
-## Stacks (phase 5, open question)
-Compose files live in `/data/stacks/<env>/<name>/`. For local environments the server runs
-the compose library/CLI against the socket. For agent environments relative bind mounts
-and `env_file` refer to the remote host, so compose must run on the agent: the agent then
-needs one small control endpoint ("deploy this compose project"), the only exception to
-"the agent is a dumb pipe". Decide when phase 5 starts.
+## Stacks (phase 5)
+Decision (needs zefir's sign-off): **compose runs next to the daemon it deploys to**: in
+the server for the local environment, in the agent for agent environments, with the same
+code. The server keeps the authoritative files and sends them to the agent on every
+deploy; the agent gets a small control service on its tunnel, the one exception to "the
+agent is a dumb pipe".
+
+### Where compose can run
+| | A: on the server, through the tunnel | B: on the agent, via a control endpoint |
+|---|---|---|
+| Relative bind mounts (`./data:/data`) | resolved on the server, then mounted by the remote daemon from a path that doesn't exist there: broken | resolved in the agent's copy of the project, on the host that mounts it: works (with the same-path mount below) |
+| `env_file`, `.env`, interpolation | read on the server: works, but only files the server holds | read from the agent's copy: works |
+| `configs`/`secrets` with `file:` | bind-mounted outside swarm, so broken like relative binds | works |
+| Build contexts | the context is tarred on the server and sent through the tunnel: works, but every build crosses the tunnel | the files are synced first (size limit), the build runs against the local daemon; git URLs work in both |
+| Agent | stays a dumb pipe | gets a compose binary and a control service; needs the protocol bump below |
+| Implementations | one | one, run in two places |
+
+A keeps the agent simple but breaks the most common compose layouts (relative data and
+config mounts), and nothing can fix that short of copying files to the remote host,
+which is B. So B.
+
+The same problem exists locally: nudge runs in a container, so `./data` in
+`/data/stacks/local/web/` is a path inside nudge's container, and the daemon mounts that
+path from the host. Whatever runs compose (server or agent) keeps stacks in a directory
+**mounted at the same path on the host and in the container** (`NUDGE_STACKS_DIR`,
+default `/data/stacks`; the deploy docs show `-v /opt/nudge/stacks:/opt/nudge/stacks
+-e NUDGE_STACKS_DIR=/opt/nudge/stacks`). Without that mount relative binds are refused
+at deploy with a clear error rather than mounting an empty host directory.
+
+### Running compose
+The image is distroless with no Docker CLI. Options, both needing zefir's approval:
+1. Ship the static `docker-compose` binary (compose v2 standalone, ~60 MB) in the image
+   and run it with fixed arguments: `docker-compose -p <name> --project-directory <dir>
+   -f compose.yaml up -d --remove-orphans [--pull always]`, `down [--volumes]`,
+   `config --quiet` (validate). `DOCKER_HOST` is the local socket.
+2. Import `github.com/docker/compose/v2` as a library: no subprocess, but a very large
+   dependency tree (buildkit, containerd) in every build.
+
+Recommended: 1. It's isolated, its version can move independently, and its output is
+what users know from the CLI. nudge parses only the exit code; output lines are streamed
+to the UI as they are.
+
+### Files
+- Server: `<stacks dir>/<env>/<name>/` holds `compose.yaml`, `.env` (variables set in the
+  UI) and any extra files the user adds. It is the source of truth: the UI edits it,
+  and the audit log records every change.
+- Agent: `<stacks dir>/<name>/`, a copy replaced on each deploy. Names follow compose's
+  project name rules (`[a-z0-9][a-z0-9_-]*`).
+- Status (services, containers, health) is read through the Docker API by the
+  `com.docker.compose.project` label, the same for both kinds; logs use the existing
+  container log stream. No control endpoint is needed for reads.
+
+### Agent control protocol (sketch)
+- Tunnel protocol 2: every stream the server opens starts with one byte, `0x00` Docker
+  socket or `0x01` control. The hello carries the protocol; with an agent on protocol 1
+  the server opens plain Docker streams and stacks on that environment answer `409
+  "update the agent to use stacks"`. Protocol 1 agents keep working for everything else.
+- Control streams carry HTTP/1.1: the agent serves a `net/http` handler on a listener fed
+  by control streams, and the server uses an `http.Client` whose dialer opens one. Only
+  the server can reach it (the tunnel is already authenticated); there is no listening
+  port.
+- Endpoints:
+  - `PUT /v1/stacks/{name}`: body is a tar of the project files (at most 10 MB; regular
+    files only, no absolute paths, `..` or symlinks). Written to a temporary directory and
+    swapped in with a rename.
+  - `POST /v1/stacks/{name}/up` `{"pull": bool}`: runs compose, answers NDJSON
+    `{"stream": "stdout"|"stderr", "line": "..."}` frames, then `{"exit_code": N}`.
+    Cancelling the request kills the process.
+  - `POST /v1/stacks/{name}/down` `{"volumes": bool}`: the same output format.
+  - `DELETE /v1/stacks/{name}`: removes the files after `down`.
+  - `GET /v1/stacks`: names and a SHA-256 of each project's files, so the server can show
+    a stack that differs from what it last sent.
+- One deploy per stack at a time (the server serializes per environment and name; the
+  agent refuses a second one with `409`).
+- Security: no new privilege (the server can already do anything on the remote daemon),
+  but the agent runs only the compose binary with fixed arguments, never a shell, and
+  validates names and tar entries before writing.
+
+In code: a `stacks.Runner` interface (`Sync`, `Up`, `Down`, `Remove`) with a local
+implementation (writes the files, runs compose) used by the server for the local
+environment and by the agent's control service, and an agent implementation that calls
+the control endpoints.
+
+Out of scope for phase 5: swarm stacks, compose `build` with large contexts (git URLs
+are fine), and editing a project's extra files beyond compose.yaml and `.env` in the UI.
 
 ## Storage
 SQLite (`modernc.org/sqlite`, pure Go, so the image stays static) with numbered SQL
