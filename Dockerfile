@@ -9,6 +9,9 @@ RUN npm ci --no-audit --no-fund
 COPY frontend/ ./
 RUN npm run build
 
+# The static docker-compose v2 binary that deploys stacks (docs/architecture.md, Stacks).
+FROM docker/compose-bin:v2.39.1 AS compose
+
 FROM golang:1.27.3 AS builder
 
 WORKDIR /src/backend
@@ -30,6 +33,7 @@ RUN mkdir -m 0700 /out/data
 FROM gcr.io/distroless/static-debian13
 
 COPY --from=builder /out/nudge /usr/local/bin/nudge
+COPY --from=compose /docker-compose /usr/local/bin/docker-compose
 COPY --from=builder /out/data /data
 VOLUME /data
 ENV NUDGE_DATA=/data

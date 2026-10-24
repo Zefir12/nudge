@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -24,6 +25,11 @@ type Server struct {
 	Addr string
 	// DataDir holds the database and stack files. The image mounts a volume here.
 	DataDir string
+	// StacksDir holds the compose stacks; empty flag means <DataDir>/stacks. Relative
+	// bind mounts need it mounted at the same path on the host and in the container.
+	StacksDir string
+	// Compose is the docker-compose binary that deploys stacks.
+	Compose string
 	// LogLevel is debug, info, warn or error.
 	LogLevel slog.Level
 	// AdminPassword, if set, creates the user "admin" at start when no user exists.
@@ -52,6 +58,8 @@ func LoadServer(args []string, getenv func(string) string, out io.Writer) (Serve
 	fs.SetOutput(out)
 	fs.StringVar(&c.Addr, "addr", envOr(getenv, "NUDGE_ADDR", ":8080"), "listen address (NUDGE_ADDR)")
 	fs.StringVar(&c.DataDir, "data", envOr(getenv, "NUDGE_DATA", "/data"), "data directory (NUDGE_DATA)")
+	fs.StringVar(&c.StacksDir, "stacks-dir", getenv("NUDGE_STACKS_DIR"), "compose stacks directory, mounted at the same path on the host (NUDGE_STACKS_DIR; default <data>/stacks)")
+	fs.StringVar(&c.Compose, "compose", envOr(getenv, "NUDGE_COMPOSE", "/usr/local/bin/docker-compose"), "docker-compose binary that deploys stacks (NUDGE_COMPOSE)")
 	fs.StringVar(&c.DockerHost, "docker-host", envOr(getenv, "DOCKER_HOST", "unix:///var/run/docker.sock"), "Docker API of the local environment, unix:// or tcp:// (DOCKER_HOST)")
 	fs.StringVar(&c.TLSCert, "tls-cert", getenv("NUDGE_TLS_CERT"), "PEM certificate (chain) file; serve HTTPS with -tls-key (NUDGE_TLS_CERT)")
 	fs.StringVar(&c.TLSKey, "tls-key", getenv("NUDGE_TLS_KEY"), "PEM private key file for -tls-cert (NUDGE_TLS_KEY)")
@@ -80,6 +88,15 @@ func LoadServer(args []string, getenv func(string) string, out io.Writer) (Serve
 	}
 	if c.DataDir == "" {
 		return Server{}, errors.New("data directory must not be empty")
+	}
+	if c.StacksDir == "" {
+		c.StacksDir = filepath.Join(c.DataDir, "stacks")
+	}
+	if !filepath.IsAbs(c.StacksDir) {
+		return Server{}, errors.New("stacks directory must be an absolute path")
+	}
+	if c.Compose == "" {
+		return Server{}, errors.New("compose binary must not be empty")
 	}
 	if c.AuditRetentionDays < 1 {
 		return Server{}, errors.New("audit retention must be at least 1 day")

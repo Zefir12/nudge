@@ -27,13 +27,19 @@ type envTest struct {
 
 func newEnvTest(t *testing.T, fakes map[string]*dockertest.Fake) envTest {
 	t.Helper()
-	h, svc, db := newTestHandlerWith(t, func(env environments.Environment) (docker.Client, error) {
+	return newEnvTestOpts(t, fakes, nil)
+}
+
+// newEnvTestOpts is newEnvTest with mod changing the API's options, if not nil.
+func newEnvTestOpts(t *testing.T, fakes map[string]*dockertest.Fake, mod func(*Options)) envTest {
+	t.Helper()
+	h, svc, db := newTestHandlerOpts(t, func(env environments.Environment) (docker.Client, error) {
 		f, ok := fakes[env.Name]
 		if !ok {
 			return nil, fmt.Errorf("no fake for %q", env.Name)
 		}
 		return f, nil
-	})
+	}, mod)
 	ctx := context.Background()
 	if _, err := svc.CreateFirstUser(ctx, "admin", "longenough"); err != nil {
 		t.Fatal(err)

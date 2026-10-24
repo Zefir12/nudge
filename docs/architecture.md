@@ -77,7 +77,7 @@ refuses `ws://` unless `NUDGE_INSECURE=1`.
 - Login attempts are rate-limited per IP and username, with bounded memory.
 
 ## Stacks (phase 5)
-Decision (needs zefir's sign-off): **compose runs next to the daemon it deploys to**: in
+Decision (approved by zefir for #25): **compose runs next to the daemon it deploys to**: in
 the server for the local environment, in the agent for agent environments, with the same
 code. The server keeps the authoritative files and sends them to the agent on every
 deploy; the agent gets a small control service on its tunnel, the one exception to "the
@@ -106,7 +106,7 @@ default `/data/stacks`; the deploy docs show `-v /opt/nudge/stacks:/opt/nudge/st
 at deploy with a clear error rather than mounting an empty host directory.
 
 ### Running compose
-The image is distroless with no Docker CLI. Options, both needing zefir's approval:
+The image is distroless with no Docker CLI. Options (zefir approved 1):
 1. Ship the static `docker-compose` binary (compose v2 standalone, ~60 MB) in the image
    and run it with fixed arguments: `docker-compose -p <name> --project-directory <dir>
    -f compose.yaml up -d --remove-orphans [--pull always]`, `down [--volumes]`,

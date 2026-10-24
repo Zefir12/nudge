@@ -50,6 +50,13 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | POST | `/api/v1/environments/{env}/networks` | session | create a network; `201` |
 | POST | `/api/v1/environments/{env}/networks/prune` | session | remove custom networks no container uses |
 | DELETE | `/api/v1/environments/{env}/networks/{id}` | session | remove a network by ID or name; `204` |
+| GET | `/api/v1/environments/{env}/stacks` | session | the environment's compose stacks with container counts; see Stacks |
+| POST | `/api/v1/environments/{env}/stacks` | session | create a stack `{"name", "compose", "env"}` (not deployed); `201` |
+| GET | `/api/v1/environments/{env}/stacks/{name}` | session | a stack's files and container counts |
+| PUT | `/api/v1/environments/{env}/stacks/{name}` | session | replace a stack's files `{"compose", "env"}`; `204` |
+| DELETE | `/api/v1/environments/{env}/stacks/{name}` | session | delete a stack that is down; `204` |
+| POST | `/api/v1/environments/{env}/stacks/{name}/up` | session | deploy `{"pull": bool}`, compose output as JSON lines |
+| POST | `/api/v1/environments/{env}/stacks/{name}/down` | session | stop and remove the containers `{"volumes": bool}`, output as JSON lines |
 
 "session" means a session cookie or an API token.
 
@@ -381,6 +388,36 @@ when the client falls more than 64 events behind; clients reconnect.
   uses; answers `{"deleted": ["name"]}`.
 - `DELETE /api/v1/environments/{env}/networks/{id}`: `409` while containers are attached
   and for Docker's predefined networks (`bridge`, `host`, `none`).
+
+### Stacks
+A stack is a compose project: `compose.yaml` and an optional `.env` (the variables compose
+interpolates), kept by the server in `<stacks dir>/<env ID>/<name>/`
+([config](config/server.md#stacks)). Names are compose project names: lowercase letters,
+digits, `-` and `_`, starting with a letter or digit, at most 63 characters. Every write
+is in the audit log with the stack's name as its target.
+- `GET .../stacks` answers `[{"name": "web", "containers": 2, "running": 1}]`, sorted by
+  name; `containers` counts the project's containers in any state (by the
+  `com.docker.compose.project` label), `running` those running. `GET .../stacks/{name}`
+  adds `"compose"` and `"env"`; `env` often holds secrets and is answered as stored.
+- `POST .../stacks` `{"name": "web", "compose": "services: ...", "env": "TAG=1\n"}` writes
+  the files and answers `201` with the stack; `400` invalid name or empty compose, `409` a
+  stack of that name exists. `PUT .../stacks/{name}` `{"compose", "env"}` replaces them
+  (an empty `env` deletes `.env`); the running stack changes at its next `up`. The YAML
+  isn't checked until a deploy.
+- `POST .../stacks/{name}/up` runs `docker-compose up --detach --remove-orphans`, with
+  `{"pull": true}` also `--pull always` (an update); the body may be left out.
+  `POST .../stacks/{name}/down` runs `docker-compose down --remove-orphans`, with
+  `{"volumes": true}` also `--volumes`. Both answer `200` with `Content-Type:
+  application/x-ndjson`, one line per line compose prints: `{"stream": "stderr", "line":
+  " Container web-app-1  Started"}` (compose prints its progress on stderr). The last
+  line is `{"exit_code": 0}` (non-zero: compose failed, recorded as `502` in the audit log)
+  or `{"error": "..."}` if the run was cut short; a stream without either was cut off.
+  Errors before compose starts are ordinary JSON errors: `404` no such stack, `409` the
+  stack is being changed or deployed (one change per stack at a time) or the environment
+  is an agent environment (not supported yet), `503` the image has no `docker-compose`.
+  The run is killed when the client disconnects and after one hour.
+- `DELETE .../stacks/{name}` deletes the files; `409` while the project has containers
+  (take it down first).
 
 ### Registries
 `POST /api/v1/registries` with `{"name": "GitHub", "address": "ghcr.io", "username":
