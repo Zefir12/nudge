@@ -24,6 +24,11 @@ type Client interface {
 	ServerVersion(ctx context.Context, opts client.ServerVersionOptions) (client.ServerVersionResult, error)
 	ContainerList(ctx context.Context, opts client.ContainerListOptions) (client.ContainerListResult, error)
 	ContainerInspect(ctx context.Context, id string, opts client.ContainerInspectOptions) (client.ContainerInspectResult, error)
+	ContainerStart(ctx context.Context, id string, opts client.ContainerStartOptions) (client.ContainerStartResult, error)
+	ContainerStop(ctx context.Context, id string, opts client.ContainerStopOptions) (client.ContainerStopResult, error)
+	ContainerRestart(ctx context.Context, id string, opts client.ContainerRestartOptions) (client.ContainerRestartResult, error)
+	ContainerKill(ctx context.Context, id string, opts client.ContainerKillOptions) (client.ContainerKillResult, error)
+	ContainerRemove(ctx context.Context, id string, opts client.ContainerRemoveOptions) (client.ContainerRemoveResult, error)
 	ImageList(ctx context.Context, opts client.ImageListOptions) (client.ImageListResult, error)
 	ImageInspect(ctx context.Context, id string, opts ...client.ImageInspectOption) (client.ImageInspectResult, error)
 	VolumeList(ctx context.Context, opts client.VolumeListOptions) (client.VolumeListResult, error)
@@ -86,4 +91,15 @@ func Unreachable(err error) bool {
 // NotFound reports whether the daemon answered that the object does not exist.
 func NotFound(err error) bool {
 	return cerrdefs.IsNotFound(err)
+}
+
+// Conflict reports whether the daemon refused a change because of the object's state,
+// such as removing a running container without force.
+func Conflict(err error) bool {
+	return cerrdefs.IsConflict(err)
+}
+
+// InvalidArgument reports whether the daemon refused the request's parameters.
+func InvalidArgument(err error) bool {
+	return cerrdefs.IsInvalidArgument(err)
 }

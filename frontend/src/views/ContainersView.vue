@@ -3,6 +3,7 @@ import { computed, ref } from 'vue';
 import { RouterLink } from 'vue-router';
 
 import { listContainers } from '../api/client';
+import ContainerActions from '../components/ContainerActions.vue';
 import LoadState from '../components/LoadState.vue';
 import StateBadge from '../components/StateBadge.vue';
 import { useLoad } from '../composables/useLoad';
@@ -54,6 +55,7 @@ const shown = computed(() =>
               <th>Image</th>
               <th class="wide-only">Status</th>
               <th class="wide-only">Ports</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -68,6 +70,16 @@ const shown = computed(() =>
                 <div v-for="p in c.ports" :key="formatPort(p)">
                   <code>{{ formatPort(p) }}</code>
                 </div>
+              </td>
+              <td>
+                <ContainerActions
+                  :env="env"
+                  :id="c.id"
+                  :name="c.name"
+                  :state="c.state"
+                  @changed="reload"
+                  @removed="reload"
+                />
               </td>
             </tr>
           </tbody>

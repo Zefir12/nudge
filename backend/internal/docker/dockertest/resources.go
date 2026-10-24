@@ -22,6 +22,16 @@ type Resources struct {
 	Networks         []network.Summary
 	NetworkDetails   map[string]network.Inspect
 	ResourceErr      error
+	// ActionErr fails the calls that change a container (after the not found check).
+	ActionErr error
+}
+
+// Action is a recorded call that changes a container: its name ("start", "stop",
+// "restart", "kill", "remove"), the container and the options passed.
+type Action struct {
+	Name    string
+	ID      string
+	Options any
 }
 
 // ContainerList answers with Containers, filtered by the "status" filter like Docker.
@@ -47,6 +57,51 @@ func (f *Fake) ContainerList(ctx context.Context, opts client.ContainerListOptio
 func (f *Fake) ContainerInspect(ctx context.Context, id string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
 	c, err := lookup(ctx, f, f.ContainerDetails, id)
 	return client.ContainerInspectResult{Container: c}, err
+}
+
+// ContainerStart records the action; the container must be in ContainerDetails.
+func (f *Fake) ContainerStart(ctx context.Context, id string, opts client.ContainerStartOptions) (client.ContainerStartResult, error) {
+	return client.ContainerStartResult{}, f.action(ctx, "start", id, opts)
+}
+
+// ContainerStop records the action; the container must be in ContainerDetails.
+func (f *Fake) ContainerStop(ctx context.Context, id string, opts client.ContainerStopOptions) (client.ContainerStopResult, error) {
+	return client.ContainerStopResult{}, f.action(ctx, "stop", id, opts)
+}
+
+// ContainerRestart records the action; the container must be in ContainerDetails.
+func (f *Fake) ContainerRestart(ctx context.Context, id string, opts client.ContainerRestartOptions) (client.ContainerRestartResult, error) {
+	return client.ContainerRestartResult{}, f.action(ctx, "restart", id, opts)
+}
+
+// ContainerKill records the action; the container must be in ContainerDetails.
+func (f *Fake) ContainerKill(ctx context.Context, id string, opts client.ContainerKillOptions) (client.ContainerKillResult, error) {
+	return client.ContainerKillResult{}, f.action(ctx, "kill", id, opts)
+}
+
+// ContainerRemove records the action; the container must be in ContainerDetails.
+func (f *Fake) ContainerRemove(ctx context.Context, id string, opts client.ContainerRemoveOptions) (client.ContainerRemoveResult, error) {
+	return client.ContainerRemoveResult{}, f.action(ctx, "remove", id, opts)
+}
+
+// Actions returns the recorded container actions, oldest first.
+func (f *Fake) Actions() []Action {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]Action(nil), f.actions...)
+}
+
+func (f *Fake) action(ctx context.Context, name, id string, opts any) error {
+	if _, err := lookup(ctx, f, f.ContainerDetails, id); err != nil {
+		return err
+	}
+	if f.ActionErr != nil {
+		return f.ActionErr
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.actions = append(f.actions, Action{Name: name, ID: id, Options: opts})
+	return nil
 }
 
 // ImageList answers with Images.

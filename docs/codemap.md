@@ -23,7 +23,7 @@ lets patterns in `publicRoutes` through without either credential) to the API mu
 | Package | What | Entry points |
 |---|---|---|
 | `cmd/nudge` | subcommands, wiring, graceful shutdown | `realMain`, `serve`, `runAgent` |
-| `internal/api` | HTTP API under /api/v1; resource lists/details in containers.go, images.go, volumes.go, networks.go | `New`, `Options`, `publicRoutes`, `server.protect`, `userFrom`, `server.decodeJSON`, `server.writeJSON`, `server.writeError`, `server.internalError`, `server.dockerCall`, `server.pathID` |
+| `internal/api` | HTTP API under /api/v1; resource lists/details in containers.go, images.go, volumes.go, networks.go | `New`, `Options`, `publicRoutes`, `server.protect`, `userFrom`, `server.decodeJSON`, `server.writeJSON`, `server.writeError`, `server.internalError`, `server.dockerCall`, `server.dockerAction` (204/409), `server.pathID`, `server.queryBool` |
 | `internal/auth` | users, argon2id, sessions, login rate limit, API tokens (tokens.go) | `New`, `Options`, `Service.Login`, `SessionUser`, `TokenUser`, `CreateToken`, `CreateFirstUser`, `EnsureAdmin`, `RunCleanup` |
 | `internal/docker` | Docker client over a dialer per kind; `Client` interface handlers use; `dockertest.Fake` | `New`, `LocalDialer`, `Client`, `Unreachable` |
 | `internal/environments` | environments table, Docker client per environment (cached), online checks, auto-created `local`; agent enrollment in agents.go (join tokens, agent ID + secret); agent tunnels in sessions.go (one per environment, Docker client dials a stream) | `New`, `Options.Connect`, `LocalConnect`, `EnsureLocal`, `Service.Client`, `Online`, `CreateAgent`, `RegenerateJoinToken`, `Enroll`, `AuthenticateAgent`, `Revoke`, `ServeAgent` |
@@ -47,7 +47,7 @@ lets patterns in `publicRoutes` through without either credential) to the API mu
 | `api/client.ts` | `apiFetch<T>` (cookies, 401 → `setUnauthorizedHandler`), `ApiError`, one typed function per endpoint |
 | `test-utils.ts` | `stubApi({'GET /path': {status, body}})` fetch stub, `admin` user |
 | `views/` | one component per route |
-| `components/` | reusable pieces: `LoadState` (loading/empty/error + retry), `KeyValues`, `StateBadge`, `EnvSwitcher`, `EnvStatus` (online/offline/waiting badge + last seen), `JoinTokenCard` (one-time agent command + copy) |
+| `components/` | reusable pieces: `LoadState` (loading/empty/error + retry), `KeyValues`, `StateBadge`, `EnvSwitcher`, `EnvStatus` (online/offline/waiting badge + last seen), `ContainerActions` (start/stop/restart/kill/remove buttons with confirms), `JoinTokenCard` (one-time agent command + copy) |
 | `style.css` | design tokens (CSS variables, light/dark) and base styles |
 
 ## Recipes
@@ -82,6 +82,7 @@ lets patterns in `publicRoutes` through without either credential) to the API mu
   api/environments_test.go); main tests pass `-docker-host noDocker(t)` so serve never
   reaches the host's daemon.
 - **New Docker call:** add the method to `docker.Client` and `dockertest.Fake` (resource
-  fixtures live in `dockertest.Resources`); a handler that answers with one call uses
-  `s.dockerCall` (environment lookup, timeout, 404 on `docker.NotFound`, `s.dockerError`);
+  fixtures live in `dockertest.Resources`; container actions are recorded in
+  `Fake.Actions` and fail with `ActionErr`); a handler that answers with one call uses
+  `s.dockerCall` (environment lookup, timeout, 404 on `docker.NotFound`, `s.dockerError`), one that changes an object `s.dockerAction` (204, 409 on a conflict);
   validate path IDs with `s.pathID`. Tests: `newResourceTest` in api/resources_test.go.
