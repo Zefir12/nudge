@@ -1,7 +1,8 @@
 // Package agent is `nudge agent`: it connects a remote Docker host to a server with only
 // outbound traffic. It enrolls once with a join token, keeps the agent ID and secret in
-// agent.json, dials the server's tunnel endpoint and pipes every stream the server opens
-// to the local Docker API, reconnecting with backoff until its context ends.
+// agent.json, dials the server's tunnel endpoint and pipes every Docker stream the server
+// opens to the local Docker API, and serves control streams (stacks) with its control
+// handler, reconnecting with backoff until its context ends.
 package agent
 
 import (
@@ -52,6 +53,9 @@ type Options struct {
 	DataDir string
 	// Dial connects to the local Docker API.
 	Dial docker.DialFunc
+	// Control serves the server's control streams (HTTP, see stacks.NewControl); nil
+	// refuses them.
+	Control http.Handler
 	// Version and Hostname go into the tunnel hello.
 	Version  string
 	Hostname string
@@ -69,9 +73,11 @@ type Options struct {
 
 // Agent connects to a server and serves Docker over the tunnel.
 type Agent struct {
-	opts  Options
-	log   *slog.Logger
-	creds *Credentials
+	opts Options
+	log  *slog.Logger
+	// control hands control streams to the control handler's http.Server while Run runs.
+	control *streamListener
+	creds   *Credentials
 	// enrolled is set once the join token was used in this process, so a refused
 	// credential doesn't spend it twice.
 	enrolled bool
@@ -108,6 +114,20 @@ var errUnauthorized = errors.New("unauthorized")
 // Run connects and serves until ctx ends (it then returns nil) or a FatalError occurs.
 // Each failed or ended connection is retried after an exponential backoff with jitter.
 func (a *Agent) Run(ctx context.Context) error {
+	if a.opts.Control != nil {
+		a.control = newStreamListener()
+		srv := &http.Server{
+			Handler: a.opts.Control, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: time.Minute,
+			ErrorLog: slog.NewLogLogger(a.log.Handler(), slog.LevelWarn),
+		}
+		var wg sync.WaitGroup
+		wg.Go(func() { _ = srv.Serve(a.control) })
+		defer func() {
+			// Run's sessions are closed by now, which ends their control requests.
+			_ = srv.Close()
+			wg.Wait()
+		}()
+	}
 	attempt := 0
 	for {
 		up, err := a.runOnce(ctx)
@@ -277,9 +297,22 @@ func (a *Agent) serve(sess *tunnel.Session) {
 	}
 }
 
-// handle pipes one stream to a new Docker connection. The streams are closed when the
-// session closes, which unblocks the copies.
+// handle pipes one Docker stream to a new Docker connection, or hands a control stream to
+// the control handler. The streams are closed when the session closes, which unblocks the
+// copies.
 func (a *Agent) handle(sess *tunnel.Session, stream net.Conn) {
+	if sess.Protocol() >= 2 {
+		kind, err := tunnel.ReadKind(stream, 10*time.Second)
+		if err != nil {
+			a.log.Warn("agent: stream", "err", err)
+			_ = stream.Close()
+			return
+		}
+		if kind == tunnel.KindControl {
+			a.serveControl(sess, stream)
+			return
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	go func() {
 		select {
@@ -296,6 +329,82 @@ func (a *Agent) handle(sess *tunnel.Session, stream net.Conn) {
 		return
 	}
 	pipe(stream, conn)
+}
+
+// serveControl hands a control stream to the control handler and waits until the
+// handler's server closed it, so serve's wait covers it; a closed session closes it.
+func (a *Agent) serveControl(sess *tunnel.Session, stream net.Conn) {
+	if a.control == nil {
+		a.log.Warn("agent: refusing a control stream: no control service")
+		_ = stream.Close()
+		return
+	}
+	c := &notifyConn{Conn: stream, closed: make(chan struct{})}
+	if !a.control.hand(c, sess.Done()) {
+		_ = stream.Close()
+		return
+	}
+	select {
+	case <-c.closed:
+	case <-sess.Done():
+		_ = stream.Close()
+	}
+}
+
+// streamListener is a net.Listener fed with streams by hand.
+type streamListener struct {
+	conns chan net.Conn
+	done  chan struct{}
+	once  sync.Once
+}
+
+func newStreamListener() *streamListener {
+	return &streamListener{conns: make(chan net.Conn), done: make(chan struct{})}
+}
+
+// hand passes c to Accept; false if the listener closed or stop fired first.
+func (l *streamListener) hand(c net.Conn, stop <-chan struct{}) bool {
+	select {
+	case l.conns <- c:
+		return true
+	case <-l.done:
+	case <-stop:
+	}
+	return false
+}
+
+func (l *streamListener) Accept() (net.Conn, error) {
+	select {
+	case c := <-l.conns:
+		return c, nil
+	case <-l.done:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *streamListener) Close() error {
+	l.once.Do(func() { close(l.done) })
+	return nil
+}
+
+func (l *streamListener) Addr() net.Addr { return streamAddr{} }
+
+type streamAddr struct{}
+
+func (streamAddr) Network() string { return "tunnel" }
+func (streamAddr) String() string  { return "tunnel" }
+
+// notifyConn closes closed when the connection is closed.
+type notifyConn struct {
+	net.Conn
+	once   sync.Once
+	closed chan struct{}
+}
+
+func (c *notifyConn) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(func() { close(c.closed) })
+	return err
 }
 
 // pipe copies both ways between a and b until either side ends, then closes both. The

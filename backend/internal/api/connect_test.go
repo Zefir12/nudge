@@ -69,7 +69,13 @@ type agentTest struct {
 
 func newAgentTest(t *testing.T) agentTest {
 	t.Helper()
-	et := newEnvTest(t, map[string]*dockertest.Fake{"local": {}})
+	return newAgentTestOpts(t, nil)
+}
+
+// newAgentTestOpts is newAgentTest with mod changing the API's options, if not nil.
+func newAgentTestOpts(t *testing.T, mod func(*Options)) agentTest {
+	t.Helper()
+	et := newEnvTestOpts(t, map[string]*dockertest.Fake{"local": {}}, mod)
 	srv := httptest.NewServer(et.h)
 	t.Cleanup(srv.Close)
 	created := createAgentEnv(t, et, "nas")

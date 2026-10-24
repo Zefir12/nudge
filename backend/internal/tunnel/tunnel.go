@@ -18,9 +18,27 @@ import (
 	"github.com/hashicorp/yamux"
 )
 
-// ProtocolVersion is the version of the hello and the stream protocol after it. Both sides
-// must speak the same one.
-const ProtocolVersion = 1
+// ProtocolVersion is the version of the hello and the stream protocol after it. The agent
+// speaks it; the server also accepts agents back to MinProtocolVersion and answers with
+// the agent's version. From version 2 every stream starts with a Kind byte.
+const ProtocolVersion = 2
+
+// MinProtocolVersion is the oldest agent protocol the server accepts: version 1 streams
+// carry Docker only.
+const MinProtocolVersion = 1
+
+// Kind is the first byte of a stream (protocol 2): what the agent connects it to.
+type Kind byte
+
+const (
+	// KindDocker streams go to the agent's Docker API.
+	KindDocker Kind = 0
+	// KindControl streams carry HTTP to the agent's control service.
+	KindControl Kind = 1
+)
+
+// ErrNoControl is returned by OpenControl when the agent speaks protocol 1.
+var ErrNoControl = errors.New("the agent has no control service (protocol 1): update it")
 
 // Hello is what each side tells the other at connect.
 type Hello struct {
@@ -40,6 +58,9 @@ type Config struct {
 	// considered dead and closed (default 10 s).
 	KeepAliveTimeout time.Duration
 	Log              *slog.Logger
+	// Protocol is the version the agent side speaks (default ProtocolVersion); tests set
+	// it to act as an older agent.
+	Protocol int
 }
 
 func (c Config) withDefaults() Config {
@@ -65,9 +86,10 @@ var ErrClosed = errors.New("tunnel closed")
 // breaks, keepalives fail or the context given to Accept or Connect ends; then every
 // stream on it fails.
 type Session struct {
-	peer Hello
-	mux  *yamux.Session
-	conn net.Conn
+	peer     Hello
+	protocol int
+	mux      *yamux.Session
+	conn     net.Conn
 	// stop cancels the connection's context; done is closed once everything is torn down.
 	stop context.CancelFunc
 	done chan struct{}
@@ -78,7 +100,7 @@ type Session struct {
 
 // newSession starts yamux on conn. The server side (client=true) opens streams; the agent
 // side accepts them. conn is closed when ctx ends or the session closes.
-func newSession(ctx context.Context, conn net.Conn, client bool, peer Hello, cfg Config) (*Session, error) {
+func newSession(ctx context.Context, conn net.Conn, client bool, peer Hello, protocol int, cfg Config) (*Session, error) {
 	cfg = cfg.withDefaults()
 	ymCfg := yamux.DefaultConfig()
 	ymCfg.EnableKeepAlive = true
@@ -99,7 +121,7 @@ func newSession(ctx context.Context, conn net.Conn, client bool, peer Hello, cfg
 		return nil, fmt.Errorf("start yamux: %w", err)
 	}
 	ctx, stop := context.WithCancel(ctx)
-	s := &Session{peer: peer, mux: mux, conn: conn, stop: stop, done: make(chan struct{})}
+	s := &Session{peer: peer, protocol: protocol, mux: mux, conn: conn, stop: stop, done: make(chan struct{})}
 	s.wg.Go(func() {
 		select {
 		case <-ctx.Done():
@@ -140,8 +162,24 @@ func newSession(ctx context.Context, conn net.Conn, client bool, peer Hello, cfg
 // Peer is the other side's hello.
 func (s *Session) Peer() Hello { return s.peer }
 
-// Open opens a stream to the agent; only the server side calls it.
+// Protocol is the protocol version the session speaks.
+func (s *Session) Protocol() int { return s.protocol }
+
+// Open opens a stream to the agent's Docker API; only the server side calls it.
 func (s *Session) Open(ctx context.Context) (net.Conn, error) {
+	return s.open(ctx, KindDocker)
+}
+
+// OpenControl opens a stream to the agent's control service; ErrNoControl if the agent
+// speaks protocol 1. Only the server side calls it.
+func (s *Session) OpenControl(ctx context.Context) (net.Conn, error) {
+	if s.protocol < 2 {
+		return nil, ErrNoControl
+	}
+	return s.open(ctx, KindControl)
+}
+
+func (s *Session) open(ctx context.Context, kind Kind) (net.Conn, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -149,10 +187,38 @@ func (s *Session) Open(ctx context.Context) (net.Conn, error) {
 	if err != nil {
 		return nil, s.streamErr("open stream", err)
 	}
+	if s.protocol >= 2 {
+		// yamux buffers the write; it doesn't wait for the agent.
+		if _, err := st.Write([]byte{byte(kind)}); err != nil {
+			_ = st.Close()
+			return nil, s.streamErr("open stream", err)
+		}
+	}
 	return st, nil
 }
 
-// Accept waits for the server's next stream; only the agent side calls it.
+// ReadKind reads the Kind byte a protocol 2 stream starts with, waiting at most timeout;
+// the agent side calls it on each accepted stream.
+func ReadKind(conn net.Conn, timeout time.Duration) (Kind, error) {
+	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return 0, fmt.Errorf("read stream kind: %w", err)
+	}
+	var b [1]byte
+	if _, err := io.ReadFull(conn, b[:]); err != nil {
+		return 0, fmt.Errorf("read stream kind: %w", err)
+	}
+	if err := conn.SetReadDeadline(time.Time{}); err != nil {
+		return 0, fmt.Errorf("read stream kind: %w", err)
+	}
+	k := Kind(b[0])
+	if k != KindDocker && k != KindControl {
+		return 0, fmt.Errorf("read stream kind: unknown kind %d", k)
+	}
+	return k, nil
+}
+
+// Accept waits for the server's next stream; only the agent side calls it. On protocol 2
+// the stream starts with its Kind (see ReadKind).
 func (s *Session) Accept() (net.Conn, error) {
 	st, err := s.mux.AcceptStream()
 	if err != nil {

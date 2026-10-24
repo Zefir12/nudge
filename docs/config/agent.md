@@ -20,10 +20,24 @@ docker run -d --name nudge-agent --restart unless-stopped \
 | `-insecure` | `NUDGE_INSECURE` | `false` | allow `http://` server URLs (testing only) |
 | `-log-level` | `NUDGE_LOG_LEVEL` | `info` | as for the server |
 | `-docker-host` | `DOCKER_HOST` | `unix:///var/run/docker.sock` | the Docker API the agent serves, `unix://` or `tcp://` |
+| `-stacks-dir` | `NUDGE_STACKS_DIR` | `<data>/stacks` | the stacks the server deploys here, an absolute path; mount it at the same path on the host (see Stacks) |
+| `-compose` | `NUDGE_COMPOSE` | `/usr/local/bin/docker-compose` | docker-compose binary that deploys them (shipped in the image) |
 
 The server URL is `https://host[:port][/path]`; a path prefix is kept for servers behind
 a reverse proxy. `http://` is refused unless `-insecure` is set, because the agent secret
 and all Docker traffic would travel in clear text.
+
+## Stacks
+The server deploys an agent environment's stacks through the agent: it sends the stack's
+`compose.yaml` and `.env` over the tunnel, and the agent writes them to
+`<stacks dir>/<name>/` (replaced on each deploy) and runs `docker-compose` there against
+its `DOCKER_HOST`. As on the server, the daemon mounts relative paths
+(`./data:/data`) from the host, so mount the stacks directory **at the same path on the
+host and in the container** if stacks use relative bind mounts:
+`-v /opt/nudge/stacks:/opt/nudge/stacks -e NUDGE_STACKS_DIR=/opt/nudge/stacks`. With the
+default (inside the `/data` volume) stacks with named volumes only work as they are.
+Agents older than the server's tunnel protocol 2 keep working for everything but stacks,
+which answer "update the agent to use stacks".
 
 ## Credentials
 On the first start the agent sends the join token to the server and saves the agent ID

@@ -137,7 +137,7 @@ func runCommand(ctx context.Context, cmd Command) (int, error) {
 	if _, err := os.Stat(cmd.Path); err != nil {
 		return 0, ErrNoCompose
 	}
-	c := exec.CommandContext(ctx, cmd.Path, cmd.Args...) // #nosec G204 -- fixed binary, arguments built by Local
+	c := exec.CommandContext(ctx, cmd.Path, cmd.Args...) // #nosec G204 G702 -- fixed binary, arguments built by Local from a ValidName name
 	c.Env, c.Dir, c.Stdout, c.Stderr = cmd.Env, cmd.Dir, cmd.Stdout, cmd.Stderr
 	c.WaitDelay = waitDelay
 	err := c.Run()

@@ -128,11 +128,11 @@ func dial(t *testing.T, srv *httptest.Server) *websocket.Conn {
 func newPipePair(ctx context.Context, t *testing.T, cfg Config) (server, agent *Session) {
 	t.Helper()
 	a, b := net.Pipe()
-	server, err := newSession(ctx, a, true, Hello{Hostname: "host1"}, cfg)
+	server, err := newSession(ctx, a, true, Hello{Hostname: "host1"}, ProtocolVersion, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent, err = newSession(ctx, b, false, Hello{}, cfg)
+	agent, err = newSession(ctx, b, false, Hello{}, ProtocolVersion, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,8 @@ func newPipePair(ctx context.Context, t *testing.T, cfg Config) (server, agent *
 	return server, agent
 }
 
-// echo answers every stream the agent accepts with what it reads, until the session ends.
+// echo answers every stream the agent accepts with what it reads after the stream kind
+// (on protocol 2), until the session ends.
 func echo(t *testing.T, agent *Session) {
 	t.Helper()
 	var wg sync.WaitGroup
@@ -158,6 +159,12 @@ func echo(t *testing.T, agent *Session) {
 			}
 			wg.Go(func() {
 				defer func() { _ = c.Close() }()
+				if agent.Protocol() >= 2 {
+					if _, err := ReadKind(c, 5*time.Second); err != nil {
+						t.Errorf("ReadKind: %v", err)
+						return
+					}
+				}
 				_, _ = io.Copy(c, c)
 			})
 		}
@@ -216,6 +223,100 @@ func TestHandshake(t *testing.T) {
 	}
 }
 
+func TestHandshakeOldAgent(t *testing.T) {
+	t.Parallel()
+	accepted := make(chan *Session, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("websocket accept: %v", err)
+			close(accepted)
+			return
+		}
+		s, err := Accept(t.Context(), ws, Hello{Version: "server-v2"}, fast)
+		if err != nil {
+			t.Errorf("Accept: %v", err)
+			close(accepted)
+			return
+		}
+		accepted <- s
+		<-s.Done()
+	}))
+	defer srv.Close()
+	agent, err := connect(t.Context(), dial(t, srv), Hello{Version: "agent-v1"}, 1, fast)
+	if err != nil {
+		t.Fatalf("a protocol 1 agent was refused: %v", err)
+	}
+	server := <-accepted
+	if server == nil {
+		t.FailNow()
+	}
+	t.Cleanup(func() {
+		_ = agent.Close()
+		_ = server.Close()
+	})
+	if server.Protocol() != 1 || agent.Protocol() != 1 {
+		t.Errorf("protocols = %d (server), %d (agent), want 1", server.Protocol(), agent.Protocol())
+	}
+	if _, err := server.OpenControl(t.Context()); !errors.Is(err, ErrNoControl) {
+		t.Errorf("OpenControl = %v, want ErrNoControl", err)
+	}
+	// Protocol 1 streams carry no kind byte.
+	echo(t, agent)
+	if err := roundTrip(t.Context(), server, []byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStreamKinds(t *testing.T) {
+	t.Parallel()
+	server, agent := newPipePair(t.Context(), t, fast)
+	for _, want := range []Kind{KindDocker, KindControl} {
+		open := server.Open
+		if want == KindControl {
+			open = server.OpenControl
+		}
+		c, err := open(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Write([]byte("x")); err != nil {
+			t.Fatal(err)
+		}
+		a, err := agent.Accept()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := ReadKind(a, 5*time.Second)
+		if err != nil || got != want {
+			t.Errorf("ReadKind = %d, %v; want %d", got, err, want)
+		}
+		// The payload follows the kind, with the read deadline cleared.
+		b := make([]byte, 1)
+		if _, err := io.ReadFull(a, b); err != nil || string(b) != "x" {
+			t.Errorf("payload = %q, %v", b, err)
+		}
+		_ = c.Close()
+		_ = a.Close()
+	}
+
+	t.Run("unknown kind", func(t *testing.T) {
+		a, b := net.Pipe()
+		defer func() { _ = a.Close() }()
+		go func() { _, _ = b.Write([]byte{7}) }()
+		if _, err := ReadKind(a, 5*time.Second); err == nil || !strings.Contains(err.Error(), "unknown kind 7") {
+			t.Errorf("ReadKind = %v, want unknown kind", err)
+		}
+	})
+	t.Run("timeout", func(t *testing.T) {
+		a, b := net.Pipe()
+		defer func() { _ = a.Close(); _ = b.Close() }()
+		if _, err := ReadKind(a, 10*time.Millisecond); err == nil {
+			t.Error("ReadKind on a silent stream returned no error")
+		}
+	})
+}
+
 func TestHandshakeRefused(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -224,7 +325,7 @@ func TestHandshakeRefused(t *testing.T) {
 		hello      Hello
 		wantServer string
 	}{
-		{name: "newer agent", protocol: ProtocolVersion + 1, hello: Hello{Version: "v9"}, wantServer: "tunnel protocol mismatch: peer speaks version 2, this side speaks 1"},
+		{name: "newer agent", protocol: ProtocolVersion + 1, hello: Hello{Version: "v9"}, wantServer: "tunnel protocol mismatch: peer speaks version 3, this side speaks 2"},
 		{name: "no protocol", protocol: 0, hello: Hello{Version: "v1"}, wantServer: "protocol mismatch"},
 		{name: "control character in hostname", protocol: ProtocolVersion, hello: Hello{Hostname: "host\n1"}, wantServer: "invalid hostname"},
 		{name: "long version", protocol: ProtocolVersion, hello: Hello{Version: strings.Repeat("v", 65)}, wantServer: "invalid version"},
@@ -423,7 +524,7 @@ func TestKeepAliveClosesDeadPeer(t *testing.T) {
 		_ = b.Close()
 		wg.Wait()
 	})
-	s, err := newSession(t.Context(), a, true, Hello{}, fast)
+	s, err := newSession(t.Context(), a, true, Hello{}, ProtocolVersion, fast)
 	if err != nil {
 		t.Fatal(err)
 	}

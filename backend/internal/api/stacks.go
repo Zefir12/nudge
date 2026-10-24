@@ -17,7 +17,9 @@ import (
 	"github.com/moby/moby/client"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/stacks"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/tunnel"
 )
 
 // stackTimeout bounds one compose run; an up that pulls waits for every image.
@@ -355,7 +357,8 @@ func (s *server) removeStack(w http.ResponseWriter, r *http.Request) {
 			return &statusError{code: http.StatusConflict, msg: "the stack has containers: take it down first"}
 		}
 		if runner := s.stackRunner(env); runner != nil {
-			if err := runner.Remove(ctx, name); err != nil && !errors.Is(err, stacks.ErrNotFound) {
+			// An agent on tunnel protocol 1 never got the files.
+			if err := runner.Remove(ctx, name); err != nil && !errors.Is(err, stacks.ErrNotFound) && !errors.Is(err, tunnel.ErrNoControl) {
 				return err
 			}
 		}
@@ -406,6 +409,26 @@ func (s *server) decodeOptionalJSON(w http.ResponseWriter, r *http.Request, v an
 	return true
 }
 
+// runnerError answers a runner's failure before compose's output started.
+func (s *server) runnerError(w http.ResponseWriter, r *http.Request, env environments.Environment, msg string, err error) {
+	switch {
+	case errors.Is(err, stacks.ErrNoCompose):
+		s.log.Error(msg, "env", env.ID, "err", err)
+		s.writeError(w, http.StatusServiceUnavailable, "docker-compose is not installed")
+	case errors.Is(err, tunnel.ErrNoControl):
+		s.writeError(w, http.StatusConflict, "update the agent to use stacks")
+	case errors.Is(err, stacks.ErrBusy):
+		s.writeError(w, http.StatusConflict, "the stack is being changed")
+	case docker.Unreachable(err) || errors.Is(err, context.DeadlineExceeded):
+		s.dockerError(w, r, env, msg, err)
+	case errors.Is(err, stacks.ErrNotFound):
+		s.log.Warn(msg, "env", env.ID, "err", err)
+		s.writeError(w, http.StatusBadGateway, "the agent lost the stack's files; try again")
+	default:
+		s.internalError(w, msg, err)
+	}
+}
+
 // runStack syncs a stack to its environment's runner and runs compose, streaming the
 // output as JSON lines (application/x-ndjson). Errors before compose starts are ordinary
 // JSON errors; the stream ends with the exit code or an error line. The run stops if the
@@ -421,7 +444,7 @@ func (s *server) runStack(w http.ResponseWriter, r *http.Request, op string, run
 	}
 	runner := s.stackRunner(env)
 	if runner == nil {
-		s.writeError(w, http.StatusConflict, "stacks can't be deployed to agent environments yet")
+		s.writeError(w, http.StatusConflict, "stacks can't be deployed to this environment")
 		return
 	}
 	key := stackKey(env.ID, name)
@@ -442,7 +465,7 @@ func (s *server) runStack(w http.ResponseWriter, r *http.Request, op string, run
 	ctx, cancel := context.WithTimeout(r.Context(), stackTimeout)
 	defer cancel()
 	if err := runner.Sync(ctx, name, f); err != nil {
-		s.internalError(w, "sync stack", err)
+		s.runnerError(w, r, env, "sync stack", err)
 		return
 	}
 	s.log.Info("stack "+op, "env", env.ID, "stack", name, "ip", clientIP(r))
@@ -480,11 +503,8 @@ func (s *server) runStack(w http.ResponseWriter, r *http.Request, op string, run
 		// The client went away and the run was killed: 499 as in nginx, "client closed
 		// request", so the entry doesn't read as a success.
 		auditStatus(r, 499)
-	case !started && errors.Is(err, stacks.ErrNoCompose):
-		s.log.Error("stack "+op, "env", env.ID, "stack", name, "err", err)
-		s.writeError(w, http.StatusServiceUnavailable, "docker-compose is not installed")
 	case !started:
-		s.internalError(w, "stack "+op, err)
+		s.runnerError(w, r, env, "stack "+op, err)
 	default:
 		s.log.Warn("stack "+op, "env", env.ID, "stack", name, "err", err)
 		auditStatus(r, http.StatusBadGateway)
