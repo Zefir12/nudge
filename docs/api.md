@@ -27,6 +27,14 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | GET | `/api/v1/tokens` | session | the user's API tokens, oldest first; see below |
 | POST | `/api/v1/tokens` | session | create an API token `{"name": "ci"}`; `201` |
 | DELETE | `/api/v1/tokens/{id}` | session | revoke one of the user's tokens; `204`, or `404` |
+| GET | `/api/v1/registries` | session | registry credentials for pulls, by name; see below |
+| POST | `/api/v1/registries` | session | add registry credentials; `201` |
+| GET | `/api/v1/registries/{id}` | session | one registry, without its password |
+| PUT | `/api/v1/registries/{id}` | session | change a registry; a missing password keeps the stored one |
+| DELETE | `/api/v1/registries/{id}` | session | delete a registry's credentials; `204` |
+| POST | `/api/v1/environments/{env}/images/pull` | session | pull `{"image": "nginx:1.29"}`, progress as JSON lines; see Image actions |
+| POST | `/api/v1/environments/{env}/images/prune` | session | remove untagged images, or with `?all=true` every unused one |
+| DELETE | `/api/v1/environments/{env}/images/{id}` | session | remove an image or tag (`?force=true`); `204` |
 
 "session" means a session cookie or an API token.
 
@@ -185,6 +193,47 @@ still completes), `404` for an unknown container
   container first (without it a running container answers `409`), `?volumes=true` also
   removes its anonymous volumes. Invalid `timeout`, `signal`, `force` or `volumes` values
   answer `400`.
+
+### Image actions
+- `POST /api/v1/environments/{env}/images/pull` with `{"image": "ghcr.io/org/app:1.2"}`
+  (a reference without a tag pulls `latest`). If a registry under `/registries` has the
+  image's host as its address (Docker Hub for images without a host), its credentials are
+  sent to the daemon. Answers `200` with `Content-Type: application/x-ndjson`, one JSON
+  object per line as Docker reports progress: `{"id": "a1b2c3d4e5f6", "status":
+  "Downloading", "current": 1048576, "total": 3145728}` (`id` is a layer, or the tag on
+  the first line; lines about the whole image have none). The last line is `{"done":
+  true}`, or `{"error": "..."}` if the pull failed; a stream without either was cut off.
+  Errors before the pull starts are ordinary JSON errors: `400` invalid reference, `404`
+  unknown image or no access, `403` the registry refused the credentials, `502` other
+  daemon errors. Unlike other routes these show Docker's message (the only explanation of
+  a failed pull), with the registry password masked. The pull is cancelled when the
+  client disconnects and after one hour.
+- `POST /api/v1/environments/{env}/images/prune`: removes untagged (dangling) images, or
+  with `?all=true` every image no container uses. Answers `{"deleted": ["sha256:…"],
+  "untagged": ["old:1"], "space_reclaimed": 1234}`: `deleted` holds images and their
+  layers. `409` while another prune runs.
+- `DELETE /api/v1/environments/{env}/images/{id}`: `{id}` is an image ID or reference;
+  removing a reference of an image with several tags only untags it. `409` when
+  containers use the image or it has several tags and is removed by ID; `?force=true`
+  removes it anyway, except while a running container uses it.
+
+### Registries
+`POST /api/v1/registries` with `{"name": "GitHub", "address": "ghcr.io", "username":
+"bot", "password": "ghp_..."}` answers `201` with `{"id": 1, "name": "GitHub", "address":
+"ghcr.io", "username": "bot", "created_at": "...", "updated_at": "..."}`; the password is
+never returned. `PUT /api/v1/registries/{id}` takes the same body; without `password` (or
+with `null`) the stored one is kept.
+
+- `address` is the registry host as image references name it, with an optional port. A
+  pasted URL is reduced to its host (`https://ghcr.io/` → `ghcr.io`), and Docker Hub's
+  aliases (`index.docker.io`, `registry-1.docker.io`) become `docker.io`.
+- Names (1 to 64 bytes) and addresses are unique (`409` otherwise). Usernames are 1 to
+  255 bytes, passwords 1 to 4096.
+- Passwords are encrypted (AES-256-GCM) with the key in `<data>/secret.key`; see
+  docs/config/server.md. A pull sends the matching password to the environment's Docker
+  daemon, on agent environments through the agent's tunnel to the remote host.
+- A pull reference may contain `@` only before a digest (`app@sha256:…`), so the
+  credentials always match the host the daemon pulls from.
 
 Docker errors (every environment route):
 - `404` unknown environment.

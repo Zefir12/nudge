@@ -2,10 +2,14 @@ package dockertest
 
 import (
 	"context"
+	"io"
+	"iter"
+	"strings"
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/image"
+	"github.com/moby/moby/api/types/jsonstream"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/api/types/volume"
 	"github.com/moby/moby/client"
@@ -22,12 +26,20 @@ type Resources struct {
 	Networks         []network.Summary
 	NetworkDetails   map[string]network.Inspect
 	ResourceErr      error
-	// ActionErr fails the calls that change a container (after the not found check).
+	// ActionErr fails the calls that change a container or image (after the not found
+	// check).
 	ActionErr error
+	// PullMessages are the progress messages ImagePull streams; PullErr fails it before
+	// any.
+	PullMessages []jsonstream.Message
+	PullErr      error
+	// PruneReport is what ImagePrune answers.
+	PruneReport image.PruneReport
 }
 
-// Action is a recorded call that changes a container: its name ("start", "stop",
-// "restart", "kill", "remove"), the container and the options passed.
+// Action is a recorded call that changes a container or image: its name ("start",
+// "stop", "restart", "kill", "remove", "image-pull", "image-remove", "image-prune"), the
+// container or image and the options passed.
 type Action struct {
 	Name    string
 	ID      string
@@ -95,6 +107,10 @@ func (f *Fake) action(ctx context.Context, name, id string, opts any) error {
 	if _, err := lookup(ctx, f, f.ContainerDetails, id); err != nil {
 		return err
 	}
+	return f.record(name, id, opts)
+}
+
+func (f *Fake) record(name, id string, opts any) error {
 	if f.ActionErr != nil {
 		return f.ActionErr
 	}
@@ -116,6 +132,70 @@ func (f *Fake) ImageList(ctx context.Context, _ client.ImageListOptions) (client
 func (f *Fake) ImageInspect(ctx context.Context, id string, _ ...client.ImageInspectOption) (client.ImageInspectResult, error) {
 	img, err := lookup(ctx, f, f.ImageDetails, id)
 	return client.ImageInspectResult{InspectResponse: img}, err
+}
+
+// ImagePull records the action and streams PullMessages.
+func (f *Fake) ImagePull(ctx context.Context, ref string, opts client.ImagePullOptions) (client.ImagePullResponse, error) {
+	if err := f.resourceErr(ctx); err != nil {
+		return nil, err
+	}
+	if f.PullErr != nil {
+		return nil, f.PullErr
+	}
+	if err := f.record("image-pull", ref, opts); err != nil {
+		return nil, err
+	}
+	return &pullResponse{ReadCloser: io.NopCloser(strings.NewReader("")), msgs: f.PullMessages}, nil
+}
+
+type pullResponse struct {
+	io.ReadCloser
+	msgs []jsonstream.Message
+}
+
+func (p *pullResponse) JSONMessages(ctx context.Context) iter.Seq2[jsonstream.Message, error] {
+	return func(yield func(jsonstream.Message, error) bool) {
+		for _, m := range p.msgs {
+			if err := ctx.Err(); err != nil {
+				yield(jsonstream.Message{}, err)
+				return
+			}
+			if !yield(m, nil) {
+				return
+			}
+		}
+	}
+}
+
+func (p *pullResponse) Wait(ctx context.Context) error {
+	for _, err := range p.JSONMessages(ctx) {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ImageRemove records the action; the image must be in ImageDetails.
+func (f *Fake) ImageRemove(ctx context.Context, id string, opts client.ImageRemoveOptions) (client.ImageRemoveResult, error) {
+	if _, err := lookup(ctx, f, f.ImageDetails, id); err != nil {
+		return client.ImageRemoveResult{}, err
+	}
+	if err := f.record("image-remove", id, opts); err != nil {
+		return client.ImageRemoveResult{}, err
+	}
+	return client.ImageRemoveResult{Items: []image.DeleteResponse{{Deleted: id}}}, nil
+}
+
+// ImagePrune records the action and answers with PruneReport.
+func (f *Fake) ImagePrune(ctx context.Context, opts client.ImagePruneOptions) (client.ImagePruneResult, error) {
+	if err := f.resourceErr(ctx); err != nil {
+		return client.ImagePruneResult{}, err
+	}
+	if err := f.record("image-prune", "", opts); err != nil {
+		return client.ImagePruneResult{}, err
+	}
+	return client.ImagePruneResult{Report: f.PruneReport}, nil
 }
 
 // VolumeList answers with Volumes.

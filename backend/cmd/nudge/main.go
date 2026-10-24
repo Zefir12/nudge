@@ -26,6 +26,8 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/config"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/registries"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/secretbox"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/store"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/version"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/web"
@@ -121,6 +123,12 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 		}
 	}()
 
+	box, err := secretbox.LoadKey(cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	regs := registries.New(registries.Options{DB: st.DB(), Box: box})
+
 	authSvc := auth.New(auth.Options{DB: st.DB(), Log: log})
 	if cfg.AdminPassword != "" {
 		// Like the migrations: part of startup, not cancelled by a signal.
@@ -178,7 +186,9 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 			Version: version.Version,
 			Auth:    authSvc,
 			Envs:    envs,
-			Web:     web.Handler(web.Dist()),
+
+			Registries: regs,
+			Web:        web.Handler(web.Dist()),
 
 			PublicURL:     cfg.PublicURL,
 			SecureCookies: cfg.TLS() || strings.HasPrefix(cfg.PublicURL, "https://"),

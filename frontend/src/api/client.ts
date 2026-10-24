@@ -26,6 +26,13 @@ export interface FetchOptions {
 }
 
 export async function apiFetch<T>(path: string, init?: RequestInit, opts?: FetchOptions): Promise<T> {
+  const res = await send(path, init, opts);
+  if (res.status === 204) return undefined as T;
+  return (await res.json()) as T;
+}
+
+// send makes the request and turns an error status into an ApiError.
+async function send(path: string, init?: RequestInit, opts?: FetchOptions): Promise<Response> {
   const res = await fetch(`/api/v1${path}`, {
     ...init,
     credentials: 'same-origin',
@@ -46,8 +53,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit, opts?: Fetch
     if (res.status === 401 && (opts?.redirectOn401 ?? true)) onUnauthorized?.();
     throw new ApiError(res.status, message);
   }
-  if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  return res;
 }
 
 const post = (body: unknown): RequestInit => ({ method: 'POST', body: JSON.stringify(body) });
@@ -93,6 +99,31 @@ export interface CreatedToken extends Token {
 export const listTokens = () => apiFetch<Token[]>('/tokens');
 export const createToken = (name: string) => apiFetch<CreatedToken>('/tokens', post({ name }));
 export const deleteToken = (id: number) => apiFetch<void>(`/tokens/${id}`, { method: 'DELETE' });
+
+// Registry credentials for image pulls; the API never returns the password.
+export interface Registry {
+  id: number;
+  name: string;
+  address: string;
+  username: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// RegistryInput creates or updates a registry; on update a missing password keeps the
+// stored one.
+export interface RegistryInput {
+  name: string;
+  address: string;
+  username: string;
+  password?: string;
+}
+
+export const listRegistries = () => apiFetch<Registry[]>('/registries');
+export const createRegistry = (r: RegistryInput) => apiFetch<Registry>('/registries', post(r));
+export const updateRegistry = (id: number, r: RegistryInput) =>
+  apiFetch<Registry>(`/registries/${id}`, { method: 'PUT', body: JSON.stringify(r) });
+export const deleteRegistry = (id: number) => apiFetch<void>(`/registries/${id}`, { method: 'DELETE' });
 
 export interface Environment {
   id: number;
@@ -319,4 +350,75 @@ export function removeContainer(env: string, id: string, opts: { force?: boolean
   if (opts.volumes) q.set('volumes', 'true');
   const query = q.size ? `?${q}` : '';
   return apiFetch<void>(envPath(env, `/containers/${enc(id)}${query}`), { method: 'DELETE' });
+}
+
+// force also removes an image with several tags or used by stopped containers.
+export const removeImage = (env: string, id: string, force = false) =>
+  apiFetch<void>(envPath(env, `/images/${enc(id)}${force ? '?force=true' : ''}`), { method: 'DELETE' });
+
+export interface PruneResult {
+  deleted: string[];
+  untagged: string[];
+  space_reclaimed: number;
+}
+
+// all prunes every image no container uses, not only untagged ones.
+export const pruneImages = (env: string, all = false) =>
+  apiFetch<PruneResult>(envPath(env, `/images/prune${all ? '?all=true' : ''}`), { method: 'POST' });
+
+// PullEvent is one progress line of a pull; id names the layer, if any.
+export interface PullEvent {
+  id?: string;
+  status?: string;
+  current?: number;
+  total?: number;
+  error?: string;
+  done?: boolean;
+}
+
+// pullImage pulls image and calls onEvent with each progress line. It resolves when the
+// pull is done and throws an ApiError when it fails, before or during the stream.
+export async function pullImage(
+  env: string,
+  image: string,
+  onEvent: (e: PullEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await send(envPath(env, '/images/pull'), {
+    ...post({ image }),
+    signal,
+    headers: { Accept: 'application/x-ndjson' },
+  });
+  if (!res.body) throw new ApiError(res.status, 'the pull returned no progress');
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      buf += decoder.decode(value, { stream: !done });
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        const ev = parsePullEvent(line);
+        if (ev.error) throw new ApiError(502, ev.error);
+        if (ev.done) return;
+        onEvent(ev);
+      }
+      if (done) throw new ApiError(502, 'the pull ended before it finished');
+    }
+  } finally {
+    // Closes the response on an early return or error; a finished stream ignores it.
+    reader.cancel().catch(() => {});
+  }
+}
+
+function parsePullEvent(line: string): PullEvent {
+  try {
+    return JSON.parse(line) as PullEvent;
+  } catch {
+    throw new ApiError(502, 'unreadable progress from the server');
+  }
 }
