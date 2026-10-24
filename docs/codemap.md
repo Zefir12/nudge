@@ -35,9 +35,11 @@ lets patterns in `publicRoutes` through without either credential) to the API mu
 ## Frontend (frontend/src)
 | Path | What |
 |---|---|
-| `main.ts`, `App.vue` | app setup, layout (sidebar + `RouterView`) |
-| `router.ts` | routes; add one per view |
-| `api/client.ts` | `apiFetch<T>`, `ApiError`, one typed function per endpoint |
+| `main.ts`, `App.vue` | app setup, layout (sidebar with user + logout, `RouterView`; public routes render without it) |
+| `router.ts` | routes (add one per view; `meta.public` for no-login pages), `createAppRouter` with the auth guard, `redirectOnUnauthorized` |
+| `session.ts` | `currentUser`, `loadUser`, `safeRedirect` |
+| `api/client.ts` | `apiFetch<T>` (cookies, 401 → `setUnauthorizedHandler`), `ApiError`, one typed function per endpoint |
+| `test-utils.ts` | `stubApi({'GET /path': {status, body}})` fetch stub, `admin` user |
 | `views/` | one component per route |
 | `components/` | reusable pieces |
 | `style.css` | design tokens (CSS variables, light/dark) and base styles |
@@ -47,7 +49,8 @@ lets patterns in `publicRoutes` through without either credential) to the API mu
   (`internal/api/containers.go`), route in `api.New`, table test next to it with
   `httptest`, row in docs/api.md, typed function in `frontend/src/api/client.ts`.
 - **New view:** `frontend/src/views/FooView.vue`, route in `router.ts`, nav link in
-  `App.vue`, `FooView.test.ts` stubbing `fetch` with `vi.stubGlobal`.
+  `App.vue`, `FooView.test.ts` stubbing the API with `stubApi`; views that use the
+  router mount with `createAppRouter(createMemoryHistory())` as a plugin.
 - **New config option:** field + flag in `internal/config`, test row in
   `config_test.go`, README table, docs/config/<topic>.md.
 - **Schema change:** new `internal/store/migrations/NNNN_name.sql` with the next number
