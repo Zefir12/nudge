@@ -4,6 +4,7 @@ import { RouterLink, useRouter } from 'vue-router';
 
 import { getContainer, recreateContainer } from '../api/client';
 import ContainerActions from '../components/ContainerActions.vue';
+import ContainerLogs from '../components/ContainerLogs.vue';
 import KeyValues from '../components/KeyValues.vue';
 import LoadState from '../components/LoadState.vue';
 import StateBadge from '../components/StateBadge.vue';
@@ -102,6 +103,8 @@ const labels = computed(() =>
           <RouterLink :to="{ name: 'image', params: { env, id: c.image_id } }">Open the image</RouterLink>
         </p>
       </section>
+
+      <ContainerLogs :env="env" :id="c.id" :name="c.name" />
 
       <section class="card">
         <h2>Ports</h2>

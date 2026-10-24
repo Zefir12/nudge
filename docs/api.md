@@ -36,6 +36,7 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | POST | `/api/v1/environments/{env}/containers` | session | create (and start) a container; `201`; see Container create and recreate |
 | GET | `/api/v1/environments/{env}/containers/{id}/spec` | session | a container's settings in the create shape |
 | POST | `/api/v1/environments/{env}/containers/{id}/recreate` | session | replace a container, optionally pulling first or with changed settings |
+| GET | `/api/v1/environments/{env}/containers/{id}/logs` | session | WebSocket: a container's logs, one JSON frame per line; see Container logs |
 | POST | `/api/v1/environments/{env}/images/pull` | session | pull `{"image": "nginx:1.29"}`, progress as JSON lines; see Image actions |
 | POST | `/api/v1/environments/{env}/images/prune` | session | remove untagged images, or with `?all=true` every unused one |
 | DELETE | `/api/v1/environments/{env}/images/{id}` | session | remove an image or tag (`?force=true`); `204` |
@@ -248,6 +249,23 @@ container's environment values masked.
   and is started again (the answer says if that failed too). Answers `200` with the new
   container's `{"id", "warnings"}`; `409` while another recreate of the container runs or
   when a `<name>-nudge-old` container is left from an earlier one.
+
+### Container logs
+`GET /api/v1/environments/{env}/containers/{id}/logs` upgrades to a WebSocket (the browser
+sends the session cookie; a script sends `Authorization: Bearer <token>`). A session
+upgrade is refused (`403`) unless its `Origin` matches the `Host`. Query options:
+`follow=true` keeps the stream open for new output, `tail=N` starts with the last N lines
+(default `all`), `timestamps=true` adds the daemon's time to each line.
+
+Errors before the upgrade are ordinary JSON errors: `400` invalid option, `404` unknown
+environment or container, `503`/`504`/`502` as for other Docker calls. Then each line is a
+text frame `{"stream": "stdout"|"stderr", "time": "2026-10-01T12:00:00.5Z", "line": "..."}`
+(`time` only with `timestamps`; a container with a TTY has no stderr, all its output is
+`stdout`; lines over 16 KiB are split). The last frame is `{"done": true}` when the stream
+ended (the container stopped, or without `follow` every line was sent) or `{"error":
+"..."}`, then the server closes the socket normally. Closing the socket stops the stream
+on the Docker host. The server pings every 30 s and ends a stream whose client doesn't
+answer.
 
 ### Image actions
 - `POST /api/v1/environments/{env}/images/pull` with `{"image": "ghcr.io/org/app:1.2"}`

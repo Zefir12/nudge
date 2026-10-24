@@ -27,6 +27,8 @@ type Fake struct {
 	closed  bool
 	actions []Action
 	created []string
+
+	logOptions []client.ContainerLogsOptions
 }
 
 // Ping counts the call and answers with PingErr.
