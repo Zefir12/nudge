@@ -27,6 +27,9 @@ type auditNote struct {
 	target      string
 	// status replaces the answered one for a stream that failed after its 200.
 	status int
+	// recordNow records the entry at once; recorded says it was.
+	recordNow func(r *http.Request, status int)
+	recorded  bool
 }
 
 // auditTarget names the object a write acts on when the path doesn't (a name from the
@@ -49,6 +52,15 @@ func auditEnvironment(r *http.Request, env string) {
 func auditStatus(r *http.Request, status int) {
 	if n, ok := r.Context().Value(auditKey{}).(*auditNote); ok {
 		n.status = status
+	}
+}
+
+// auditNow records a long-lived read, an exec session, when it starts instead of
+// waiting for it to end, with the status so far. Later calls do nothing.
+func auditNow(r *http.Request, status int) {
+	if n, ok := r.Context().Value(auditKey{}).(*auditNote); ok && n.recordNow != nil && !n.recorded {
+		n.recorded = true
+		n.recordNow(r, status)
 	}
 }
 
@@ -75,16 +87,11 @@ func (w *statusRecorder) Write(b []byte) (int, error) {
 // Unwrap lets http.ResponseController reach the connection (flushing a pull stream).
 func (w *statusRecorder) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-// serveAudited serves r and records it in the audit log when it is a write. This is the
-// only place entries are recorded. Unauthenticated writes (setup, agent enrollment) are
-// recorded only when they succeed, so anyone who can reach nudge can't fill the log.
+// serveAudited serves r and records it in the audit log when it is a write, or a read
+// whose handler calls auditNow. This is the only place entries are recorded.
+// Unauthenticated writes (setup, agent enrollment) are recorded only when they succeed,
+// so anyone who can reach nudge can't fill the log.
 func (s *server) serveAudited(api *http.ServeMux, w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
-	default:
-		api.ServeHTTP(w, r)
-		return
-	}
 	if s.audit == nil {
 		api.ServeHTTP(w, r)
 		return
@@ -92,17 +99,32 @@ func (s *server) serveAudited(api *http.ServeMux, w http.ResponseWriter, r *http
 	// A long write (a pull) is stamped with its start.
 	start := time.Now()
 	note := &auditNote{}
+	note.recordNow = func(r *http.Request, status int) { s.record(r, start, note, status) }
 	r = r.WithContext(context.WithValue(r.Context(), auditKey{}, note))
+	switch r.Method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+	default:
+		api.ServeHTTP(w, r)
+		return
+	}
 	rec := &statusRecorder{ResponseWriter: w}
 	api.ServeHTTP(rec, r)
-
-	// The mux set r.Pattern; the catch-all and unmatched methods name no action.
-	if r.Pattern == "" || r.Pattern == "/api/" || unaudited[r.Pattern] {
+	if note.recorded {
 		return
 	}
 	status := rec.status
 	if status == 0 {
 		status = http.StatusOK
+	}
+	s.record(r, start, note, status)
+}
+
+// record writes r's entry: the route the mux matched, who asked and the status, unless
+// the note replaces it.
+func (s *server) record(r *http.Request, start time.Time, note *auditNote, status int) {
+	// The mux set r.Pattern; the catch-all and unmatched methods name no action.
+	if r.Pattern == "" || r.Pattern == "/api/" || unaudited[r.Pattern] {
+		return
 	}
 	if note.status != 0 {
 		status = note.status

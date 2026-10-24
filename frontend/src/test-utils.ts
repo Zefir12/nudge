@@ -27,14 +27,28 @@ export function stubApi(routes: Routes) {
 export const admin = { id: 1, username: 'admin', created_at: '2026-10-24T12:00:00Z' };
 
 // FakeWebSocket stands in for the browser's WebSocket: stubSockets() installs it and
-// returns the sockets opened so far; a test sends frames with message().
+// returns the sockets opened so far; a test sends frames with message() (JSON) or
+// binary(), and opens the socket with open().
 export class FakeWebSocket {
-  onmessage: ((ev: { data: string }) => void) | null = null;
+  onmessage: ((ev: { data: string | ArrayBuffer }) => void) | null = null;
+  onopen: (() => void) | null = null;
   onclose: (() => void) | null = null;
+  binaryType = 'blob';
   closed = false;
+  // sent holds what the code under test sent, in order.
+  sent: (string | Uint8Array)[] = [];
   constructor(readonly url: string) {}
+  open() {
+    this.onopen?.();
+  }
   message(frame: unknown) {
     this.onmessage?.({ data: JSON.stringify(frame) });
+  }
+  binary(data: string) {
+    this.onmessage?.({ data: new TextEncoder().encode(data).buffer });
+  }
+  send(data: string | Uint8Array) {
+    this.sent.push(data);
   }
   close() {
     this.closed = true;

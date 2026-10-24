@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, defineAsyncComponent, ref } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
 
 import { getContainer, recreateContainer } from '../api/client';
@@ -12,6 +12,9 @@ import StateBadge from '../components/StateBadge.vue';
 import { useLoad } from '../composables/useLoad';
 import { useParams } from '../composables/params';
 import { formatDate, formatPort, shortId } from '../format';
+
+// The terminal (xterm.js) loads on the page of a running container only.
+const ContainerTerminal = defineAsyncComponent(() => import('../components/ContainerTerminal.vue'));
 
 const { env, id } = useParams();
 const router = useRouter();
@@ -108,6 +111,8 @@ const labels = computed(() =>
       <ContainerStats v-if="c.state.running" :env="env" :id="c.id" />
 
       <ContainerLogs :env="env" :id="c.id" :name="c.name" />
+
+      <ContainerTerminal v-if="c.state.running" :env="env" :id="c.id" />
 
       <section class="card">
         <h2>Ports</h2>
