@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/client"
 )
 
@@ -21,6 +22,14 @@ type Client interface {
 	Ping(ctx context.Context, opts client.PingOptions) (client.PingResult, error)
 	Info(ctx context.Context, opts client.InfoOptions) (client.SystemInfoResult, error)
 	ServerVersion(ctx context.Context, opts client.ServerVersionOptions) (client.ServerVersionResult, error)
+	ContainerList(ctx context.Context, opts client.ContainerListOptions) (client.ContainerListResult, error)
+	ContainerInspect(ctx context.Context, id string, opts client.ContainerInspectOptions) (client.ContainerInspectResult, error)
+	ImageList(ctx context.Context, opts client.ImageListOptions) (client.ImageListResult, error)
+	ImageInspect(ctx context.Context, id string, opts ...client.ImageInspectOption) (client.ImageInspectResult, error)
+	VolumeList(ctx context.Context, opts client.VolumeListOptions) (client.VolumeListResult, error)
+	VolumeInspect(ctx context.Context, id string, opts client.VolumeInspectOptions) (client.VolumeInspectResult, error)
+	NetworkList(ctx context.Context, opts client.NetworkListOptions) (client.NetworkListResult, error)
+	NetworkInspect(ctx context.Context, id string, opts client.NetworkInspectOptions) (client.NetworkInspectResult, error)
 	Close() error
 }
 
@@ -72,4 +81,9 @@ func New(dial DialFunc) (*client.Client, error) {
 func Unreachable(err error) bool {
 	var opErr *net.OpError
 	return client.IsErrConnectionFailed(err) || errors.As(err, &opErr)
+}
+
+// NotFound reports whether the daemon answered that the object does not exist.
+func NotFound(err error) bool {
+	return cerrdefs.IsNotFound(err)
 }
