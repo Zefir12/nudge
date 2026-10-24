@@ -5,6 +5,8 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    // fields holds a message per invalid field ("image", "ports.0.host_port"), if any.
+    readonly fields: Record<string, string> = {},
   ) {
     super(message);
     this.name = 'ApiError';
@@ -44,14 +46,16 @@ async function send(path: string, init?: RequestInit, opts?: FetchOptions): Prom
   });
   if (!res.ok) {
     let message = res.statusText;
+    let fields: Record<string, string> = {};
     try {
-      const body = (await res.json()) as { error?: string };
+      const body = (await res.json()) as { error?: string; fields?: Record<string, string> };
       if (body.error) message = body.error;
+      if (body.fields) fields = body.fields;
     } catch {
       // Not JSON (a proxy's error page): keep the status text.
     }
     if (res.status === 401 && (opts?.redirectOn401 ?? true)) onUnauthorized?.();
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, message, fields);
   }
   return res;
 }
@@ -339,6 +343,36 @@ export const getVolume = (env: string, name: string) =>
 export const listNetworks = (env: string) => apiFetch<Network[]>(envPath(env, '/networks'));
 export const getNetwork = (env: string, id: string) =>
   apiFetch<NetworkDetail>(envPath(env, `/networks/${enc(id)}`));
+
+// ContainerSpec is the part of a container's settings the create form edits.
+export interface ContainerSpec {
+  image: string;
+  name: string;
+  command: string[];
+  env: string[];
+  ports: { host_ip: string; host_port: number; container_port: number; protocol: string }[];
+  mounts: { type: 'volume' | 'bind'; source: string; target: string; read_only: boolean }[];
+  networks: string[];
+  restart_policy: string;
+  labels: Record<string, string>;
+}
+
+export interface CreatedContainer {
+  id: string;
+  warnings: string[];
+}
+
+export const createContainer = (env: string, spec: ContainerSpec, start: boolean) =>
+  apiFetch<CreatedContainer>(envPath(env, '/containers'), post({ ...spec, start }));
+export const getContainerSpec = (env: string, id: string) =>
+  apiFetch<ContainerSpec>(envPath(env, `/containers/${enc(id)}/spec`));
+// recreateContainer replaces the container, with spec's settings if given; pull pulls
+// its image first.
+export const recreateContainer = (
+  env: string,
+  id: string,
+  opts: { pull?: boolean; spec?: ContainerSpec } = {},
+) => apiFetch<CreatedContainer>(envPath(env, `/containers/${enc(id)}/recreate`), post(opts));
 
 export type ContainerAction = 'start' | 'stop' | 'restart' | 'kill';
 export const containerAction = (env: string, id: string, action: ContainerAction) =>

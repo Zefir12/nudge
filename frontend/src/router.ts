@@ -9,6 +9,7 @@ import {
 
 import { getSetupStatus, setUnauthorizedHandler } from './api/client';
 import { apiError, currentUser, loadUser } from './session';
+import ContainerFormView from './views/ContainerFormView.vue';
 import ContainersView from './views/ContainersView.vue';
 import ContainerView from './views/ContainerView.vue';
 import DashboardView from './views/DashboardView.vue';
@@ -42,7 +43,9 @@ export function createAppRouter(history: RouterHistory) {
       { path: '/', name: 'dashboard', component: HomeView },
       { path: '/env/:env', name: 'env', component: DashboardView },
       { path: '/env/:env/containers', name: 'containers', component: ContainersView },
+      { path: '/env/:env/containers/new', name: 'container-new', component: ContainerFormView },
       { path: '/env/:env/containers/:id', name: 'container', component: ContainerView },
+      { path: '/env/:env/containers/:id/edit', name: 'container-edit', component: ContainerFormView },
       { path: '/env/:env/images', name: 'images', component: ImagesView },
       { path: '/env/:env/images/:id', name: 'image', component: ImageView },
       { path: '/env/:env/volumes', name: 'volumes', component: VolumesView },
