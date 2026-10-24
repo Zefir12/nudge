@@ -62,6 +62,7 @@ func (s *server) createEnvironment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("agent environment created", "env", env.ID, "name", env.Name, "ip", clientIP(r))
+	w.Header().Set("Cache-Control", "no-store")
 	s.writeJSON(w, http.StatusCreated, createdEnvironmentResponse{
 		environmentResponse: toEnvironmentResponse(env, false),
 		JoinToken:           toJoinTokenResponse(r, jt),
@@ -78,6 +79,7 @@ func (s *server) createJoinToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("join token created", "env", id, "ip", clientIP(r))
+	w.Header().Set("Cache-Control", "no-store")
 	s.writeJSON(w, http.StatusCreated, toJoinTokenResponse(r, jt))
 }
 
@@ -111,7 +113,8 @@ func (s *server) enrollAgent(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, "enroll agent", err)
 		return
 	}
-	s.log.Info("agent enrolled", "env", creds.EnvironmentID, "agent", creds.AgentID, "ip", clientIP(r))
+	s.log.Info("agent enrolled", "env", creds.EnvironmentID, "agent", creds.AgentID, "replaced_credentials", creds.Replaced, "ip", clientIP(r))
+	w.Header().Set("Cache-Control", "no-store")
 	s.writeJSON(w, http.StatusCreated, enrollResponse{EnvironmentID: creds.EnvironmentID, AgentID: creds.AgentID, AgentSecret: creds.Secret})
 }
 

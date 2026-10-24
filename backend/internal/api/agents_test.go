@@ -17,6 +17,9 @@ func createAgentEnv(t *testing.T, et envTest, name string) createdEnvironmentRes
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create: code = %d (%s)", rec.Code, rec.Body)
 	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store on a response with a join token", cc)
+	}
 	var got createdEnvironmentResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
@@ -130,6 +133,9 @@ func TestEnrollAgent(t *testing.T) {
 	rec := enroll(t, et, created.JoinToken.Token)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("enroll: code = %d (%s)", rec.Code, rec.Body)
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store on a response with a secret", cc)
 	}
 	var creds enrollResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &creds); err != nil {

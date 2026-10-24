@@ -58,6 +58,8 @@ type Credentials struct {
 	EnvironmentID int64
 	AgentID       string
 	Secret        string
+	// Replaced reports whether the environment had credentials before, which stop working.
+	Replaced bool
 }
 
 // CreateAgent creates an agent environment named name and its first join token.
@@ -169,6 +171,9 @@ func (s *Service) Enroll(ctx context.Context, token string) (Credentials, error)
 		return Credentials{}, ErrInvalidJoinToken
 	}
 	creds := Credentials{EnvironmentID: envID, AgentID: agentIDPrefix + rand.Text(), Secret: AgentSecretPrefix + randomSecret()}
+	if err := tx.QueryRowContext(ctx, `SELECT agent_id IS NOT NULL FROM environments WHERE id = ?`, envID).Scan(&creds.Replaced); err != nil {
+		return Credentials{}, fmt.Errorf("enroll agent: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE environments SET agent_id = ?, agent_secret_hash = ? WHERE id = ?`,
 		creds.AgentID, hashSecret(creds.Secret), envID); err != nil {
 		return Credentials{}, fmt.Errorf("enroll agent: %w", err)

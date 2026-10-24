@@ -75,7 +75,7 @@ func TestEnroll(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if creds.EnvironmentID != env.ID || !strings.HasPrefix(creds.AgentID, agentIDPrefix) || !strings.HasPrefix(creds.Secret, AgentSecretPrefix) {
+	if creds.EnvironmentID != env.ID || !strings.HasPrefix(creds.AgentID, agentIDPrefix) || !strings.HasPrefix(creds.Secret, AgentSecretPrefix) || creds.Replaced {
 		t.Errorf("creds = %+v", creds)
 	}
 	var stored string
@@ -103,6 +103,9 @@ func TestEnroll(t *testing.T) {
 	creds2, err := s.Enroll(ctx, jt2.Token)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !creds2.Replaced {
+		t.Error("re-enroll: Replaced = false, want true")
 	}
 	if _, err := s.AuthenticateAgent(ctx, creds.AgentID, creds.Secret); !errors.Is(err, ErrInvalidCredentials) {
 		t.Errorf("old credentials: err = %v, want ErrInvalidCredentials", err)
