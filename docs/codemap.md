@@ -12,17 +12,18 @@ docs/config/; grep there, not in README. The API reference is docs/api.md; the d
 `main.realMain` picks the subcommand → `config.LoadServer` → `serve` runs
 `prepareDataDir` and `store.Open` (migrations), `auth.New` (+ `EnsureAdmin`,
 `RunCleanup`), then builds `api.New(api.Options{Auth: …, Web: web.Handler(web.Dist())})`
-→ root `http.ServeMux`: `/api/` goes through `server.protect` (cross-origin check, then
-a session unless the route's pattern is in `publicRoutes`) to the API mux (`/api/v1/...`
-handlers on `api.server`, `/api/` catch-all `notFound`); everything else `web.Handler`
-(static file or index.html for SPA routes).
+→ root `http.ServeMux`: `/api/` goes through `server.protect` (with an `Authorization`
+header an API token, else the cross-origin check and a session; `server.authenticate`
+lets patterns in `publicRoutes` through without either credential) to the API mux
+(`/api/v1/...` handlers on `api.server`, `/api/` catch-all `notFound`); everything else
+`web.Handler` (static file or index.html for SPA routes).
 
 ## Backend packages (backend/)
 | Package | What | Entry points |
 |---|---|---|
 | `cmd/nudge` | subcommands, wiring, graceful shutdown | `realMain`, `serve` |
 | `internal/api` | HTTP API under /api/v1 | `New`, `Options`, `publicRoutes`, `server.protect`, `userFrom`, `server.decodeJSON`, `server.writeJSON`, `server.writeError`, `server.internalError` |
-| `internal/auth` | users, argon2id, sessions, login rate limit | `New`, `Options`, `Service.Login`, `SessionUser`, `CreateFirstUser`, `EnsureAdmin`, `RunCleanup` |
+| `internal/auth` | users, argon2id, sessions, login rate limit, API tokens (tokens.go) | `New`, `Options`, `Service.Login`, `SessionUser`, `TokenUser`, `CreateToken`, `CreateFirstUser`, `EnsureAdmin`, `RunCleanup` |
 | `internal/config` | flags with NUDGE_* env fallbacks | `LoadServer`, `Server` |
 | `internal/store` | SQLite (`<data>/nudge.db`), embedded migrations | `Open`, `Store.DB`, `migrations/NNNN_name.sql` |
 | `internal/web` | embedded frontend, SPA fallback | `Dist`, `Handler` |

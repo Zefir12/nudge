@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/netip"
 	"strconv"
+	"strings"
 	"time"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
@@ -157,6 +158,15 @@ func sessionToken(r *http.Request) string {
 		return ""
 	}
 	return c.Value
+}
+
+// bearerToken returns the token of an "Authorization: Bearer <token>" header.
+func bearerToken(r *http.Request) (string, bool) {
+	scheme, token, ok := strings.Cut(r.Header.Get("Authorization"), " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") || token == "" {
+		return "", false
+	}
+	return token, true
 }
 
 // isTLS reports whether the browser reached us over HTTPS, directly or through a
