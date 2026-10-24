@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"git.zefirlabs.net/zefir/nudge/backend/internal/audit"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker/dockertest"
@@ -56,7 +57,8 @@ func newTestHandlerWith(t *testing.T, connect environments.ConnectFunc) (http.Ha
 		t.Fatal(err)
 	}
 	regs := registries.New(registries.Options{DB: st.DB(), Box: box, Now: func() time.Time { return now }})
-	return New(Options{Log: slog.New(slog.DiscardHandler), Version: "v1.0.0", Auth: svc, Envs: envs, Registries: regs, Web: web}), svc, st.DB()
+	aud := audit.New(audit.Options{DB: st.DB(), Now: func() time.Time { return now }})
+	return New(Options{Log: slog.New(slog.DiscardHandler), Version: "v1.0.0", Auth: svc, Envs: envs, Registries: regs, Audit: aud, Web: web}), svc, st.DB()
 }
 
 func TestRoutes(t *testing.T) {

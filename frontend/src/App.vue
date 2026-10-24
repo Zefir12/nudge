@@ -69,6 +69,7 @@ async function onLogout() {
         <RouterLink to="/environments">Environments</RouterLink>
         <RouterLink to="/registries">Registries</RouterLink>
         <RouterLink to="/tokens">API tokens</RouterLink>
+        <RouterLink to="/audit">Audit log</RouterLink>
       </nav>
       <div v-if="currentUser" class="account">
         <span class="muted">{{ currentUser.username }}</span>

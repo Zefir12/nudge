@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"sync"
 
+	"git.zefirlabs.net/zefir/nudge/backend/internal/audit"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/registries"
@@ -23,6 +24,8 @@ type Options struct {
 	Envs    *environments.Service
 	// Registries has the credentials image pulls use.
 	Registries *registries.Service
+	// Audit records every write.
+	Audit *audit.Service
 	// Web serves every path outside /api/.
 	Web http.Handler
 	// PublicURL is the URL agents reach the server at (scheme://host[:port]); empty means
@@ -51,7 +54,7 @@ var publicRoutes = map[string]bool{
 // New returns the server's root handler: the API plus the web UI.
 func New(opts Options) http.Handler {
 	s := &server{
-		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries,
+		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries, audit: opts.Audit,
 		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, recreating: map[string]bool{},
 	}
 	api := http.NewServeMux()
@@ -64,6 +67,7 @@ func New(opts Options) http.Handler {
 	api.HandleFunc("GET /api/v1/tokens", s.listTokens)
 	api.HandleFunc("POST /api/v1/tokens", s.createToken)
 	api.HandleFunc("DELETE /api/v1/tokens/{id}", s.deleteToken)
+	api.HandleFunc("GET /api/v1/audit", s.listAudit)
 	api.HandleFunc("GET /api/v1/registries", s.listRegistries)
 	api.HandleFunc("POST /api/v1/registries", s.createRegistry)
 	api.HandleFunc("GET /api/v1/registries/{id}", s.getRegistry)
@@ -116,6 +120,7 @@ type server struct {
 	envs    *environments.Service
 
 	registries *registries.Service
+	audit      *audit.Service
 
 	publicURL     string
 	secureCookies bool
@@ -160,7 +165,7 @@ func (s *server) protect(api *http.ServeMux) http.Handler {
 func (s *server) authenticate(api *http.ServeMux, lookup func(*http.Request) (auth.User, error)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, pattern := api.Handler(r); publicRoutes[pattern] {
-			api.ServeHTTP(w, r)
+			s.serveAudited(api, w, r)
 			return
 		}
 		u, err := lookup(r)
@@ -172,7 +177,7 @@ func (s *server) authenticate(api *http.ServeMux, lookup func(*http.Request) (au
 			s.internalError(w, "authenticate", err)
 			return
 		}
-		api.ServeHTTP(w, r.WithContext(withUser(r.Context(), u)))
+		s.serveAudited(api, w, r.WithContext(withUser(r.Context(), u)))
 	})
 }
 

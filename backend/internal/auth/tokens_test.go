@@ -119,7 +119,7 @@ func TestTokenLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := s.TokenUser(ctx, secret)
-	if err != nil || got.ID != u.ID || got.Username != "admin" {
+	if err != nil || got.ID != u.ID || got.Username != "admin" || got.Token != "ci" {
 		t.Fatalf("TokenUser = %+v, %v", got, err)
 	}
 	for _, bad := range []string{"", "nudge_", secret + "x", strings.TrimPrefix(secret, TokenPrefix), tokenHash(secret)} {

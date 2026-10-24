@@ -85,6 +85,7 @@ func (s *server) createVolume(w http.ResponseWriter, r *http.Request) {
 	if !s.decodeJSON(w, r, &req) {
 		return
 	}
+	auditTarget(r, req.Name)
 	if msg := validCreate(req.Name, req.Driver, req.Options, req.Labels); msg != "" {
 		s.writeError(w, http.StatusBadRequest, msg)
 		return

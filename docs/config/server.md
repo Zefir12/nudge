@@ -12,6 +12,7 @@ image without setting anything. A flag wins over its variable.
 | `-tls-cert` | `NUDGE_TLS_CERT` | unset | PEM certificate (chain); with `-tls-key` the server speaks HTTPS only |
 | `-tls-key` | `NUDGE_TLS_KEY` | unset | PEM private key of `-tls-cert` |
 | `-public-url` | `NUDGE_PUBLIC_URL` | unset | URL browsers and agents reach the server at, `https://host[:port]` |
+| `-audit-retention-days` | `NUDGE_AUDIT_RETENTION_DAYS` | `90` | days the audit log keeps entries (at least 1); older ones are deleted hourly |
 | — | `NUDGE_ADMIN_PASSWORD` | unset | create the user `admin` with this password at start if no user exists |
 
 ## Data directory

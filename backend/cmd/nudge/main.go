@@ -21,6 +21,7 @@ import (
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/agent"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/api"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/audit"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/certs"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/config"
@@ -130,6 +131,7 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 	regs := registries.New(registries.Options{DB: st.DB(), Box: box})
 
 	authSvc := auth.New(auth.Options{DB: st.DB(), Log: log})
+	auditSvc := audit.New(audit.Options{DB: st.DB(), Log: log, Retention: time.Duration(cfg.AuditRetentionDays) * 24 * time.Hour})
 	if cfg.AdminPassword != "" {
 		// Like the migrations: part of startup, not cancelled by a signal.
 		adminCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
@@ -169,6 +171,7 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 		wg.Wait()
 	}()
 	wg.Go(func() { authSvc.RunCleanup(cleanupCtx, 10*time.Minute) })
+	wg.Go(func() { auditSvc.RunCleanup(cleanupCtx, time.Hour) })
 	if certLoader != nil {
 		// SIGHUP would otherwise kill the process.
 		hup := make(chan os.Signal, 1)
@@ -188,6 +191,7 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 			Envs:    envs,
 
 			Registries: regs,
+			Audit:      auditSvc,
 			Web:        web.Handler(web.Dist()),
 
 			PublicURL:     cfg.PublicURL,

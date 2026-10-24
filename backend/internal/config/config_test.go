@@ -21,18 +21,18 @@ func TestLoadServer(t *testing.T) {
 	}{
 		{
 			name: "defaults",
-			want: Server{Addr: ":8080", DataDir: "/data", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock"},
+			want: Server{Addr: ":8080", DataDir: "/data", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90},
 		},
 		{
 			name: "env",
 			env:  map[string]string{"NUDGE_ADDR": ":9000", "NUDGE_DATA": "/var/lib/nudge", "NUDGE_LOG_LEVEL": "debug", "NUDGE_ADMIN_PASSWORD": "s3cret-pw", "DOCKER_HOST": "tcp://10.0.0.2:2375"},
-			want: Server{Addr: ":9000", DataDir: "/var/lib/nudge", LogLevel: slog.LevelDebug, AdminPassword: "s3cret-pw", DockerHost: "tcp://10.0.0.2:2375"},
+			want: Server{Addr: ":9000", DataDir: "/var/lib/nudge", LogLevel: slog.LevelDebug, AdminPassword: "s3cret-pw", DockerHost: "tcp://10.0.0.2:2375", AuditRetentionDays: 90},
 		},
 		{
 			name: "flag wins over env",
 			args: []string{"-addr", "127.0.0.1:1234"},
 			env:  map[string]string{"NUDGE_ADDR": ":9000"},
-			want: Server{Addr: "127.0.0.1:1234", DataDir: "/data", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock"},
+			want: Server{Addr: "127.0.0.1:1234", DataDir: "/data", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90},
 		},
 		{name: "bad log level", args: []string{"-log-level", "loud"}, wantErr: true},
 		{name: "empty addr", args: []string{"-addr", ""}, wantErr: true},
@@ -42,12 +42,12 @@ func TestLoadServer(t *testing.T) {
 		{
 			name: "tls and public url",
 			env:  map[string]string{"NUDGE_TLS_CERT": "/certs/cert.pem", "NUDGE_TLS_KEY": "/certs/key.pem", "NUDGE_PUBLIC_URL": "https://nudge.example.net:8443/"},
-			want: Server{Addr: ":8080", DataDir: "/data", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", TLSCert: "/certs/cert.pem", TLSKey: "/certs/key.pem", PublicURL: "https://nudge.example.net:8443"},
+			want: Server{Addr: ":8080", DataDir: "/data", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, TLSCert: "/certs/cert.pem", TLSKey: "/certs/key.pem", PublicURL: "https://nudge.example.net:8443"},
 		},
 		{
 			name: "public url flag",
 			args: []string{"-public-url", "http://10.0.0.5:8080"},
-			want: Server{Addr: ":8080", DataDir: "/data", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", PublicURL: "http://10.0.0.5:8080"},
+			want: Server{Addr: ":8080", DataDir: "/data", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, PublicURL: "http://10.0.0.5:8080"},
 		},
 		{name: "cert without key", args: []string{"-tls-cert", "/c.pem"}, wantErr: true},
 		{name: "key without cert", env: map[string]string{"NUDGE_TLS_KEY": "/k.pem"}, wantErr: true},
@@ -59,6 +59,13 @@ func TestLoadServer(t *testing.T) {
 		{name: "public url with shell characters", args: []string{"-public-url", "https://a;b"}, wantErr: true},
 		{name: "public url without host", args: []string{"-public-url", "https://"}, wantErr: true},
 		{name: "unknown flag", args: []string{"-nope"}, wantErr: true},
+		{
+			name: "audit retention",
+			env:  map[string]string{"NUDGE_AUDIT_RETENTION_DAYS": "7"},
+			want: Server{Addr: ":8080", DataDir: "/data", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 7},
+		},
+		{name: "audit retention flag", args: []string{"-audit-retention-days", "0"}, wantErr: true},
+		{name: "audit retention not a number", env: map[string]string{"NUDGE_AUDIT_RETENTION_DAYS": "forever"}, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
