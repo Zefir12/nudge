@@ -20,6 +20,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/registries"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/secretbox"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/store"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/updates"
 )
 
 // newTestHandler returns the API over a fresh database with no users, and its auth
@@ -64,7 +65,8 @@ func newTestHandlerOpts(t *testing.T, connect environments.ConnectFunc, mod func
 	}
 	regs := registries.New(registries.Options{DB: st.DB(), Box: box, Now: func() time.Time { return now }})
 	aud := audit.New(audit.Options{DB: st.DB(), Now: func() time.Time { return now }})
-	opts := Options{Log: slog.New(slog.DiscardHandler), Version: "v1.0.0", Auth: svc, Envs: envs, Registries: regs, Audit: aud, Web: web}
+	upd := updates.New(updates.Options{DB: st.DB(), Envs: envs, Auth: regs.AuthFor})
+	opts := Options{Log: slog.New(slog.DiscardHandler), Version: "v1.0.0", Auth: svc, Envs: envs, Registries: regs, Audit: aud, Updates: upd, Web: web}
 	if mod != nil {
 		mod(&opts)
 	}

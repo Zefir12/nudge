@@ -32,6 +32,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/secretbox"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/stacks"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/store"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/updates"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/version"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/web"
 )
@@ -174,6 +175,11 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 	}()
 	wg.Go(func() { authSvc.RunCleanup(cleanupCtx, 10*time.Minute) })
 	wg.Go(func() { auditSvc.RunCleanup(cleanupCtx, time.Hour) })
+	upd := updates.New(updates.Options{DB: st.DB(), Log: log, Envs: envs, Auth: regs.AuthFor})
+	if cfg.UpdateCheckInterval > 0 {
+		// The first check waits for agents to reconnect after a restart.
+		wg.Go(func() { upd.Run(cleanupCtx, 2*time.Minute, cfg.UpdateCheckInterval) })
+	}
 	if certLoader != nil {
 		// SIGHUP would otherwise kill the process.
 		hup := make(chan os.Signal, 1)
@@ -195,6 +201,7 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 
 			Registries: regs,
 			Audit:      auditSvc,
+			Updates:    upd,
 			Web:        web.Handler(web.Dist()),
 
 			StacksDir:   cfg.StacksDir,

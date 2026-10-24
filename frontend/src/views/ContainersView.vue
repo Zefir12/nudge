@@ -6,15 +6,18 @@ import { listContainers } from '../api/client';
 import ContainerActions from '../components/ContainerActions.vue';
 import LoadState from '../components/LoadState.vue';
 import StateBadge from '../components/StateBadge.vue';
+import UpdateBadge from '../components/UpdateBadge.vue';
 import { useLiveReload } from '../composables/useEvents';
 import { useLoad } from '../composables/useLoad';
 import { useParams } from '../composables/params';
+import { useUpdates } from '../composables/useUpdates';
 import { formatPort, matches } from '../format';
 
 const { env } = useParams();
 const { data, error, reload } = useLoad(env, listContainers);
 // Docker events refresh the list, so changes made elsewhere show up by themselves.
 useLiveReload(env, ['container'], reload);
+const { updateFor, check, checking, checkError } = useUpdates(env);
 
 const query = ref('');
 // "stopped" groups the states of containers that aren't running.
@@ -33,10 +36,16 @@ const shown = computed(() =>
 <template>
   <div class="title">
     <h1>Containers</h1>
-    <RouterLink class="button primary" :to="{ name: 'container-new', params: { env } }"
-      >New container</RouterLink
-    >
+    <div class="title-actions">
+      <button type="button" :disabled="checking" @click="check">
+        {{ checking ? 'Checking for updates…' : 'Check for updates' }}
+      </button>
+      <RouterLink class="button primary" :to="{ name: 'container-new', params: { env } }"
+        >New container</RouterLink
+      >
+    </div>
   </div>
+  <p v-if="checkError" class="error" role="alert">Could not check for updates: {{ checkError }}</p>
   <section class="card">
     <div class="filters">
       <input v-model="query" type="search" placeholder="Search name, image or ID" aria-label="Search" />
@@ -72,7 +81,7 @@ const shown = computed(() =>
                 <RouterLink :to="{ name: 'container', params: { env, id: c.id } }">{{ c.name }}</RouterLink>
               </td>
               <td><StateBadge :state="c.state" :health="c.health" /></td>
-              <td class="break">{{ c.image }}</td>
+              <td class="break">{{ c.image }}<UpdateBadge v-if="updateFor(c)" :update="updateFor(c)!" /></td>
               <td class="wide-only">{{ c.status }}</td>
               <td class="wide-only">
                 <div v-for="p in c.ports" :key="formatPort(p)">
@@ -103,6 +112,12 @@ const shown = computed(() =>
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.title-actions {
+  display: flex;
+  flex-wrap: wrap;
   gap: 0.5rem;
 }
 

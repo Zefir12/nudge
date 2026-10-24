@@ -69,6 +69,77 @@ describe('ContainersView', () => {
     expect(rows[1]!.text()).toContain('exited');
   });
 
+  it('marks containers whose image has an update', async () => {
+    const update = {
+      image: 'nginx:1.29',
+      image_id: 'sha256:img1',
+      status: 'available',
+      local_digest: 'sha256:old',
+      remote_digest: 'sha256:new',
+      error: '',
+      checked_at: '2026-10-24T12:00:00Z',
+    };
+    stubApi({
+      'GET /environments/1/containers': { body: containers },
+      // postgres:18 is current; an update of another image ID doesn't apply.
+      'GET /environments/1/updates': {
+        body: [update, { ...update, image: 'postgres:18', status: 'current', remote_digest: 'sha256:old' }],
+      },
+    });
+    const { wrapper } = await mountAt('/env/1/containers');
+    const rows = wrapper.findAll('tbody tr');
+    expect(rows[0]!.find('.update').exists()).toBe(true);
+    expect(rows[0]!.find('.update').attributes('title')).toContain('sha256:new');
+    expect(rows[1]!.find('.update').exists()).toBe(false);
+  });
+
+  it('checks for updates on request', async () => {
+    const fetch = stubApi({
+      'GET /environments/1/containers': { body: containers },
+      'GET /environments/1/updates': { body: [] },
+      'POST /environments/1/updates/check': {
+        body: [
+          {
+            image: 'postgres:18',
+            image_id: 'sha256:img1',
+            status: 'available',
+            local_digest: 'sha256:a',
+            remote_digest: 'sha256:b',
+            error: '',
+            checked_at: '2026-10-24T12:00:00Z',
+          },
+        ],
+      },
+    });
+    const { wrapper } = await mountAt('/env/1/containers');
+    expect(wrapper.findAll('.update')).toHaveLength(0);
+    await wrapper.find('button').trigger('click');
+    await flushPromises();
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/v1/environments/1/updates/check',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    const rows = wrapper.findAll('tbody tr');
+    expect(rows[1]!.find('.update').exists()).toBe(true);
+  });
+
+  it('shows a failed update check', async () => {
+    stubApi({
+      'GET /environments/1/containers': { body: containers },
+      'GET /environments/1/updates': { body: [] },
+      'POST /environments/1/updates/check': {
+        status: 409,
+        body: { error: 'an update check is already running' },
+      },
+    });
+    const { wrapper } = await mountAt('/env/1/containers');
+    await wrapper.find('button').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('[role=alert]').text()).toContain('an update check is already running');
+    // The list still works.
+    expect(wrapper.findAll('tbody tr')).toHaveLength(2);
+  });
+
   it.each([
     { name: 'search by name', query: 'db', state: 'all', want: ['db'] },
     { name: 'search by image, ignoring case', query: 'NGINX', state: 'all', want: ['web'] },
@@ -119,7 +190,11 @@ describe('ContainersView', () => {
     let answer: (r: Response) => void = () => {};
     vi.stubGlobal(
       'fetch',
-      vi.fn(() => new Promise<Response>((resolve) => (answer = resolve))),
+      vi.fn((url: string) =>
+        url.endsWith('/containers')
+          ? new Promise<Response>((resolve) => (answer = resolve))
+          : Promise.resolve(new Response('[]')),
+      ),
     );
     const { wrapper } = await mountAt('/env/1/containers');
     expect(wrapper.text()).toContain('Loading…');

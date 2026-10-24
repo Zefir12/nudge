@@ -6,6 +6,8 @@ package registries
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -13,6 +15,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/moby/moby/api/types/registry"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/secretbox"
 )
@@ -64,6 +68,14 @@ type Auth struct {
 	Address  string
 	Username string
 	Password string
+}
+
+// Header is the X-Registry-Auth value that hands the credentials to the daemon: the
+// credentials as JSON in URL-safe base64.
+func (a Auth) Header() string {
+	// Marshalling a struct of strings can't fail.
+	b, _ := json.Marshal(registry.AuthConfig{Username: a.Username, Password: a.Password, ServerAddress: a.Address}) // #nosec G117 -- the header hands the credentials to the daemon by design
+	return base64.URLEncoding.EncodeToString(b)
 }
 
 // Options are the Service's dependencies.
