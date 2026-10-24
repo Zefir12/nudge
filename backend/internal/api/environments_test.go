@@ -134,7 +134,7 @@ func TestGetEnvironment(t *testing.T) {
 	}{
 		{name: "unknown id", path: "/api/v1/environments/999", wantCode: 404},
 		{name: "not a number", path: "/api/v1/environments/local", wantCode: 404},
-		{name: "unreachable", path: fmt.Sprintf("/api/v1/environments/%d", et.ids["down"]), wantCode: 502},
+		{name: "unreachable", path: fmt.Sprintf("/api/v1/environments/%d", et.ids["down"]), wantCode: 503},
 		{name: "timeout", path: fmt.Sprintf("/api/v1/environments/%d", et.ids["slow"]), wantCode: 504},
 		{name: "daemon error", path: fmt.Sprintf("/api/v1/environments/%d", et.ids["broken"]), wantCode: 502},
 	}

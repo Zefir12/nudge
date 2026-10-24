@@ -20,6 +20,7 @@ type Fake struct {
 	InfoErr       error
 	VersionResult client.ServerVersionResult
 	VersionErr    error
+	Resources
 
 	mu     sync.Mutex
 	pings  int
