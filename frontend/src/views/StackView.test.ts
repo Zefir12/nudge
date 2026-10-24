@@ -85,23 +85,61 @@ describe('StackView', () => {
     expect(button(wrapper, 'Delete stack')).toBeUndefined();
   });
 
-  it('deploys and shows compose output', async () => {
-    let body: unknown;
+  it('updates, shows compose output and the update history', async () => {
+    let updated = false;
     stubApi({
       'GET /environments/1/stacks/web': { body: web() },
-      'POST /environments/1/stacks/web/up': (init) => {
-        body = JSON.parse(init!.body as string);
+      'GET /environments/1/updates/history?kind=stack&target=web': () => ({
+        body: updated
+          ? [
+              {
+                id: 1,
+                kind: 'stack',
+                target: 'web',
+                service: 'app',
+                image: 'ghcr.io/o/app:v1',
+                old_image_id: 'sha256:aaaaaaaaaaaaaaaa',
+                old_digest: 'sha256:old',
+                new_image_id: 'sha256:bbbbbbbbbbbbbbbb',
+                new_digest: 'sha256:new',
+                user: 'admin',
+                time: '2026-10-24T12:00:00Z',
+              },
+            ]
+          : [],
+      }),
+      'POST /environments/1/stacks/web/update': () => {
+        updated = true;
         return {
           raw: '{"stream":"stderr","line":" Container web-app-1  Started"}\n{"exit_code":0}\n',
         };
       },
     });
     const { wrapper } = await mountView();
+    expect(wrapper.text()).not.toContain('Updates');
     await button(wrapper, 'Update').trigger('click');
     await flushPromises();
-    expect(body).toEqual({ pull: true });
     expect(wrapper.find('.output').text()).toBe('Container web-app-1  Started');
     expect(wrapper.text()).toContain('Update finished.');
+    expect(wrapper.text()).toContain('Updates');
+    expect(wrapper.text()).toContain('aaaaaaaaaaaa (sha256:old)');
+    expect(wrapper.text()).toContain('bbbbbbbbbbbb (sha256:new)');
+  });
+
+  it('deploys without pulling', async () => {
+    let body: unknown;
+    stubApi({
+      'GET /environments/1/stacks/web': { body: web() },
+      'POST /environments/1/stacks/web/up': (init) => {
+        body = JSON.parse(init!.body as string);
+        return { raw: '{"exit_code":0}\n' };
+      },
+    });
+    const { wrapper } = await mountView();
+    await button(wrapper, 'Deploy').trigger('click');
+    await flushPromises();
+    expect(body).toEqual({ pull: false });
+    expect(wrapper.text()).toContain('Deploy finished.');
   });
 
   it('reports a failed deploy', async () => {

@@ -39,6 +39,8 @@ type fakeRunner struct {
 	release chan struct{}
 	// cancelled, if set, is closed when a waiting run is cancelled.
 	cancelled chan struct{}
+	// onRun, if set, is called as a run ends, so a test can change the Docker fake.
+	onRun func()
 }
 
 func (f *fakeRunner) Sync(_ context.Context, name string, files stacks.Files) error {
@@ -69,6 +71,9 @@ func (f *fakeRunner) run(ctx context.Context, call string, out func(stacks.Line)
 	for _, l := range f.lines {
 		out(l)
 	}
+	if f.onRun != nil {
+		f.onRun()
+	}
 	return f.code, f.err
 }
 
@@ -96,6 +101,7 @@ type runResult struct {
 
 type stackTest struct {
 	envTest
+	fake    *dockertest.Fake
 	dir     string
 	runner  *fakeRunner
 	checker *fakeChecker
@@ -115,7 +121,7 @@ func newStackTest(t *testing.T) stackTest {
 		{ID: "b1", Names: []string{"/other-x-1"}, State: container.StateRunning, Labels: label("other", "x")},
 		{ID: "c1", Names: []string{"/loose"}, State: container.StateRunning},
 	}}}
-	st := stackTest{dir: t.TempDir(), runner: &fakeRunner{}, checker: &fakeChecker{}}
+	st := stackTest{fake: fake, dir: t.TempDir(), runner: &fakeRunner{}, checker: &fakeChecker{}}
 	st.envTest = newEnvTestOpts(t, map[string]*dockertest.Fake{"local": fake, "broken": {}}, func(o *Options) {
 		o.StacksDir = st.dir
 		o.StackRunner = func(env environments.Environment) stacks.Runner {

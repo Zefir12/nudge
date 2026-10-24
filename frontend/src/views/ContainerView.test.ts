@@ -159,6 +159,84 @@ describe('ContainerView', () => {
     expect(wrapper.findAll('a').map((a) => a.attributes('href'))).toContain('/env/1/containers/new1/edit');
   });
 
+  it('updates the container when a newer image is available', async () => {
+    const available = {
+      image: 'nginx:1.29',
+      image_id: detail.image_id,
+      status: 'available',
+      local_digest: 'sha256:old',
+      remote_digest: 'sha256:new',
+      error: '',
+      checked_at: '2026-10-24T12:00:00Z',
+    };
+    const fetch = stubApi({
+      'GET /environments/1/containers/web': { body: detail },
+      'GET /environments/1/updates': { body: [available] },
+      [`POST /environments/1/containers/${detail.id}/update`]: {
+        body: { updated: true, id: 'new1', previous_image_id: detail.image_id, image_id: 'sha256:new' },
+      },
+      'GET /environments/1/containers/new1': { body: { ...detail, id: 'new1', image_id: 'sha256:new' } },
+    });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const router = createAppRouter(createMemoryHistory());
+    await router.push('/env/1/containers/web');
+    const wrapper = mount(ContainerView, { global: { plugins: [router] } });
+    await flushPromises();
+    expect(wrapper.find('h1').text()).toContain('update');
+    await wrapper
+      .findAll('button')
+      .find((b) => b.text() === 'Update')!
+      .trigger('click');
+    await flushPromises();
+    expect(fetch.mock.calls.some(([url]) => String(url).endsWith(`/containers/${detail.id}/update`))).toBe(
+      true,
+    );
+    expect(router.currentRoute.value.fullPath).toBe('/env/1/containers/new1');
+    // The new container runs the new image: no update left.
+    expect(wrapper.findAll('button').some((b) => b.text() === 'Update')).toBe(false);
+  });
+
+  it('says so when the registry had nothing newer', async () => {
+    stubApi({
+      'GET /environments/1/containers/web': { body: detail },
+      'GET /environments/1/updates': {
+        body: [
+          {
+            image: 'nginx:1.29',
+            image_id: detail.image_id,
+            status: 'available',
+            local_digest: '',
+            remote_digest: '',
+            error: '',
+            checked_at: '2026-10-24T12:00:00Z',
+          },
+        ],
+      },
+      [`POST /environments/1/containers/${detail.id}/update`]: {
+        body: {
+          updated: false,
+          id: detail.id,
+          previous_image_id: detail.image_id,
+          image_id: detail.image_id,
+        },
+      },
+    });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const wrapper = await mountAt('/env/1/containers/web');
+    await wrapper
+      .findAll('button')
+      .find((b) => b.text() === 'Update')!
+      .trigger('click');
+    await flushPromises();
+    expect(wrapper.find('[role=status]').text()).toContain('nothing newer');
+  });
+
+  it('has no update button without an update', async () => {
+    stubApi({ 'GET /environments/1/containers/web': { body: detail } });
+    const wrapper = await mountAt('/env/1/containers/web');
+    expect(wrapper.findAll('button').some((b) => b.text() === 'Update')).toBe(false);
+  });
+
   it('shows a missing container', async () => {
     stubApi({
       'GET /environments/1/containers/gone': { status: 404, body: { error: 'container not found' } },

@@ -377,8 +377,8 @@ func (s *server) upStack(w http.ResponseWriter, r *http.Request) {
 	if !s.decodeOptionalJSON(w, r, &req) {
 		return
 	}
-	s.runStack(w, r, "up", func(ctx context.Context, runner stacks.Runner, name string, out func(stacks.Line)) (int, error) {
-		return runner.Up(ctx, name, req.Pull, out)
+	s.runStack(w, r, "up", func(ctx context.Context, run stackRun) (int, error) {
+		return run.runner.Up(ctx, run.name, req.Pull, run.out)
 	})
 }
 
@@ -391,8 +391,8 @@ func (s *server) downStack(w http.ResponseWriter, r *http.Request) {
 	if !s.decodeOptionalJSON(w, r, &req) {
 		return
 	}
-	s.runStack(w, r, "down", func(ctx context.Context, runner stacks.Runner, name string, out func(stacks.Line)) (int, error) {
-		return runner.Down(ctx, name, req.Volumes, out)
+	s.runStack(w, r, "down", func(ctx context.Context, run stackRun) (int, error) {
+		return run.runner.Down(ctx, run.name, req.Volumes, run.out)
 	})
 }
 
@@ -429,16 +429,26 @@ func (s *server) runnerError(w http.ResponseWriter, r *http.Request, env environ
 	}
 }
 
+// stackRun is what a compose run of runStack works with.
+type stackRun struct {
+	env    environments.Environment
+	c      docker.Client
+	runner stacks.Runner
+	name   string
+	// out sends a line of compose's output.
+	out func(stacks.Line)
+}
+
 // runStack syncs a stack to its environment's runner and runs compose, streaming the
 // output as JSON lines (application/x-ndjson). Errors before compose starts are ordinary
 // JSON errors; the stream ends with the exit code or an error line. The run stops if the
 // client goes away, like Ctrl-C on docker compose.
-func (s *server) runStack(w http.ResponseWriter, r *http.Request, op string, run func(ctx context.Context, runner stacks.Runner, name string, out func(stacks.Line)) (int, error)) {
+func (s *server) runStack(w http.ResponseWriter, r *http.Request, op string, run func(ctx context.Context, run stackRun) (int, error)) {
 	name, ok := s.stackName(w, r)
 	if !ok {
 		return
 	}
-	env, _, ok := s.environment(w, r)
+	env, c, ok := s.environment(w, r)
 	if !ok {
 		return
 	}
@@ -492,7 +502,8 @@ func (s *server) runStack(w http.ResponseWriter, r *http.Request, op string, run
 			cancel()
 		}
 	}
-	code, err := run(ctx, runner, name, func(l stacks.Line) { send(stackEvent{Stream: l.Stream, Line: l.Text}) })
+	out := func(l stacks.Line) { send(stackEvent{Stream: l.Stream, Line: l.Text}) }
+	code, err := run(ctx, stackRun{env: env, c: c, runner: runner, name: name, out: out})
 	switch {
 	case err == nil:
 		if code != 0 {
