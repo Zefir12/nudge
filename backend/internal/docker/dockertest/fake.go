@@ -33,6 +33,8 @@ type Fake struct {
 
 	logOptions   []client.ContainerLogsOptions
 	statsOptions []client.ContainerStatsOptions
+	execs        map[string]Exec
+	resizes      []client.ExecResizeOptions
 }
 
 // Ping counts the call and answers with PingErr.

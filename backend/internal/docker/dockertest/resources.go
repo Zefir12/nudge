@@ -57,6 +57,12 @@ type Resources struct {
 	Stats          map[string][]container.StatsResponse
 	StatsErr       error
 	StatsCancelled chan string
+	// Execs, if set, receives each attached exec session (buffer it); without it an
+	// attached session ends at once. ExecErr fails every ExecCreate call; ExecExitCode
+	// is what ExecInspect answers.
+	Execs        chan *Exec
+	ExecErr      error
+	ExecExitCode int
 	// PruneReport is what ImagePrune answers.
 	PruneReport image.PruneReport
 	// VolumePruneReport and NetworkPruneReport are what VolumePrune and NetworkPrune

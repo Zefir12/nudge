@@ -38,6 +38,7 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | POST | `/api/v1/environments/{env}/containers/{id}/recreate` | session | replace a container, optionally pulling first or with changed settings |
 | GET | `/api/v1/environments/{env}/containers/{id}/logs` | session | WebSocket: a container's logs, one JSON frame per line; see Container logs |
 | GET | `/api/v1/environments/{env}/containers/{id}/stats` | session | WebSocket: a running container's usage, a sample about every second; see Stats |
+| GET | `/api/v1/environments/{env}/containers/{id}/exec` | session | WebSocket: a command with a terminal in a running container (audited); see Container exec |
 | GET | `/api/v1/environments/{env}/stats` | session | one usage sample of every running container, with totals; see Stats |
 | GET | `/api/v1/environments/{env}/events` | session | WebSocket: the environment's Docker events as they happen; see Events |
 | POST | `/api/v1/environments/{env}/images/pull` | session | pull `{"image": "nginx:1.29"}`, progress as JSON lines; see Image actions |
@@ -269,6 +270,27 @@ ended (the container stopped, or without `follow` every line was sent) or `{"err
 "..."}`, then the server closes the socket normally. Closing the socket stops the stream
 on the Docker host. The server pings every 30 s and ends a stream whose client doesn't
 answer.
+
+### Container exec
+`GET /api/v1/environments/{env}/containers/{id}/exec` runs a command with a TTY in a
+running container (`docker exec -it`) and upgrades to a WebSocket, authenticated and
+origin-checked like the log stream. Query options: `cmd` is the command and its arguments
+split on whitespace, without shell quoting (default `/bin/sh`, at most 1024 characters);
+`cols` and `rows` (both or neither, 1 to 1000) are the terminal's initial size. The
+process gets `TERM=xterm-256color`.
+
+Errors before the upgrade are JSON errors: `400` invalid option, `404` unknown
+environment or container, `409` container not running, `503`/`504`/`502` as for other
+Docker calls. Every session is recorded in the audit log when it opens (status `101`), or
+with the status it was refused with.
+
+Then binary frames carry the terminal: the client's are its input (at most 32 KiB each),
+the server's its output. A text frame `{"type": "resize", "cols": 120, "rows": 40}` from
+the client resizes the terminal; other text frames are ignored. When the process exits the
+server sends a text frame `{"done": true, "exit_code": 0}` (`exit_code` when the host
+reports it) or `{"error": "..."}`, then closes the socket normally. Closing the socket
+closes the process's terminal, which ends a shell. The server pings every 30 s and ends a
+session whose client doesn't answer.
 
 ### Stats
 Usage is computed on the server from the daemon's counters. A sample:

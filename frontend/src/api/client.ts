@@ -460,6 +460,12 @@ export function streamLogs(env: string, id: string, opts: LogOptions, h: LogHand
   );
 }
 
+// socketURL is the WebSocket URL of a path under /api/v1 on this host.
+function socketURL(path: string): string {
+  const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${scheme}//${location.host}/api/v1${path}`;
+}
+
 // openStream opens a WebSocket under /api/v1 that sends items, then a last frame with
 // done or error, and returns a function that closes it. onEnd runs once, unless the
 // caller closed the socket.
@@ -470,8 +476,7 @@ function openStream<T>(
   onItem: (item: T) => void,
   onEnd: (error?: string) => void,
 ): () => void {
-  const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const ws = new WebSocket(`${scheme}//${location.host}/api/v1${path}`);
+  const ws = new WebSocket(socketURL(path));
   let ended = false;
   const end = (error?: string) => {
     if (ended) return;
@@ -496,6 +501,95 @@ function openStream<T>(
   return () => {
     ended = true;
     ws.close();
+  };
+}
+
+export interface ExecOptions {
+  // cmd is the command and its arguments split on spaces (no shell quoting); the
+  // server runs /bin/sh without one.
+  cmd?: string;
+  cols?: number;
+  rows?: number;
+}
+
+export interface ExecEnd {
+  // exitCode is the process's, when it ended and the host reported it.
+  exitCode?: number;
+  error?: string;
+}
+
+export interface ExecHandlers {
+  onOutput: (data: Uint8Array) => void;
+  // onEnd runs once when the session ends, unless the caller closed it.
+  onEnd: (end: ExecEnd) => void;
+}
+
+export interface ExecSession {
+  send: (data: string) => void;
+  resize: (cols: number, rows: number) => void;
+  close: () => void;
+}
+
+// execChunk keeps input frames well under the server's 32 KiB message limit.
+const execChunk = 16 << 10;
+
+// openExec starts a command with a terminal in a running container. Input and output
+// are binary frames; what is sent before the socket opens waits for it.
+export function openExec(env: string, id: string, opts: ExecOptions, h: ExecHandlers): ExecSession {
+  const q = new URLSearchParams();
+  if (opts.cmd) q.set('cmd', opts.cmd);
+  if (opts.cols && opts.rows) {
+    q.set('cols', String(opts.cols));
+    q.set('rows', String(opts.rows));
+  }
+  const ws = new WebSocket(socketURL(envPath(env, `/containers/${enc(id)}/exec?${q}`)));
+  ws.binaryType = 'arraybuffer';
+  let open = false;
+  let ended = false;
+  const pending: (string | Uint8Array<ArrayBuffer>)[] = [];
+  const send = (frame: string | Uint8Array<ArrayBuffer>) => {
+    if (ended) return;
+    if (open) ws.send(frame);
+    else pending.push(frame);
+  };
+  const end = (e: ExecEnd) => {
+    if (ended) return;
+    ended = true;
+    h.onEnd(e);
+  };
+  ws.onopen = () => {
+    open = true;
+    for (const f of pending.splice(0)) ws.send(f);
+  };
+  ws.onmessage = (ev: MessageEvent<string | ArrayBuffer>) => {
+    if (typeof ev.data !== 'string') {
+      if (!ended) h.onOutput(new Uint8Array(ev.data));
+      return;
+    }
+    let m: { done?: boolean; exit_code?: number; error?: string };
+    try {
+      m = JSON.parse(ev.data) as typeof m;
+    } catch {
+      end({ error: 'The terminal session sent a malformed frame.' });
+      ws.close();
+      return;
+    }
+    if (m.error) end({ error: m.error });
+    else if (m.done) end({ exitCode: m.exit_code });
+  };
+  // A refused upgrade (container stopped, session expired) only shows as a close.
+  ws.onclose = () => end({ error: 'The terminal session closed unexpectedly.' });
+  const encoder = new TextEncoder();
+  return {
+    send: (data) => {
+      const b = encoder.encode(data);
+      for (let i = 0; i < b.length; i += execChunk) send(b.slice(i, i + execChunk));
+    },
+    resize: (cols, rows) => send(JSON.stringify({ type: 'resize', cols, rows })),
+    close: () => {
+      ended = true;
+      ws.close();
+    },
   };
 }
 
