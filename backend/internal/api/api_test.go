@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"io"
 	"log/slog"
 	"net/http"
@@ -11,12 +12,25 @@ import (
 	"time"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/docker/dockertest"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/store"
 )
 
 // newTestHandler returns the API over a fresh database with no users, and its auth
 // service (cheap argon2 params, fixed clock).
 func newTestHandler(t *testing.T) (http.Handler, *auth.Service) {
+	t.Helper()
+	h, svc, _ := newTestHandlerWith(t, func(environments.Environment) (docker.Client, error) {
+		return &dockertest.Fake{}, nil
+	})
+	return h, svc
+}
+
+// newTestHandlerWith is newTestHandler with the Docker clients that connect returns,
+// and the database, to add environments.
+func newTestHandlerWith(t *testing.T, connect environments.ConnectFunc) (http.Handler, *auth.Service, *sql.DB) {
 	t.Helper()
 	st, err := store.Open(context.Background(), t.TempDir())
 	if err != nil {
@@ -32,7 +46,9 @@ func newTestHandler(t *testing.T) (http.Handler, *auth.Service) {
 	web := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "web")
 	})
-	return New(Options{Log: slog.New(slog.DiscardHandler), Version: "v1.0.0", Auth: svc, Web: web}), svc
+	envs := environments.New(environments.Options{DB: st.DB(), Now: func() time.Time { return now }, Connect: connect})
+	t.Cleanup(func() { _ = envs.Close() })
+	return New(Options{Log: slog.New(slog.DiscardHandler), Version: "v1.0.0", Auth: svc, Envs: envs, Web: web}), svc, st.DB()
 }
 
 func TestRoutes(t *testing.T) {

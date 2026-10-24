@@ -11,7 +11,8 @@ docs/config/; grep there, not in README. The API reference is docs/api.md; the d
 ## Request path
 `main.realMain` picks the subcommand → `config.LoadServer` → `serve` runs
 `prepareDataDir` and `store.Open` (migrations), `auth.New` (+ `EnsureAdmin`,
-`RunCleanup`), then builds `api.New(api.Options{Auth: …, Web: web.Handler(web.Dist())})`
+`RunCleanup`), `environments.New` (+ `EnsureLocal`), then builds
+`api.New(api.Options{Auth: …, Envs: …, Web: web.Handler(web.Dist())})`
 → root `http.ServeMux`: `/api/` goes through `server.protect` (with an `Authorization`
 header an API token, else the cross-origin check and a session; `server.authenticate`
 lets patterns in `publicRoutes` through without either credential) to the API mux
@@ -24,6 +25,8 @@ lets patterns in `publicRoutes` through without either credential) to the API mu
 | `cmd/nudge` | subcommands, wiring, graceful shutdown | `realMain`, `serve` |
 | `internal/api` | HTTP API under /api/v1 | `New`, `Options`, `publicRoutes`, `server.protect`, `userFrom`, `server.decodeJSON`, `server.writeJSON`, `server.writeError`, `server.internalError` |
 | `internal/auth` | users, argon2id, sessions, login rate limit, API tokens (tokens.go) | `New`, `Options`, `Service.Login`, `SessionUser`, `TokenUser`, `CreateToken`, `CreateFirstUser`, `EnsureAdmin`, `RunCleanup` |
+| `internal/docker` | Docker client over a dialer per kind; `Client` interface handlers use; `dockertest.Fake` | `New`, `LocalDialer`, `Client`, `Unreachable` |
+| `internal/environments` | environments table, Docker client per environment (cached), online checks, auto-created `local` | `New`, `Options.Connect`, `LocalConnect`, `EnsureLocal`, `Service.Client`, `Online` |
 | `internal/config` | flags with NUDGE_* env fallbacks | `LoadServer`, `Server` |
 | `internal/store` | SQLite (`<data>/nudge.db`), embedded migrations | `Open`, `Store.DB`, `migrations/NNNN_name.sql` |
 | `internal/web` | embedded frontend, SPA fallback | `Dist`, `Handler` |
@@ -53,4 +56,9 @@ lets patterns in `publicRoutes` through without either credential) to the API mu
   `auth.Service`; create a user with `CreateFirstUser`, get a cookie from a login via
   `do`/`sessionCookieOf` in auth_test.go); `auth.newTestService(t)` with `fakeClock`; `fstest.MapFS` for web
   handler tests; `realMain` with a fake `getenv` and buffers for CLI tests;
-  `store.Open(ctx, t.TempDir())` for a migrated database.
+  `store.Open(ctx, t.TempDir())` for a migrated database; `dockertest.Fake` as a Docker
+  client and `api.newTestHandlerWith(t, connect)` to hand it to environments (see
+  api/environments_test.go); main tests pass `-docker-host noDocker(t)` so serve never
+  reaches the host's daemon.
+- **New Docker call:** add the method to `docker.Client` and `dockertest.Fake`; in the
+  handler use `s.environment(w, r)`, a `dockerTimeout` context and `s.dockerError`.

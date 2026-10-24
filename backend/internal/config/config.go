@@ -22,6 +22,8 @@ type Server struct {
 	// AdminPassword, if set, creates the user "admin" at start when no user exists.
 	// Environment only (NUDGE_ADMIN_PASSWORD): a flag would show in the process list.
 	AdminPassword string
+	// DockerHost is the local environment's Docker API, unix:// or tcp://.
+	DockerHost string
 }
 
 // LoadServer parses args (without the program and subcommand name). A flag wins over
@@ -32,6 +34,7 @@ func LoadServer(args []string, getenv func(string) string, out io.Writer) (Serve
 	fs.SetOutput(out)
 	fs.StringVar(&c.Addr, "addr", envOr(getenv, "NUDGE_ADDR", ":8080"), "listen address (NUDGE_ADDR)")
 	fs.StringVar(&c.DataDir, "data", envOr(getenv, "NUDGE_DATA", "/data"), "data directory (NUDGE_DATA)")
+	fs.StringVar(&c.DockerHost, "docker-host", envOr(getenv, "DOCKER_HOST", "unix:///var/run/docker.sock"), "Docker API of the local environment, unix:// or tcp:// (DOCKER_HOST)")
 	level := fs.String("log-level", envOr(getenv, "NUDGE_LOG_LEVEL", "info"), "debug, info, warn or error (NUDGE_LOG_LEVEL)")
 	if err := fs.Parse(args); err != nil {
 		return Server{}, err
@@ -45,6 +48,9 @@ func LoadServer(args []string, getenv func(string) string, out io.Writer) (Serve
 	c.AdminPassword = getenv("NUDGE_ADMIN_PASSWORD")
 	if c.Addr == "" {
 		return Server{}, errors.New("listen address must not be empty")
+	}
+	if c.DockerHost == "" {
+		return Server{}, errors.New("docker host must not be empty")
 	}
 	if c.DataDir == "" {
 		return Server{}, errors.New("data directory must not be empty")
