@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vite-plus/test';
 
-import { formatBytes, formatPort, matches, shortId } from './format';
+import { formatBytes, formatPort, matches, parsePairs, shortId } from './format';
 
 describe('format', () => {
   it.each([
@@ -29,5 +29,11 @@ describe('format', () => {
     expect(matches('', 'x')).toBe(true);
     expect(matches(' Web ', 'my-web-1')).toBe(true);
     expect(matches('db', 'web', undefined)).toBe(false);
+  });
+
+  it('parsePairs reads key=value lines', () => {
+    expect(parsePairs('a=1\n\n  b = x=y \nflag\n')).toEqual({ a: '1', b: 'x=y', flag: '' });
+    expect(parsePairs('')).toEqual({});
+    expect(() => parsePairs('=oops')).toThrow('"=oops" has no name before "="');
   });
 });

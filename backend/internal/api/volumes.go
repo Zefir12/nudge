@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -10,6 +12,10 @@ import (
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 )
+
+// volumeTimeout bounds a volume create or remove; a plugin driver may mount or unmount
+// remote storage.
+const volumeTimeout = time.Minute
 
 // volumeResponse leaves out the driver options: a CIFS or NFS volume keeps its mount
 // credentials there.
@@ -56,4 +62,114 @@ func toVolume(v volume.Volume) volumeResponse {
 		Name: v.Name, Driver: v.Driver, Mountpoint: v.Mountpoint, Scope: v.Scope,
 		CreatedAt: parseTime(v.CreatedAt), Labels: nonNilMap(v.Labels),
 	}
+}
+
+// createVolumeRequest is a new volume; an empty name lets Docker pick one and an empty
+// driver is "local". Options are passed to the driver and never returned or logged.
+type createVolumeRequest struct {
+	Name    string            `json:"name"`
+	Driver  string            `json:"driver"`
+	Options map[string]string `json:"options"`
+	Labels  map[string]string `json:"labels"`
+}
+
+type pruneVolumesResponse struct {
+	Deleted        []string `json:"deleted"`
+	SpaceReclaimed uint64   `json:"space_reclaimed"`
+}
+
+// createVolume creates a volume and answers 201 with it. Docker answers an existing
+// volume of the same name and driver instead of failing, like `docker volume create`.
+func (s *server) createVolume(w http.ResponseWriter, r *http.Request) {
+	var req createVolumeRequest
+	if !s.decodeJSON(w, r, &req) {
+		return
+	}
+	if msg := validCreate(req.Name, req.Driver, req.Options, req.Labels); msg != "" {
+		s.writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+	resp, ok := s.runDocker(context.WithoutCancel(r.Context()), w, r, "volume create", "a volume with this name already exists with another driver", volumeTimeout, func(ctx context.Context, c docker.Client) (any, error) {
+		res, err := c.VolumeCreate(ctx, client.VolumeCreateOptions{Name: req.Name, Driver: req.Driver, DriverOpts: req.Options, Labels: req.Labels})
+		if err != nil {
+			return nil, createError(err, "volume")
+		}
+		return toVolume(res.Volume), nil
+	})
+	if ok {
+		s.writeJSON(w, http.StatusCreated, resp)
+	}
+}
+
+// removeVolume removes a volume; ?force=true also removes it when its driver can't
+// (Docker never removes a volume a container uses).
+func (s *server) removeVolume(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.pathID(w, r, objectID, "volume")
+	if !ok {
+		return
+	}
+	force, ok := s.queryBool(w, r, "force")
+	if !ok {
+		return
+	}
+	s.dockerAction(w, r, "volume", "the volume is in use by a container", volumeTimeout, func(ctx context.Context, c docker.Client) error {
+		_, err := c.VolumeRemove(ctx, id, client.VolumeRemoveOptions{Force: force})
+		return err
+	})
+}
+
+// pruneVolumes removes the anonymous volumes no container uses, or with ?all=true the
+// named ones too.
+func (s *server) pruneVolumes(w http.ResponseWriter, r *http.Request) {
+	all, ok := s.queryBool(w, r, "all")
+	if !ok {
+		return
+	}
+	resp, ok := s.runDocker(context.WithoutCancel(r.Context()), w, r, "volume prune", "a volume prune is already running", pruneTimeout, func(ctx context.Context, c docker.Client) (any, error) {
+		res, err := c.VolumePrune(ctx, client.VolumePruneOptions{All: all})
+		if err != nil {
+			return nil, err
+		}
+		return pruneVolumesResponse{Deleted: nonNil(res.Report.VolumesDeleted), SpaceReclaimed: res.Report.SpaceReclaimed}, nil
+	})
+	if ok {
+		s.writeJSON(w, http.StatusOK, resp)
+	}
+}
+
+// validCreate checks the fields volumes and networks share and returns the problem, if
+// any. Docker checks the rest (such as a name it doesn't accept).
+func validCreate(name, driver string, options, labels map[string]string) string {
+	switch {
+	case name != "" && !objectID.MatchString(name):
+		return "name may only contain letters, digits, '_', '.' and '-' and must start with a letter or digit"
+	case driver != "" && !imageRef.MatchString(driver):
+		return "invalid driver name"
+	case hasEmptyKey(options):
+		return "option names must not be empty"
+	case hasEmptyKey(labels):
+		return "label names must not be empty"
+	}
+	return ""
+}
+
+func hasEmptyKey(m map[string]string) bool {
+	_, ok := m[""]
+	return ok
+}
+
+// createError turns the daemon's refusals of a create into 400s. Its messages can quote
+// driver options, which may hold credentials, so they are neither answered nor logged:
+// only errors runDocker answers by kind (conflict, timeout, offline) are kept.
+func createError(err error, what string) error {
+	switch {
+	case docker.NotFound(err):
+		// A missing driver plugin.
+		return &badRequestError{msg: "the Docker host has no such " + what + " driver"}
+	case docker.InvalidArgument(err), docker.Forbidden(err):
+		return &badRequestError{msg: "the Docker host refused the " + what + " settings"}
+	case docker.Conflict(err), docker.Unreachable(err), errors.Is(err, context.DeadlineExceeded):
+		return err
+	}
+	return fmt.Errorf("%s create failed (daemon message withheld, it may quote driver options)", what)
 }

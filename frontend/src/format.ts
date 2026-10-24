@@ -33,3 +33,18 @@ export function matches(query: string, ...fields: (string | undefined)[]): boole
   const q = query.trim().toLowerCase();
   return q === '' || fields.some((f) => f?.toLowerCase().includes(q));
 }
+
+// parsePairs reads "key=value" lines (labels, driver options); blank lines are skipped
+// and the value may contain "=". It throws on a line without a key.
+export function parsePairs(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (line === '') continue;
+    const eq = line.indexOf('=');
+    const key = (eq < 0 ? line : line.slice(0, eq)).trim();
+    if (key === '') throw new Error(`"${line}" has no name before "="`);
+    out[key] = eq < 0 ? '' : line.slice(eq + 1).trim();
+  }
+  return out;
+}

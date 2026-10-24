@@ -366,6 +366,49 @@ export interface PruneResult {
 export const pruneImages = (env: string, all = false) =>
   apiFetch<PruneResult>(envPath(env, `/images/prune${all ? '?all=true' : ''}`), { method: 'POST' });
 
+export interface VolumeCreate {
+  name?: string;
+  driver?: string;
+  options?: Record<string, string>;
+  labels?: Record<string, string>;
+}
+
+export const createVolume = (env: string, v: VolumeCreate) =>
+  apiFetch<Volume>(envPath(env, '/volumes'), post(v));
+// force also removes a volume its driver can't remove; one in use is never removed.
+export const removeVolume = (env: string, name: string, force = false) =>
+  apiFetch<void>(envPath(env, `/volumes/${enc(name)}${force ? '?force=true' : ''}`), { method: 'DELETE' });
+
+export interface VolumePruneResult {
+  deleted: string[];
+  space_reclaimed: number;
+}
+
+// all also prunes named volumes, not only anonymous ones.
+export const pruneVolumes = (env: string, all = false) =>
+  apiFetch<VolumePruneResult>(envPath(env, `/volumes/prune${all ? '?all=true' : ''}`), { method: 'POST' });
+
+export interface NetworkCreate {
+  name: string;
+  driver?: string;
+  internal?: boolean;
+  attachable?: boolean;
+  ipv6?: boolean;
+  subnet?: string;
+  gateway?: string;
+  ip_range?: string;
+  options?: Record<string, string>;
+  labels?: Record<string, string>;
+}
+
+export const createNetwork = (env: string, n: NetworkCreate) =>
+  apiFetch<{ id: string; warnings: string[] }>(envPath(env, '/networks'), post(n));
+export const removeNetwork = (env: string, id: string) =>
+  apiFetch<void>(envPath(env, `/networks/${enc(id)}`), { method: 'DELETE' });
+// pruneNetworks removes every custom network no container uses.
+export const pruneNetworks = (env: string) =>
+  apiFetch<{ deleted: string[] }>(envPath(env, '/networks/prune'), { method: 'POST' });
+
 // PullEvent is one progress line of a pull; id names the layer, if any.
 export interface PullEvent {
   id?: string;
