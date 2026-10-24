@@ -150,8 +150,8 @@ func (f *Fake) LogOptions() []client.ContainerLogsOptions {
 	return slices.Clone(f.logOptions)
 }
 
-// logStream (also a stats stream) reads its data, then, when following, blocks like a daemon waiting for
-// more output until ctx is done.
+// logStream reads its data (log output or stats samples), then, when following, blocks
+// like a daemon waiting for more until ctx is done.
 type logStream struct {
 	ctx       context.Context
 	r         io.Reader

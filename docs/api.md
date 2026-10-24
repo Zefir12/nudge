@@ -287,9 +287,10 @@ has no previous one to compute CPU from, is skipped); the last frame is `{"done"
 when the container stopped or `{"error": "..."}`.
 
 `GET /api/v1/environments/{env}/stats` answers `{"containers": [{"id", "name", ...sample}],
-"total": {"cpu_percent", "memory_usage", "network_rx", "network_tx", "block_read",
+"skipped": 0, "total": {"cpu_percent", "memory_usage", "network_rx", "network_tx", "block_read",
 "block_write"}}`, sorted by name. It takes about a second (the daemon waits for a second
-reading) and samples 8 containers at a time; a container that stops meanwhile is left out.
+reading) and samples 8 containers at a time, for at most a minute; a container that stops
+meanwhile, or isn't sampled in time, is left out and counted in `skipped`.
 
 ### Image actions
 - `POST /api/v1/environments/{env}/images/pull` with `{"image": "ghcr.io/org/app:1.2"}`

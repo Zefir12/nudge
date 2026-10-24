@@ -20,9 +20,13 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 )
 
-// maxConcurrentStats bounds the one-shot stats calls an environment overview runs at
-// once; each takes about a second on the daemon (it waits for a second sample).
-const maxConcurrentStats = 8
+const (
+	// maxConcurrentStats bounds the one-shot stats calls an environment overview runs at
+	// once; each takes about a second on the daemon (it waits for a second sample).
+	maxConcurrentStats = 8
+	// statsTimeout bounds an overview: at 8 a second, enough for a few hundred containers.
+	statsTimeout = time.Minute
+)
 
 // statsSample is one container's usage, computed from the daemon's raw counters. CPU
 // is a percentage of one CPU, so a busy container on four CPUs can reach 400. Memory
@@ -187,15 +191,17 @@ type usageTotals struct {
 	BlockWrite  uint64  `json:"block_write"`
 }
 
+// environmentStats lists the sampled containers; Skipped counts those that could not be
+// sampled (they stopped meanwhile, or the overview ran out of time).
 type environmentStats struct {
 	Containers []containerUsage `json:"containers"`
+	Skipped    int              `json:"skipped"`
 	Total      usageTotals      `json:"total"`
 }
 
-// environmentStats takes one sample of every running container, sorted by name. A
-// container that fails (it stopped meanwhile) is left out.
+// environmentStats takes one sample of every running container, sorted by name.
 func (s *server) environmentStats(w http.ResponseWriter, r *http.Request) {
-	s.dockerCall(w, r, "environment stats", func(ctx context.Context, c docker.Client) (any, error) {
+	resp, ok := s.runDocker(r.Context(), w, r, "environment stats", "", statsTimeout, func(ctx context.Context, c docker.Client) (any, error) {
 		list, err := c.ContainerList(ctx, client.ContainerListOptions{})
 		if err != nil {
 			return nil, err
@@ -203,8 +209,13 @@ func (s *server) environmentStats(w http.ResponseWriter, r *http.Request) {
 		usage := make([]*containerUsage, len(list.Items))
 		sem := make(chan struct{}, maxConcurrentStats)
 		var wg sync.WaitGroup
+	sample:
 		for i, item := range list.Items {
-			sem <- struct{}{}
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				break sample
+			}
 			wg.Go(func() {
 				defer func() { <-sem }()
 				sample, err := oneSample(ctx, c, item.ID)
@@ -223,6 +234,7 @@ func (s *server) environmentStats(w http.ResponseWriter, r *http.Request) {
 		resp := environmentStats{Containers: []containerUsage{}}
 		for _, u := range usage {
 			if u == nil {
+				resp.Skipped++
 				continue
 			}
 			resp.Containers = append(resp.Containers, *u)
@@ -238,6 +250,9 @@ func (s *server) environmentStats(w http.ResponseWriter, r *http.Request) {
 		})
 		return resp, nil
 	})
+	if ok {
+		s.writeJSON(w, http.StatusOK, resp)
+	}
 }
 
 // oneSample asks the daemon for a sample with a previous reading, so the CPU percentage

@@ -13,21 +13,34 @@ const refreshMs = 10_000;
 const stats = shallowRef<EnvironmentStats | null>(null);
 const error = ref('');
 let timer: ReturnType<typeof setTimeout> | undefined;
-// generation drops the answer of a request for an environment no longer shown.
-let generation = 0;
+// request is the overview in flight; stop aborts it, so the daemon stops sampling too.
+let request: AbortController | null = null;
+
+function stop() {
+  clearTimeout(timer);
+  request?.abort();
+  request = null;
+}
 
 async function load() {
-  clearTimeout(timer);
-  const gen = ++generation;
+  stop();
+  // A hidden tab skips the overview (each one costs the daemon a second per container).
+  if (document.visibilityState === 'hidden') {
+    timer = setTimeout(load, refreshMs);
+    return;
+  }
+  const ctrl = new AbortController();
+  request = ctrl;
   try {
-    const s = await getEnvironmentStats(props.env);
-    if (gen !== generation) return;
+    const s = await getEnvironmentStats(props.env, ctrl.signal);
+    if (ctrl.signal.aborted) return;
     stats.value = s;
     error.value = '';
   } catch (e) {
-    if (gen !== generation) return;
+    if (ctrl.signal.aborted) return;
     error.value = e instanceof Error ? e.message : String(e);
   }
+  request = null;
   timer = setTimeout(load, refreshMs);
 }
 
@@ -40,10 +53,7 @@ watch(
   },
   { immediate: true },
 );
-onBeforeUnmount(() => {
-  generation++;
-  clearTimeout(timer);
-});
+onBeforeUnmount(stop);
 </script>
 
 <template>
@@ -64,7 +74,11 @@ onBeforeUnmount(() => {
           <strong>{{ formatBytes(stats.total.network_tx) }}</strong> out
         </span>
       </p>
-      <p v-if="stats.containers.length === 0" class="muted">No running containers.</p>
+      <p v-if="stats.skipped" class="muted">
+        {{ stats.skipped }} running {{ stats.skipped === 1 ? 'container' : 'containers' }} could not be
+        sampled.
+      </p>
+      <p v-if="stats.containers.length === 0 && !stats.skipped" class="muted">No running containers.</p>
       <div v-else class="table-wrap">
         <table>
           <thead>
@@ -80,10 +94,7 @@ onBeforeUnmount(() => {
               <td>
                 <RouterLink :to="{ name: 'container', params: { env, id: c.id } }">{{ c.name }}</RouterLink>
               </td>
-              <td>
-                <meter min="0" max="100" :value="Math.min(c.cpu_percent, 100)" />
-                {{ c.cpu_percent.toFixed(1) }}%
-              </td>
+              <td>{{ c.cpu_percent.toFixed(1) }}%</td>
               <td>
                 <meter min="0" max="100" :value="c.memory_percent" />
                 {{ formatBytes(c.memory_usage) }}

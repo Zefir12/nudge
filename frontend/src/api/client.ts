@@ -539,6 +539,8 @@ export interface ContainerUsage extends StatsSample {
 
 export interface EnvironmentStats {
   containers: ContainerUsage[];
+  // skipped counts running containers that could not be sampled.
+  skipped: number;
   total: Pick<
     StatsSample,
     'cpu_percent' | 'memory_usage' | 'network_rx' | 'network_tx' | 'block_read' | 'block_write'
@@ -546,7 +548,8 @@ export interface EnvironmentStats {
 }
 
 // getEnvironmentStats samples every running container once (it takes about a second).
-export const getEnvironmentStats = (env: string) => apiFetch<EnvironmentStats>(envPath(env, '/stats'));
+export const getEnvironmentStats = (env: string, signal?: AbortSignal) =>
+  apiFetch<EnvironmentStats>(envPath(env, '/stats'), { signal });
 
 // force also removes an image with several tags or used by stopped containers.
 export const removeImage = (env: string, id: string, force = false) =>

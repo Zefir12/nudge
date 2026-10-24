@@ -22,8 +22,9 @@ const usage = (name: string, cpu: number): ContainerUsage => ({
   pids: 1,
 });
 
-const body = (containers: ContainerUsage[]) => ({
+const body = (containers: ContainerUsage[], skipped = 0) => ({
   containers,
+  skipped,
   total: {
     cpu_percent: 150,
     memory_usage: 200e6,
@@ -42,6 +43,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -58,9 +60,8 @@ describe('EnvironmentUsage', () => {
     const rows = wrapper.findAll('tbody tr');
     expect(rows.map((r) => r.find('a').text())).toEqual(['db', 'web']);
     expect(rows[0]!.find('a').attributes('href')).toBe('/env/1/containers/db-id');
-    // A meter can't go past its max; the text keeps the real value.
-    expect(rows[1]!.find('meter').element.getAttribute('value')).toBe('100');
     expect(rows[1]!.text()).toContain('180.0%');
+    expect(rows[1]!.find('meter').element.getAttribute('value')).toBe('10');
 
     const statsCalls = () => fetch.mock.calls.filter(([url]) => url.endsWith('/stats')).length;
     expect(statsCalls()).toBe(1);
@@ -71,14 +72,32 @@ describe('EnvironmentUsage', () => {
     expect(statsCalls()).toBe(2);
   });
 
+  it('aborts the request in flight when unmounted', async () => {
+    const fetch = stubApi({ 'GET /environments/1/stats': { body: body([]) } });
+    const wrapper = mountUsage();
+    const call = fetch.mock.calls.find(([url]) => url.endsWith('/stats'))!;
+    wrapper.unmount();
+    expect((call[1] as RequestInit).signal!.aborted).toBe(true);
+  });
+
+  it('pauses while the tab is hidden', async () => {
+    const fetch = stubApi({ 'GET /environments/1/stats': { body: body([]) } });
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    const wrapper = mountUsage();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(fetch.mock.calls.filter(([url]) => url.endsWith('/stats'))).toHaveLength(0);
+    wrapper.unmount();
+  });
+
   it('says when nothing runs and shows errors', async () => {
     stubApi({
-      'GET /environments/1/stats': { body: body([]) },
+      'GET /environments/1/stats': { body: body([], 2) },
       'GET /environments/2/stats': { status: 503, body: { error: 'the environment is offline' } },
     });
     const wrapper = mountUsage();
     await flushPromises();
-    expect(wrapper.text()).toContain('No running containers.');
+    expect(wrapper.text()).toContain('2 running containers could not be sampled.');
+    expect(wrapper.text()).not.toContain('No running containers.');
     await wrapper.setProps({ env: '2' });
     await flushPromises();
     expect(wrapper.find('[role=alert]').text()).toBe('the environment is offline');

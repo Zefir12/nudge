@@ -38,9 +38,9 @@ type logLine struct {
 	Line   string     `json:"line"`
 }
 
-// logEnd is the last frame of a log or stats stream: done when the stream ended (the
+// streamEnd is the last frame of a log or stats stream: done when the stream ended (the
 // container stopped or the lines asked for were sent), or an error.
-type logEnd struct {
+type streamEnd struct {
 	Done  bool   `json:"done,omitempty"`
 	Error string `json:"error,omitempty"`
 }
@@ -132,19 +132,19 @@ func (s *server) endStream(ctx context.Context, ws *websocket.Conn, what string,
 	if ctx.Err() != nil || errors.Is(err, errClientGone) {
 		return
 	}
-	end := logEnd{Done: true}
+	end := streamEnd{Done: true}
 	if err != nil {
 		// The daemon's message stays in the log; it can carry secrets.
 		s.log.Warn("container "+what, "env", env, "container", id, "err", err)
-		end = logEnd{Error: "the environment's Docker host ended the " + what + " stream with an error"}
+		end = streamEnd{Error: "the environment's Docker host ended the " + what + " stream with an error"}
 	}
 	if wsjson.Write(ctx, ws, end) == nil {
 		_ = ws.Close(websocket.StatusNormalClosure, "")
 	}
 }
 
-// keepAlive pings the client of a log or stats stream until ctx is done and cancels the stream when a ping goes
-// unanswered.
+// keepAlive pings a log or stats client until ctx is done and cancels the stream when a
+// ping goes unanswered.
 func keepAlive(ctx context.Context, cancel context.CancelFunc, ws *websocket.Conn) {
 	t := time.NewTicker(logPingInterval)
 	defer t.Stop()

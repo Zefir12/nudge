@@ -311,6 +311,7 @@ func TestEnvironmentStats(t *testing.T) {
 	sample, _ := toStatsSample(linuxStats(1))
 	want := environmentStats{
 		Containers: []containerUsage{{ID: "aaa", Name: "db", statsSample: sample}, {ID: "bbb", Name: "web", statsSample: sample}},
+		Skipped:    1,
 		Total:      usageTotals{CPUPercent: 200, MemoryUsage: 512 << 20, NetworkRx: 2048, NetworkTx: 512, BlockRead: 16384, BlockWrite: 1024},
 	}
 	gotJSON, _ := json.Marshal(got)
