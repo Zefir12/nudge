@@ -5,12 +5,15 @@ import { RouterLink } from 'vue-router';
 import { listVolumes, pruneVolumes } from '../api/client';
 import LoadState from '../components/LoadState.vue';
 import VolumeCreate from '../components/VolumeCreate.vue';
+import { useLiveReload } from '../composables/useEvents';
 import { useLoad } from '../composables/useLoad';
 import { useParams } from '../composables/params';
 import { formatBytes, formatDate, matches } from '../format';
 
 const { env } = useParams();
 const { data, error, reload } = useLoad(env, listVolumes);
+// Docker events refresh the list, so changes made elsewhere show up by themselves.
+useLiveReload(env, ['volume'], reload);
 
 const query = ref('');
 

@@ -5,7 +5,7 @@ import { createMemoryHistory } from 'vue-router';
 import type { ContainerSummary } from '../api/client';
 import { createAppRouter } from '../router';
 import { currentUser } from '../session';
-import { admin, stubApi } from '../test-utils';
+import { admin, stubApi, stubSockets, type FakeWebSocket } from '../test-utils';
 import ContainersView from './ContainersView.vue';
 
 const base: ContainerSummary = {
@@ -45,8 +45,11 @@ async function mountAt(path: string) {
   return { wrapper, router };
 }
 
+let sockets: FakeWebSocket[];
+
 beforeEach(() => {
   currentUser.value = admin;
+  sockets = stubSockets();
 });
 
 afterEach(() => {
@@ -80,6 +83,29 @@ describe('ContainersView', () => {
     const names = wrapper.findAll('tbody tr td:first-child').map((td) => td.text());
     expect(names).toEqual(want);
     if (want.length === 0) expect(wrapper.text()).toContain('No container matches.');
+  });
+
+  it('reloads once after a burst of container events', async () => {
+    let calls = 0;
+    stubApi({
+      'GET /environments/1/containers': () => {
+        calls++;
+        return { body: calls === 1 ? containers : [containers[0]] };
+      },
+    });
+    const { wrapper } = await mountAt('/env/1/containers');
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0]!.url).toMatch(/\/api\/v1\/environments\/1\/events\?type=container$/);
+    const event = { time: '2026-10-24T12:00:00Z', type: 'container', id: 'def456' };
+    sockets[0]!.message({ ...event, action: 'exec_start' });
+    sockets[0]!.message({ ...event, action: 'die' });
+    sockets[0]!.message({ ...event, action: 'destroy' });
+    await new Promise((r) => setTimeout(r, 350));
+    await flushPromises();
+    expect(calls).toBe(2);
+    expect(wrapper.findAll('tbody tr')).toHaveLength(1);
+    wrapper.unmount();
+    expect(sockets[0]!.closed).toBe(true);
   });
 
   it('says when there are no containers', async () => {

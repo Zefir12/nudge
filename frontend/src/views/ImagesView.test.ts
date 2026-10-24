@@ -4,7 +4,7 @@ import { createMemoryHistory } from 'vue-router';
 
 import { createAppRouter } from '../router';
 import { currentUser } from '../session';
-import { admin, stubApi } from '../test-utils';
+import { admin, stubApi, stubSockets } from '../test-utils';
 import ImagesView from './ImagesView.vue';
 
 const nginx = {
@@ -30,6 +30,7 @@ const button = (wrapper: ReturnType<typeof mount>, text: string) =>
 
 beforeEach(() => {
   currentUser.value = admin;
+  stubSockets();
 });
 
 afterEach(() => {

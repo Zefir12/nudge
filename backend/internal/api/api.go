@@ -3,6 +3,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,11 +14,15 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/audit"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/events"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/registries"
 )
 
 // Options are the API's dependencies.
 type Options struct {
+	// Context ends long-lived streams (Docker events) at shutdown, which
+	// http.Server.Shutdown leaves running; nil means never.
+	Context context.Context
 	Log     *slog.Logger
 	Version string
 	Auth    *auth.Service
@@ -56,6 +61,7 @@ func New(opts Options) http.Handler {
 	s := &server{
 		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries, audit: opts.Audit,
 		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, recreating: map[string]bool{},
+		events: events.New(events.Options{Context: opts.Context, Log: opts.Log}),
 	}
 	api := http.NewServeMux()
 	api.HandleFunc("GET /api/v1/health", s.health)
@@ -93,6 +99,7 @@ func New(opts Options) http.Handler {
 	api.HandleFunc("GET /api/v1/environments/{env}/containers/{id}/logs", s.containerLogs)
 	api.HandleFunc("GET /api/v1/environments/{env}/containers/{id}/stats", s.containerStats)
 	api.HandleFunc("GET /api/v1/environments/{env}/stats", s.environmentStats)
+	api.HandleFunc("GET /api/v1/environments/{env}/events", s.environmentEvents)
 	api.HandleFunc("GET /api/v1/environments/{env}/images", s.listImages)
 	api.HandleFunc("POST /api/v1/environments/{env}/images/pull", s.pullImage)
 	api.HandleFunc("POST /api/v1/environments/{env}/images/prune", s.pruneImages)
@@ -124,6 +131,8 @@ type server struct {
 
 	registries *registries.Service
 	audit      *audit.Service
+	// events fans each environment's Docker events out to the clients watching it.
+	events *events.Hub
 
 	publicURL     string
 	secureCookies bool

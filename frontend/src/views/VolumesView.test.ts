@@ -4,7 +4,7 @@ import { createMemoryHistory } from 'vue-router';
 
 import { createAppRouter } from '../router';
 import { currentUser } from '../session';
-import { admin, stubApi } from '../test-utils';
+import { admin, stubApi, stubSockets } from '../test-utils';
 import VolumesView from './VolumesView.vue';
 
 const vol = (name: string) => ({
@@ -29,6 +29,7 @@ const button = (wrapper: ReturnType<typeof mount>, text: string) =>
 
 beforeEach(() => {
   currentUser.value = admin;
+  stubSockets();
 });
 
 afterEach(() => {

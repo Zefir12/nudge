@@ -6,12 +6,15 @@ import { listContainers } from '../api/client';
 import ContainerActions from '../components/ContainerActions.vue';
 import LoadState from '../components/LoadState.vue';
 import StateBadge from '../components/StateBadge.vue';
+import { useLiveReload } from '../composables/useEvents';
 import { useLoad } from '../composables/useLoad';
 import { useParams } from '../composables/params';
 import { formatPort, matches } from '../format';
 
 const { env } = useParams();
 const { data, error, reload } = useLoad(env, listContainers);
+// Docker events refresh the list, so changes made elsewhere show up by themselves.
+useLiveReload(env, ['container'], reload);
 
 const query = ref('');
 // "stopped" groups the states of containers that aren't running.

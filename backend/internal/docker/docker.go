@@ -48,6 +48,7 @@ type Client interface {
 	NetworkCreate(ctx context.Context, name string, opts client.NetworkCreateOptions) (client.NetworkCreateResult, error)
 	NetworkRemove(ctx context.Context, id string, opts client.NetworkRemoveOptions) (client.NetworkRemoveResult, error)
 	NetworkPrune(ctx context.Context, opts client.NetworkPruneOptions) (client.NetworkPruneResult, error)
+	Events(ctx context.Context, opts client.EventsListOptions) client.EventsResult
 	Close() error
 }
 

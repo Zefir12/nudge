@@ -185,6 +185,7 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 	srv := &http.Server{
 		Addr: cfg.Addr,
 		Handler: api.New(api.Options{
+			Context: ctx,
 			Log:     log,
 			Version: version.Version,
 			Auth:    authSvc,
