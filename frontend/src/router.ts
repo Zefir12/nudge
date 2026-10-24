@@ -20,6 +20,7 @@ import LoginView from './views/LoginView.vue';
 import NetworksView from './views/NetworksView.vue';
 import NetworkView from './views/NetworkView.vue';
 import NotFoundView from './views/NotFoundView.vue';
+import RegistriesView from './views/RegistriesView.vue';
 import SetupView from './views/SetupView.vue';
 import TokensView from './views/TokensView.vue';
 import VolumesView from './views/VolumesView.vue';
@@ -49,6 +50,7 @@ export function createAppRouter(history: RouterHistory) {
       { path: '/env/:env/networks', name: 'networks', component: NetworksView },
       { path: '/env/:env/networks/:id', name: 'network', component: NetworkView },
       { path: '/environments', name: 'environments', component: EnvironmentsView },
+      { path: '/registries', name: 'registries', component: RegistriesView },
       { path: '/tokens', name: 'tokens', component: TokensView },
       { path: '/setup', name: 'setup', component: SetupView, meta: { public: true } },
       { path: '/login', name: 'login', component: LoginView, meta: { public: true } },

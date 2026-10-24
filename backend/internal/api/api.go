@@ -11,6 +11,7 @@ import (
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/registries"
 )
 
 // Options are the API's dependencies.
@@ -19,6 +20,8 @@ type Options struct {
 	Version string
 	Auth    *auth.Service
 	Envs    *environments.Service
+	// Registries has the credentials image pulls use.
+	Registries *registries.Service
 	// Web serves every path outside /api/.
 	Web http.Handler
 	// PublicURL is the URL agents reach the server at (scheme://host[:port]); empty means
@@ -47,7 +50,7 @@ var publicRoutes = map[string]bool{
 // New returns the server's root handler: the API plus the web UI.
 func New(opts Options) http.Handler {
 	s := &server{
-		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs,
+		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries,
 		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies,
 	}
 	api := http.NewServeMux()
@@ -60,6 +63,11 @@ func New(opts Options) http.Handler {
 	api.HandleFunc("GET /api/v1/tokens", s.listTokens)
 	api.HandleFunc("POST /api/v1/tokens", s.createToken)
 	api.HandleFunc("DELETE /api/v1/tokens/{id}", s.deleteToken)
+	api.HandleFunc("GET /api/v1/registries", s.listRegistries)
+	api.HandleFunc("POST /api/v1/registries", s.createRegistry)
+	api.HandleFunc("GET /api/v1/registries/{id}", s.getRegistry)
+	api.HandleFunc("PUT /api/v1/registries/{id}", s.updateRegistry)
+	api.HandleFunc("DELETE /api/v1/registries/{id}", s.deleteRegistry)
 	api.HandleFunc("GET /api/v1/environments", s.listEnvironments)
 	api.HandleFunc("POST /api/v1/environments", s.createEnvironment)
 	api.HandleFunc("GET /api/v1/environments/{env}", s.getEnvironment)
@@ -75,7 +83,10 @@ func New(opts Options) http.Handler {
 	api.HandleFunc("POST /api/v1/environments/{env}/containers/{id}/restart", s.restartContainer)
 	api.HandleFunc("POST /api/v1/environments/{env}/containers/{id}/kill", s.killContainer)
 	api.HandleFunc("GET /api/v1/environments/{env}/images", s.listImages)
+	api.HandleFunc("POST /api/v1/environments/{env}/images/pull", s.pullImage)
+	api.HandleFunc("POST /api/v1/environments/{env}/images/prune", s.pruneImages)
 	api.HandleFunc("GET /api/v1/environments/{env}/images/{id}", s.getImage)
+	api.HandleFunc("DELETE /api/v1/environments/{env}/images/{id}", s.removeImage)
 	api.HandleFunc("GET /api/v1/environments/{env}/volumes", s.listVolumes)
 	api.HandleFunc("GET /api/v1/environments/{env}/volumes/{id}", s.getVolume)
 	api.HandleFunc("GET /api/v1/environments/{env}/networks", s.listNetworks)
@@ -93,6 +104,8 @@ type server struct {
 	version string
 	auth    *auth.Service
 	envs    *environments.Service
+
+	registries *registries.Service
 
 	publicURL     string
 	secureCookies bool

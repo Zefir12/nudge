@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed } from 'vue';
-import { RouterLink } from 'vue-router';
+import { computed, ref } from 'vue';
+import { RouterLink, useRouter } from 'vue-router';
 
-import { getImage } from '../api/client';
+import { getImage, removeImage } from '../api/client';
 import KeyValues from '../components/KeyValues.vue';
 import LoadState from '../components/LoadState.vue';
 import { useLoad } from '../composables/useLoad';
@@ -19,6 +19,31 @@ const {
   ([e, i]) => getImage(e, i),
 );
 
+const router = useRouter();
+const force = ref(false);
+const removing = ref(false);
+const removeError = ref('');
+
+async function onRemove() {
+  if (!img.value) return;
+  const name = img.value.tags[0] ?? shortId(img.value.id);
+  let msg = `Remove the image "${name}"? This cannot be undone.`;
+  if (force.value) msg += ' All its tags are removed, even if stopped containers use it.';
+  if (!window.confirm(msg)) return;
+  removing.value = true;
+  removeError.value = '';
+  try {
+    // By ID with force, so every tag goes; else by the URL's reference (a tag only
+    // untags it while other tags remain).
+    await removeImage(env.value, force.value ? img.value.id : id.value, force.value);
+    await router.push({ name: 'images', params: { env: env.value } });
+  } catch (e) {
+    removeError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    removing.value = false;
+  }
+}
+
 const labels = computed(() =>
   Object.entries(img.value?.config.labels ?? {}).sort(([a], [b]) => a.localeCompare(b)),
 );
@@ -32,6 +57,14 @@ const platform = computed(() =>
   <LoadState :loading="!img" :error="error" :ready="img !== null" @retry="reload">
     <template v-if="img">
       <h1 class="break">{{ img.tags[0] ?? shortId(img.id) }}</h1>
+      <div class="actions">
+        <button type="button" class="danger" :disabled="removing" @click="onRemove">Remove</button>
+        <label>
+          <input v-model="force" type="checkbox" :disabled="removing" />
+          force (all tags, even if stopped containers use it)
+        </label>
+      </div>
+      <p v-if="removeError" class="error" role="alert">{{ removeError }}</p>
       <section class="card">
         <h2>Overview</h2>
         <KeyValues
@@ -85,6 +118,20 @@ const platform = computed(() =>
 </template>
 
 <style scoped>
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.actions label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
 .card + .card {
   margin-top: 1rem;
 }

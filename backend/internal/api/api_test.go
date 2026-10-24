@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"io"
@@ -15,6 +16,8 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker/dockertest"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/registries"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/secretbox"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/store"
 )
 
@@ -48,7 +51,12 @@ func newTestHandlerWith(t *testing.T, connect environments.ConnectFunc) (http.Ha
 	})
 	envs := environments.New(environments.Options{DB: st.DB(), Now: func() time.Time { return now }, Connect: connect})
 	t.Cleanup(func() { _ = envs.Close() })
-	return New(Options{Log: slog.New(slog.DiscardHandler), Version: "v1.0.0", Auth: svc, Envs: envs, Web: web}), svc, st.DB()
+	box, err := secretbox.New(bytes.Repeat([]byte{1}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	regs := registries.New(registries.Options{DB: st.DB(), Box: box, Now: func() time.Time { return now }})
+	return New(Options{Log: slog.New(slog.DiscardHandler), Version: "v1.0.0", Auth: svc, Envs: envs, Registries: regs, Web: web}), svc, st.DB()
 }
 
 func TestRoutes(t *testing.T) {

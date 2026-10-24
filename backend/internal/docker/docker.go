@@ -31,6 +31,9 @@ type Client interface {
 	ContainerRemove(ctx context.Context, id string, opts client.ContainerRemoveOptions) (client.ContainerRemoveResult, error)
 	ImageList(ctx context.Context, opts client.ImageListOptions) (client.ImageListResult, error)
 	ImageInspect(ctx context.Context, id string, opts ...client.ImageInspectOption) (client.ImageInspectResult, error)
+	ImagePull(ctx context.Context, ref string, opts client.ImagePullOptions) (client.ImagePullResponse, error)
+	ImageRemove(ctx context.Context, id string, opts client.ImageRemoveOptions) (client.ImageRemoveResult, error)
+	ImagePrune(ctx context.Context, opts client.ImagePruneOptions) (client.ImagePruneResult, error)
 	VolumeList(ctx context.Context, opts client.VolumeListOptions) (client.VolumeListResult, error)
 	VolumeInspect(ctx context.Context, id string, opts client.VolumeInspectOptions) (client.VolumeInspectResult, error)
 	NetworkList(ctx context.Context, opts client.NetworkListOptions) (client.NetworkListResult, error)
@@ -102,4 +105,10 @@ func Conflict(err error) bool {
 // InvalidArgument reports whether the daemon refused the request's parameters.
 func InvalidArgument(err error) bool {
 	return cerrdefs.IsInvalidArgument(err)
+}
+
+// Unauthorized reports whether the daemon (or a registry behind it) refused the
+// credentials, or the lack of them.
+func Unauthorized(err error) bool {
+	return cerrdefs.IsUnauthorized(err) || cerrdefs.IsPermissionDenied(err)
 }

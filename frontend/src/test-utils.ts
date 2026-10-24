@@ -4,6 +4,8 @@ import { vi } from 'vite-plus/test';
 export interface Reply {
   status?: number;
   body?: unknown;
+  // raw is sent as the body as is, instead of body as JSON.
+  raw?: string;
 }
 
 export type Routes = Record<string, Reply | ((init?: RequestInit) => Reply)>;
@@ -15,7 +17,8 @@ export function stubApi(routes: Routes) {
     if (!route) return new Response(JSON.stringify({ error: `no stub for ${key}` }), { status: 599 });
     const reply = typeof route === 'function' ? route(init) : route;
     const status = reply.status ?? 200;
-    return new Response(status === 204 ? null : JSON.stringify(reply.body ?? {}), { status });
+    if (status === 204) return new Response(null, { status });
+    return new Response(reply.raw ?? JSON.stringify(reply.body ?? {}), { status });
   });
   vi.stubGlobal('fetch', fn);
   return fn;
