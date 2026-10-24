@@ -49,6 +49,7 @@ func newLogsTest(t *testing.T) logsTest {
 			"web":  {ID: "abc123", Config: &container.Config{}},
 			"term": {ID: "def456", Config: &container.Config{Tty: true}},
 			"long": {ID: "fed789", Config: &container.Config{Tty: true}},
+			"utf8": {ID: "fed780", Config: &container.Config{Tty: true}},
 		},
 		Logs: map[string][]byte{
 			"web": muxed(
@@ -58,7 +59,8 @@ func newLogsTest(t *testing.T) logsTest {
 				"stdout", "no newline",
 			),
 			"term": []byte("$ ls\r\nfile\r\n"),
-			"long": []byte(strings.Repeat("x", maxLogLine+10)),
+			"long": []byte(strings.Repeat("x", maxLogLine+10) + "\n"),
+			"utf8": []byte("x" + strings.Repeat("é", maxLogLine/2+1)),
 		},
 		LogsCancelled: make(chan string, 1),
 	}}
@@ -145,6 +147,12 @@ func TestContainerLogsStream(t *testing.T) {
 			name:  "long line is split",
 			query: "long/logs",
 			want:  `[{"line":"` + strings.Repeat("x", maxLogLine) + `","stream":"stdout"},{"line":"xxxxxxxxxx","stream":"stdout"},{"done":true}]`,
+			opts:  client.ContainerLogsOptions{ShowStdout: true, ShowStderr: true, Tail: "all"},
+		},
+		{
+			name:  "long line is split between characters",
+			query: "utf8/logs",
+			want:  `[{"line":"x` + strings.Repeat("é", maxLogLine/2-1) + `","stream":"stdout"},{"line":"éé","stream":"stdout"},{"done":true}]`,
 			opts:  client.ContainerLogsOptions{ShowStdout: true, ShowStderr: true, Tail: "all"},
 		},
 	}

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, shallowRef, triggerRef, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
 
 import { streamLogs, type LogLine } from '../api/client';
 import { matches } from '../format';
@@ -15,33 +15,53 @@ const search = ref('');
 const paused = ref(false);
 const status = ref<'live' | 'ended' | 'error'>('live');
 const error = ref('');
-const lines = shallowRef<LogLine[]>([]);
-const dropped = ref(0);
+// Each line has an id to key on; lines arriving within a frame are added together, so a
+// chatty container re-renders once per frame, not once per line.
+type Shown = LogLine & { n: number };
+const lines = shallowRef<Shown[]>([]);
+const dropped = ref(false);
 const box = ref<HTMLElement | null>(null);
 
 let close: (() => void) | null = null;
+let generation = 0;
+let next = 0;
+let pending: Shown[] = [];
+let frame = 0;
+
+function flush() {
+  frame = 0;
+  const all = lines.value.concat(pending);
+  pending = [];
+  if (all.length > maxLines) {
+    all.splice(0, all.length - maxLines);
+    dropped.value = true;
+  }
+  lines.value = all;
+}
 
 function open() {
   close?.();
+  cancelAnimationFrame(frame);
+  frame = 0;
+  pending = [];
   lines.value = [];
-  dropped.value = 0;
+  dropped.value = false;
   status.value = 'live';
   error.value = '';
+  // A message the old socket still delivers belongs to the old stream.
+  const gen = ++generation;
   close = streamLogs(
     props.env,
     props.id,
     { follow: true, tail: tail.value === 'all' ? 'all' : Number(tail.value), timestamps: timestamps.value },
     {
       onLine: (l) => {
-        const all = lines.value;
-        all.push(l);
-        if (all.length > maxLines) {
-          all.splice(0, all.length - maxLines);
-          dropped.value++;
-        }
-        triggerRef(lines);
+        if (gen !== generation) return;
+        pending.push({ ...l, n: next++ });
+        if (!frame) frame = requestAnimationFrame(flush);
       },
       onEnd: (err) => {
+        if (gen !== generation) return;
         status.value = err ? 'error' : 'ended';
         error.value = err ?? '';
       },
@@ -50,7 +70,11 @@ function open() {
 }
 
 watch(() => [props.env, props.id, tail.value, timestamps.value], open, { immediate: true });
-onBeforeUnmount(() => close?.());
+onBeforeUnmount(() => {
+  generation++;
+  cancelAnimationFrame(frame);
+  close?.();
+});
 
 const shown = computed(() => lines.value.filter((l) => matches(search.value, l.line)));
 
@@ -84,7 +108,7 @@ function download() {
   a.href = url;
   a.download = `${props.name}.log`;
   a.click();
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 const statusText = computed(() => {
@@ -114,10 +138,10 @@ const statusText = computed(() => {
       <button v-if="status !== 'live'" type="button" @click="open">Reconnect</button>
       <span class="status" :class="status" role="status">{{ statusText }}</span>
     </div>
-    <p v-if="dropped" class="muted">Showing the last {{ maxLines }} lines.</p>
+    <p v-if="dropped" class="muted">Showing (and downloading) the last {{ maxLines }} lines.</p>
     <div ref="box" class="logs" tabindex="0" aria-label="Log lines" @scroll="onScroll">
       <p v-if="shown.length === 0" class="muted">{{ search ? 'No matching lines.' : 'No log lines.' }}</p>
-      <div v-for="(l, i) in shown" :key="i" class="line" :class="l.stream">
+      <div v-for="l in shown" :key="l.n" class="line" :class="l.stream">
         <span v-if="l.time" class="time">{{ l.time }}</span
         >{{ l.line }}
       </div>

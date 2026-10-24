@@ -461,7 +461,14 @@ export function streamLogs(env: string, id: string, opts: LogOptions, h: LogHand
     h.onEnd(error);
   };
   ws.onmessage = (ev: MessageEvent<string>) => {
-    const m = JSON.parse(ev.data) as Partial<LogLine> & { done?: boolean; error?: string };
+    let m: Partial<LogLine> & { done?: boolean; error?: string };
+    try {
+      m = JSON.parse(ev.data) as typeof m;
+    } catch {
+      end('The log stream sent a malformed frame.');
+      ws.close();
+      return;
+    }
     if (m.line !== undefined) h.onLine(m as LogLine);
     else if (m.error) end(m.error);
     else if (m.done) end();

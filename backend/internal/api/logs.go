@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -172,27 +173,40 @@ type lineWriter struct {
 }
 
 func (lw *lineWriter) Write(p []byte) (int, error) {
-	n := len(p)
-	for len(p) > 0 {
-		i := bytes.IndexByte(p, '\n')
-		if i < 0 {
-			lw.buf = append(lw.buf, p...)
-			for len(lw.buf) >= maxLogLine {
-				if err := lw.send(lw.buf[:maxLogLine]); err != nil {
-					return 0, err
-				}
-				lw.buf = lw.buf[maxLogLine:]
+	b := append(lw.buf, p...)
+	for len(b) > 0 {
+		i := bytes.IndexByte(b, '\n')
+		switch {
+		case i >= 0 && i <= maxLogLine:
+			if err := lw.send(b[:i]); err != nil {
+				return 0, err
 			}
-			break
+			b = b[i+1:]
+		case len(b) >= maxLogLine:
+			n := splitAt(b)
+			if err := lw.send(b[:n]); err != nil {
+				return 0, err
+			}
+			b = b[n:]
+		default:
+			// A partial line waits for the rest.
+			lw.buf = append(lw.buf[:0], b...)
+			return len(p), nil
 		}
-		lw.buf = append(lw.buf, p[:i]...)
-		p = p[i+1:]
-		if err := lw.send(lw.buf); err != nil {
-			return 0, err
-		}
-		lw.buf = lw.buf[:0]
 	}
-	return n, nil
+	lw.buf = lw.buf[:0]
+	return len(p), nil
+}
+
+// splitAt returns where to split a line over maxLogLine: at the limit, moved back to the
+// start of a UTF-8 sequence so no character is cut in two.
+func splitAt(b []byte) int {
+	for n := maxLogLine; n > maxLogLine-utf8.UTFMax; n-- {
+		if utf8.RuneStart(b[n]) {
+			return n
+		}
+	}
+	return maxLogLine
 }
 
 // flush sends a last line that had no newline.

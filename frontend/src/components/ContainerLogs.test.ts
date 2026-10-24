@@ -17,6 +17,9 @@ afterEach(() => {
 
 const mountLogs = () => mount(ContainerLogs, { props: { env: '1', id: 'abc 123', name: 'web' } });
 
+// frame waits for the next animation frame, when received lines are shown.
+const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
 const lines = (wrapper: ReturnType<typeof mountLogs>) => wrapper.findAll('.line').map((l) => l.text());
 
 describe('ContainerLogs', () => {
@@ -45,7 +48,7 @@ describe('ContainerLogs', () => {
     ws.message({ stream: 'stdout', line: 'starting' });
     ws.message({ stream: 'stderr', time: '2026-10-01T12:00:00Z', line: 'warn: slow' });
     ws.message({ stream: 'stdout', line: 'ready' });
-    await flushPromises();
+    await frame();
     expect(lines(wrapper)).toEqual(['starting', '2026-10-01T12:00:00Zwarn: slow', 'ready']);
     expect(wrapper.findAll('.line')[1]!.classes()).toContain('stderr');
 
@@ -72,7 +75,7 @@ describe('ContainerLogs', () => {
     const wrapper = mountLogs();
     sockets[0]!.message({ stream: 'stdout', time: '2026-10-01T12:00:00Z', line: 'one' });
     sockets[0]!.message({ stream: 'stderr', line: 'two' });
-    await flushPromises();
+    await frame();
     await wrapper
       .findAll('button')
       .find((b) => b.text() === 'Download')!
@@ -94,6 +97,24 @@ describe('ContainerLogs', () => {
     sockets[1]!.message({ done: true });
     await flushPromises();
     expect(wrapper.find('[role="status"]').text()).toBe('Stream ended');
+  });
+
+  it('ignores lines from the stream it replaced', async () => {
+    const wrapper = mountLogs();
+    const old = sockets[0]!;
+    await wrapper.find('select').setValue('100');
+    old.message({ stream: 'stdout', line: 'stale' });
+    sockets[1]!.message({ stream: 'stdout', line: 'fresh' });
+    await frame();
+    expect(lines(wrapper)).toEqual(['fresh']);
+  });
+
+  it('ends on a malformed frame', async () => {
+    const wrapper = mountLogs();
+    sockets[0]!.onmessage?.({ data: 'not json' });
+    await flushPromises();
+    expect(wrapper.find('[role="status"]').text()).toBe('The log stream sent a malformed frame.');
+    expect(sockets[0]!.closed).toBe(true);
   });
 
   it('closes the socket when unmounted', () => {
