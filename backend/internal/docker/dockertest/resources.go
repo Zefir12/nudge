@@ -81,7 +81,8 @@ type Action struct {
 	Options any
 }
 
-// ContainerList answers with Containers, filtered by the "status" filter like Docker.
+// ContainerList answers with Containers, filtered by the "status" and "label" (key or
+// key=value) filters like Docker.
 func (f *Fake) ContainerList(ctx context.Context, opts client.ContainerListOptions) (client.ContainerListResult, error) {
 	if err := f.resourceErr(ctx); err != nil {
 		return client.ContainerListResult{}, err
@@ -93,6 +94,9 @@ func (f *Fake) ContainerList(ctx context.Context, opts client.ContainerListOptio
 			continue
 		}
 		if !opts.All && len(status) == 0 && c.State != container.StateRunning {
+			continue
+		}
+		if !hasLabels(c.Labels, opts.Filters["label"]) {
 			continue
 		}
 		items = append(items, c)
@@ -475,4 +479,16 @@ func lookup[T any](ctx context.Context, f *Fake, m map[string]T, id string) (T, 
 		return zero, cerrdefs.ErrNotFound
 	}
 	return v, nil
+}
+
+// hasLabels reports whether labels match every "key" or "key=value" filter.
+func hasLabels(labels map[string]string, filters map[string]bool) bool {
+	for f := range filters {
+		k, v, withValue := strings.Cut(f, "=")
+		got, ok := labels[k]
+		if !ok || withValue && got != v {
+			return false
+		}
+	}
+	return true
 }

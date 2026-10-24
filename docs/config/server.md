@@ -7,6 +7,8 @@ image without setting anything. A flag wins over its variable.
 |---|---|---|---|
 | `-addr` | `NUDGE_ADDR` | `:8080` | listen address of the API and web UI |
 | `-data` | `NUDGE_DATA` | `/data` | data directory (database, stacks); mount a volume here |
+| `-stacks-dir` | `NUDGE_STACKS_DIR` | `<data>/stacks` | compose stacks, an absolute path; mount it at the same path on the host (see Stacks) |
+| `-compose` | `NUDGE_COMPOSE` | `/usr/local/bin/docker-compose` | docker-compose binary that deploys stacks (shipped in the image) |
 | `-log-level` | `NUDGE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`; logs are JSON on stderr |
 | `-docker-host` | `DOCKER_HOST` | `unix:///var/run/docker.sock` | Docker API of the local environment, `unix://` or `tcp://` |
 | `-tls-cert` | `NUDGE_TLS_CERT` | unset | PEM certificate (chain); with `-tls-key` the server speaks HTTPS only |
@@ -24,6 +26,18 @@ registry passwords in the database. Back
 up the whole directory while the server is stopped; without its `secret.key` a restored
 database's registry passwords must be entered again. A database migrated by a newer nudge
 is refused by an older one.
+
+## Stacks
+Stacks live in `<stacks dir>/<environment ID>/<name>/` (`compose.yaml`, `.env`), and the
+server runs `docker-compose` on them against the local environment's Docker
+(`DOCKER_HOST`). compose resolves relative paths (`./data:/data`, `env_file`, `configs`)
+in that directory, but the daemon mounts them from the host, so mount the stacks
+directory **at the same path on the host and in the container**:
+`-v /opt/nudge/stacks:/opt/nudge/stacks -e NUDGE_STACKS_DIR=/opt/nudge/stacks`.
+With the default (inside the `/data` volume) stacks that use only named volumes work,
+but relative bind mounts get an empty directory on the host. compose gets only
+`DOCKER_HOST`, `HOME` and `PATH`, none of nudge's own environment. Agent environments
+can't deploy stacks yet.
 
 ## First user
 With no user in the database the web UI asks for an admin username and password

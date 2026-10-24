@@ -16,6 +16,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/events"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/registries"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/stacks"
 )
 
 // Options are the API's dependencies.
@@ -31,6 +32,11 @@ type Options struct {
 	Registries *registries.Service
 	// Audit records every write.
 	Audit *audit.Service
+	// StacksDir holds every environment's stacks as <dir>/<environment ID>/<name>/.
+	StacksDir string
+	// StackRunner returns the runner that deploys env's stacks, nil if env can't
+	// deploy them.
+	StackRunner func(env environments.Environment) stacks.Runner
 	// Web serves every path outside /api/.
 	Web http.Handler
 	// PublicURL is the URL agents reach the server at (scheme://host[:port]); empty means
@@ -61,7 +67,11 @@ func New(opts Options) http.Handler {
 	s := &server{
 		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries, audit: opts.Audit,
 		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, recreating: map[string]bool{},
+		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackBusy: map[string]bool{},
 		events: events.New(events.Options{Context: opts.Context, Log: opts.Log}),
+	}
+	if s.stackRunner == nil {
+		s.stackRunner = func(environments.Environment) stacks.Runner { return nil }
 	}
 	api := http.NewServeMux()
 	api.HandleFunc("GET /api/v1/health", s.health)
@@ -116,6 +126,13 @@ func New(opts Options) http.Handler {
 	api.HandleFunc("POST /api/v1/environments/{env}/networks/prune", s.pruneNetworks)
 	api.HandleFunc("GET /api/v1/environments/{env}/networks/{id}", s.getNetwork)
 	api.HandleFunc("DELETE /api/v1/environments/{env}/networks/{id}", s.removeNetwork)
+	api.HandleFunc("GET /api/v1/environments/{env}/stacks", s.listStacks)
+	api.HandleFunc("POST /api/v1/environments/{env}/stacks", s.createStack)
+	api.HandleFunc("GET /api/v1/environments/{env}/stacks/{id}", s.getStack)
+	api.HandleFunc("PUT /api/v1/environments/{env}/stacks/{id}", s.updateStack)
+	api.HandleFunc("DELETE /api/v1/environments/{env}/stacks/{id}", s.removeStack)
+	api.HandleFunc("POST /api/v1/environments/{env}/stacks/{id}/up", s.upStack)
+	api.HandleFunc("POST /api/v1/environments/{env}/stacks/{id}/down", s.downStack)
 	api.HandleFunc("/api/", s.notFound)
 
 	mux := http.NewServeMux()
@@ -138,9 +155,14 @@ type server struct {
 	publicURL     string
 	secureCookies bool
 
+	stacksDir   string
+	stackRunner func(env environments.Environment) stacks.Runner
+
 	mu sync.Mutex
 	// recreating holds "<env>/<container ID>" of the recreates running now.
 	recreating map[string]bool
+	// stackBusy holds stackKey of the stacks being changed or deployed now.
+	stackBusy map[string]bool
 }
 
 // protect requires a session or an API token for every route outside publicRoutes.

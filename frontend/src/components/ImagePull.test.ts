@@ -52,7 +52,7 @@ describe('ImagePull', () => {
 
   it('reports an unreadable line', async () => {
     const { wrapper } = await pull('not json\n');
-    expect(wrapper.find('[role=alert]').text()).toBe('unreadable progress from the server');
+    expect(wrapper.find('[role=alert]').text()).toBe('unreadable output from the server');
   });
 
   it('reports a stream that ends early', async () => {

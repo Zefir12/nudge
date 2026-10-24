@@ -29,6 +29,8 @@ Flags with `NUDGE_*` environment variable fallbacks; the defaults work in the im
 |---|---|---|
 | `NUDGE_ADDR` | `:8080` | listen address |
 | `NUDGE_DATA` | `/data` | data directory |
+| `NUDGE_STACKS_DIR` | `<data>/stacks` | compose stacks; mount it at the same path on the host |
+| `NUDGE_COMPOSE` | `/usr/local/bin/docker-compose` | docker-compose binary for stacks |
 | `NUDGE_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `NUDGE_ADMIN_PASSWORD` | unset | create user `admin` at first start (env only) |
 | `DOCKER_HOST` | `unix:///var/run/docker.sock` | Docker API of the local environment |

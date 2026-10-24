@@ -36,6 +36,12 @@ func newTestHandler(t *testing.T) (http.Handler, *auth.Service) {
 // and the database, to add environments.
 func newTestHandlerWith(t *testing.T, connect environments.ConnectFunc) (http.Handler, *auth.Service, *sql.DB) {
 	t.Helper()
+	return newTestHandlerOpts(t, connect, nil)
+}
+
+// newTestHandlerOpts is newTestHandlerWith with mod changing the options, if not nil.
+func newTestHandlerOpts(t *testing.T, connect environments.ConnectFunc, mod func(*Options)) (http.Handler, *auth.Service, *sql.DB) {
+	t.Helper()
 	st, err := store.Open(context.Background(), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -58,7 +64,11 @@ func newTestHandlerWith(t *testing.T, connect environments.ConnectFunc) (http.Ha
 	}
 	regs := registries.New(registries.Options{DB: st.DB(), Box: box, Now: func() time.Time { return now }})
 	aud := audit.New(audit.Options{DB: st.DB(), Now: func() time.Time { return now }})
-	return New(Options{Log: slog.New(slog.DiscardHandler), Version: "v1.0.0", Auth: svc, Envs: envs, Registries: regs, Audit: aud, Web: web}), svc, st.DB()
+	opts := Options{Log: slog.New(slog.DiscardHandler), Version: "v1.0.0", Auth: svc, Envs: envs, Registries: regs, Audit: aud, Web: web}
+	if mod != nil {
+		mod(&opts)
+	}
+	return New(opts), svc, st.DB()
 }
 
 func TestRoutes(t *testing.T) {

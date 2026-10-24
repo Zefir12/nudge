@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -29,6 +30,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/registries"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/secretbox"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/stacks"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/store"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/version"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/web"
@@ -195,6 +197,9 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 			Audit:      auditSvc,
 			Web:        web.Handler(web.Dist()),
 
+			StacksDir:   cfg.StacksDir,
+			StackRunner: stackRunner(cfg),
+
 			PublicURL:     cfg.PublicURL,
 			SecureCookies: cfg.TLS() || strings.HasPrefix(cfg.PublicURL, "https://"),
 		}),
@@ -265,6 +270,20 @@ func runAgent(ctx context.Context, cfg config.Agent, log *slog.Logger) error {
 		log.Info("agent stopped")
 	}
 	return err
+}
+
+// stackRunner deploys the local environment's stacks with compose here; agent
+// environments can't deploy stacks yet.
+func stackRunner(cfg config.Server) func(environments.Environment) stacks.Runner {
+	return func(env environments.Environment) stacks.Runner {
+		if env.Kind != environments.KindLocal {
+			return nil
+		}
+		return stacks.NewLocal(stacks.LocalOptions{
+			Dir:     stacks.NewDir(filepath.Join(cfg.StacksDir, strconv.FormatInt(env.ID, 10))),
+			Compose: cfg.Compose, DockerHost: cfg.DockerHost,
+		})
+	}
 }
 
 // prepareDataDir creates the data directory (0700) if it is missing and checks that it

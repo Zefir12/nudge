@@ -756,7 +756,18 @@ export async function pullImage(
     signal,
     headers: { Accept: 'application/x-ndjson' },
   });
-  if (!res.body) throw new ApiError(res.status, 'the pull returned no progress');
+  await readLines<PullEvent>(res, 'pull', (ev) => {
+    if (ev.error) throw new ApiError(502, ev.error);
+    if (ev.done) return true;
+    onEvent(ev);
+    return false;
+  });
+}
+
+// readLines calls handle with each JSON line of a stream (what names it in errors) until
+// handle returns true; a stream that ends first is an error.
+async function readLines<T>(res: Response, what: string, handle: (line: T) => boolean): Promise<void> {
+  if (!res.body) throw new ApiError(res.status, `the ${what} returned no output`);
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buf = '';
@@ -769,12 +780,9 @@ export async function pullImage(
         const line = buf.slice(0, nl).trim();
         buf = buf.slice(nl + 1);
         if (!line) continue;
-        const ev = parsePullEvent(line);
-        if (ev.error) throw new ApiError(502, ev.error);
-        if (ev.done) return;
-        onEvent(ev);
+        if (handle(parseLine<T>(line))) return;
       }
-      if (done) throw new ApiError(502, 'the pull ended before it finished');
+      if (done) throw new ApiError(502, `the ${what} ended before it finished`);
     }
   } finally {
     // Closes the response on an early return or error; a finished stream ignores it.
@@ -782,10 +790,88 @@ export async function pullImage(
   }
 }
 
-function parsePullEvent(line: string): PullEvent {
+function parseLine<T>(line: string): T {
   try {
-    return JSON.parse(line) as PullEvent;
+    return JSON.parse(line) as T;
   } catch {
-    throw new ApiError(502, 'unreadable progress from the server');
+    throw new ApiError(502, 'unreadable output from the server');
   }
+}
+
+export interface StackSummary {
+  name: string;
+  // containers counts the project's containers in any state, running those running.
+  containers: number;
+  running: number;
+}
+
+export interface Stack extends StackSummary {
+  compose: string;
+  env: string;
+}
+
+export interface StackFiles {
+  compose: string;
+  env: string;
+}
+
+// StackLine is one line of compose's output.
+export interface StackLine {
+  stream: 'stdout' | 'stderr';
+  line: string;
+}
+
+export const listStacks = (env: string) => apiFetch<StackSummary[]>(envPath(env, '/stacks'));
+export const getStack = (env: string, name: string) => apiFetch<Stack>(envPath(env, `/stacks/${enc(name)}`));
+export const createStack = (env: string, name: string, files: StackFiles) =>
+  apiFetch<Stack>(envPath(env, '/stacks'), post({ name, ...files }));
+export const updateStack = (env: string, name: string, files: StackFiles) =>
+  apiFetch<void>(envPath(env, `/stacks/${enc(name)}`), { method: 'PUT', body: JSON.stringify(files) });
+// removeStack deletes a stack's files; it must be down first.
+export const removeStack = (env: string, name: string) =>
+  apiFetch<void>(envPath(env, `/stacks/${enc(name)}`), { method: 'DELETE' });
+
+// upStack deploys a stack (pull also pulls newer images: an update) and calls onLine with
+// compose's output. It resolves with compose's exit code and throws an ApiError when the
+// run fails before or during the stream.
+export const upStack = (
+  env: string,
+  name: string,
+  pull: boolean,
+  onLine: (l: StackLine) => void,
+  signal?: AbortSignal,
+) => runStack(env, name, 'up', { pull }, onLine, signal);
+// downStack stops and removes a stack's containers (volumes also its volumes).
+export const downStack = (
+  env: string,
+  name: string,
+  volumes: boolean,
+  onLine: (l: StackLine) => void,
+  signal?: AbortSignal,
+) => runStack(env, name, 'down', { volumes }, onLine, signal);
+
+async function runStack(
+  env: string,
+  name: string,
+  op: 'up' | 'down',
+  body: unknown,
+  onLine: (l: StackLine) => void,
+  signal?: AbortSignal,
+): Promise<number> {
+  const res = await send(envPath(env, `/stacks/${enc(name)}/${op}`), {
+    ...post(body),
+    signal,
+    headers: { Accept: 'application/x-ndjson' },
+  });
+  let code = 0;
+  await readLines<Partial<StackLine> & { exit_code?: number; error?: string }>(res, `compose ${op}`, (ev) => {
+    if (ev.error) throw new ApiError(502, ev.error);
+    if (ev.exit_code !== undefined) {
+      code = ev.exit_code;
+      return true;
+    }
+    if (ev.stream && ev.line !== undefined) onLine({ stream: ev.stream, line: ev.line });
+    return false;
+  });
+  return code;
 }

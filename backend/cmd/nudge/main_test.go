@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	"git.zefirlabs.net/zefir/nudge/backend/internal/config"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/store"
 )
 
@@ -250,5 +252,16 @@ func TestServeCreatesLocalEnvironment(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "created local environment") {
 		t.Errorf("stderr %q does not report the local environment", stderr.String())
+	}
+}
+
+func TestStackRunner(t *testing.T) {
+	t.Parallel()
+	runner := stackRunner(config.Server{StacksDir: t.TempDir(), Compose: "/bin/compose", DockerHost: "unix:///docker.sock"})
+	if runner(environments.Environment{ID: 1, Kind: environments.KindLocal}) == nil {
+		t.Error("no runner for the local environment")
+	}
+	if runner(environments.Environment{ID: 2, Kind: environments.KindAgent}) != nil {
+		t.Error("a runner for an agent environment, which can't deploy stacks yet")
 	}
 }
