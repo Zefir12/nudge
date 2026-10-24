@@ -5,13 +5,14 @@ status code. Unknown paths and wrong methods under `/api/` return a JSON 404 to 
 logged-in client and a JSON 401 otherwise.
 Streams (logs, exec, events, agent tunnel) use WebSocket.
 
-Auth: the `nudge_session` cookie set by login or setup (`Authorization: Bearer <token>`
-comes with API tokens). Routes marked *public* need neither; every other route answers
-`401 {"error":"authentication required"}` without a valid session.
+Auth: the `nudge_session` cookie set by login or setup, or `Authorization: Bearer <token>`
+with an API token (see Tokens). When an `Authorization` header is present it alone
+decides; the cookie is ignored. Routes marked *public* need neither; every other route
+answers `401 {"error":"authentication required"}` without a valid session or token.
 
 Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must carry
 `Sec-Fetch-Site: same-origin`, or an `Origin` whose host matches `Host`, or neither header
-(non-browser clients).
+(non-browser clients). Requests with an `Authorization` header skip this check.
 
 ## Endpoints
 
@@ -21,8 +22,13 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | GET | `/api/v1/setup` | public | `{"needed":true}` while no user exists |
 | POST | `/api/v1/setup` | public | create the admin and log in; see below |
 | POST | `/api/v1/auth/login` | public | log in; see below |
-| POST | `/api/v1/auth/logout` | public | end the session and clear the cookie; `204` |
+| POST | `/api/v1/auth/logout` | public | end the session and clear the cookie; `204` (a no-op for API tokens) |
 | GET | `/api/v1/auth/me` | session | the logged-in user |
+| GET | `/api/v1/tokens` | session | the user's API tokens, oldest first; see below |
+| POST | `/api/v1/tokens` | session | create an API token `{"name": "ci"}`; `201` |
+| DELETE | `/api/v1/tokens/{id}` | session | revoke one of the user's tokens; `204`, or `404` |
+
+"session" means a session cookie or an API token.
 
 Add a row (and a section below, for anything non-trivial) with every new endpoint.
 
@@ -46,6 +52,20 @@ valid for 7 days. `GET /api/v1/auth/me` returns the same user object.
   proxy's IP.
 - When too many logins wait for a password check, login answers `503` with
   `Retry-After: 1`.
+
+### Tokens
+`POST /api/v1/tokens` with `{"name": "ci"}` answers `201` with
+`{"id": 1, "name": "ci", "prefix": "nudge_AB12", "created_at": "2026-10-24T12:00:00Z",
+"last_used_at": null, "token": "nudge_AB12..."}`. `token` appears only in this response;
+nudge stores its SHA-256 hash. `GET /api/v1/tokens` lists the same objects without
+`token`.
+
+- A token acts as the user who created it, on every route; there are no scopes yet. That
+  includes creating more tokens, so after a leak revoke every token created since.
+- Names are 1 to 64 bytes without control characters or surrounding spaces, unique per
+  user (`409` otherwise). A user can hold at most 100 tokens (`409` beyond that).
+- `last_used_at` is updated at most once a minute.
+- Deleting a user deletes their tokens.
 
 ### Environments
 An environment is a Docker host; `{env}` in paths is its numeric `id`.

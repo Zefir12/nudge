@@ -13,17 +13,18 @@ docs/config/; grep there, not in README. The API reference is docs/api.md; the d
 `prepareDataDir` and `store.Open` (migrations), `auth.New` (+ `EnsureAdmin`,
 `RunCleanup`), `environments.New` (+ `EnsureLocal`), then builds
 `api.New(api.Options{Auth: …, Envs: …, Web: web.Handler(web.Dist())})`
-→ root `http.ServeMux`: `/api/` goes through `server.protect` (cross-origin check, then
-a session unless the route's pattern is in `publicRoutes`) to the API mux (`/api/v1/...`
-handlers on `api.server`, `/api/` catch-all `notFound`); everything else `web.Handler`
-(static file or index.html for SPA routes).
+→ root `http.ServeMux`: `/api/` goes through `server.protect` (with an `Authorization`
+header an API token, else the cross-origin check and a session; `server.authenticate`
+lets patterns in `publicRoutes` through without either credential) to the API mux
+(`/api/v1/...` handlers on `api.server`, `/api/` catch-all `notFound`); everything else
+`web.Handler` (static file or index.html for SPA routes).
 
 ## Backend packages (backend/)
 | Package | What | Entry points |
 |---|---|---|
 | `cmd/nudge` | subcommands, wiring, graceful shutdown | `realMain`, `serve` |
 | `internal/api` | HTTP API under /api/v1 | `New`, `Options`, `publicRoutes`, `server.protect`, `userFrom`, `server.decodeJSON`, `server.writeJSON`, `server.writeError`, `server.internalError` |
-| `internal/auth` | users, argon2id, sessions, login rate limit | `New`, `Options`, `Service.Login`, `SessionUser`, `CreateFirstUser`, `EnsureAdmin`, `RunCleanup` |
+| `internal/auth` | users, argon2id, sessions, login rate limit, API tokens (tokens.go) | `New`, `Options`, `Service.Login`, `SessionUser`, `TokenUser`, `CreateToken`, `CreateFirstUser`, `EnsureAdmin`, `RunCleanup` |
 | `internal/docker` | Docker client over a dialer per kind; `Client` interface handlers use; `dockertest.Fake` | `New`, `LocalDialer`, `Client`, `Unreachable` |
 | `internal/environments` | environments table, Docker client per environment (cached), online checks, auto-created `local` | `New`, `Options.Connect`, `LocalConnect`, `EnsureLocal`, `Service.Client`, `Online` |
 | `internal/config` | flags with NUDGE_* env fallbacks | `LoadServer`, `Server` |
