@@ -112,6 +112,7 @@ func New(opts Options) http.Handler {
 	api.HandleFunc("GET /api/v1/environments/{env}/containers/{id}", s.getContainer)
 	api.HandleFunc("GET /api/v1/environments/{env}/containers/{id}/spec", s.getContainerSpec)
 	api.HandleFunc("POST /api/v1/environments/{env}/containers/{id}/recreate", s.recreateContainer)
+	api.HandleFunc("POST /api/v1/environments/{env}/containers/{id}/update", s.updateContainer)
 	api.HandleFunc("DELETE /api/v1/environments/{env}/containers/{id}", s.removeContainer)
 	api.HandleFunc("POST /api/v1/environments/{env}/containers/{id}/start", s.startContainer)
 	api.HandleFunc("POST /api/v1/environments/{env}/containers/{id}/stop", s.stopContainer)
@@ -145,8 +146,10 @@ func New(opts Options) http.Handler {
 	api.HandleFunc("DELETE /api/v1/environments/{env}/stacks/{id}", s.removeStack)
 	api.HandleFunc("POST /api/v1/environments/{env}/stacks/{id}/up", s.upStack)
 	api.HandleFunc("POST /api/v1/environments/{env}/stacks/{id}/down", s.downStack)
+	api.HandleFunc("POST /api/v1/environments/{env}/stacks/{id}/update", s.updateStackImages)
 	api.HandleFunc("GET /api/v1/environments/{env}/updates", s.listUpdates)
 	api.HandleFunc("POST /api/v1/environments/{env}/updates/check", s.checkUpdates)
+	api.HandleFunc("GET /api/v1/environments/{env}/updates/history", s.listUpdateHistory)
 	api.HandleFunc("/api/", s.notFound)
 
 	mux := http.NewServeMux()

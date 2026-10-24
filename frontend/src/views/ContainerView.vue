@@ -2,15 +2,18 @@
 import { computed, defineAsyncComponent, ref } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
 
-import { getContainer, recreateContainer } from '../api/client';
+import { getContainer, recreateContainer, updateContainer } from '../api/client';
 import ContainerActions from '../components/ContainerActions.vue';
 import ContainerLogs from '../components/ContainerLogs.vue';
 import ContainerStats from '../components/ContainerStats.vue';
 import KeyValues from '../components/KeyValues.vue';
 import LoadState from '../components/LoadState.vue';
 import StateBadge from '../components/StateBadge.vue';
+import UpdateBadge from '../components/UpdateBadge.vue';
+import UpdateHistory from '../components/UpdateHistory.vue';
 import { useLoad } from '../composables/useLoad';
 import { useParams } from '../composables/params';
+import { useUpdates } from '../composables/useUpdates';
 import { formatDate, formatPort, shortId } from '../format';
 
 // The terminal (xterm.js) loads on the page of a running container only.
@@ -47,6 +50,32 @@ async function onRecreate() {
   }
 }
 
+// An update pulls the image and recreates the container only if that brought a newer one.
+const { updateFor, reload: reloadUpdates } = useUpdates(env);
+const update = computed(() => (c.value ? updateFor(c.value) : undefined));
+const updateNote = ref('');
+
+async function onUpdate() {
+  if (!c.value) return;
+  if (!window.confirm(`Pull the newest ${c.value.image} and recreate "${c.value.name}" with it?`)) return;
+  recreating.value = true;
+  recreateError.value = '';
+  updateNote.value = '';
+  try {
+    const res = await updateContainer(env.value, c.value.id);
+    if (res.updated) {
+      await router.replace({ name: 'container', params: { env: env.value, id: res.id } });
+    } else {
+      updateNote.value = 'The registry has nothing newer: the container was left as it is.';
+    }
+    void reloadUpdates();
+  } catch (e) {
+    recreateError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    recreating.value = false;
+  }
+}
+
 const onRemoved = () => router.push({ name: 'containers', params: { env: env.value } });
 
 const command = computed(() => (c.value ? [c.value.path, ...c.value.args].join(' ') : ''));
@@ -59,7 +88,12 @@ const labels = computed(() =>
   <p><RouterLink :to="{ name: 'containers', params: { env } }">← Containers</RouterLink></p>
   <LoadState :loading="!c" :error="error" :ready="c !== null" @retry="reload">
     <template v-if="c">
-      <h1>{{ c.name }} <StateBadge :state="c.state.status" :health="c.state.health" /></h1>
+      <h1>
+        {{ c.name }} <StateBadge :state="c.state.status" :health="c.state.health" /><UpdateBadge
+          v-if="update"
+          :update="update"
+        />
+      </h1>
       <ContainerActions
         class="detail-actions"
         :env="env"
@@ -74,12 +108,16 @@ const labels = computed(() =>
         <RouterLink class="button" :to="{ name: 'container-edit', params: { env, id: c.id } }"
           >Edit</RouterLink
         >
+        <button v-if="update" type="button" class="primary" :disabled="recreating" @click="onUpdate">
+          Update
+        </button>
         <button type="button" :disabled="recreating" @click="onRecreate">
           {{ recreating ? 'Recreating…' : 'Recreate' }}
         </button>
         <label><input v-model="pull" type="checkbox" :disabled="recreating" /> pull the image first</label>
       </div>
       <p v-if="recreateError" class="error" role="alert">{{ recreateError }}</p>
+      <p v-if="updateNote" class="muted" role="status">{{ updateNote }}</p>
       <section class="card">
         <h2>Overview</h2>
         <KeyValues
@@ -107,6 +145,8 @@ const labels = computed(() =>
           <RouterLink :to="{ name: 'image', params: { env, id: c.image_id } }">Open the image</RouterLink>
         </p>
       </section>
+
+      <UpdateHistory :env="env" kind="container" :target="c.name" />
 
       <ContainerStats v-if="c.state.running" :env="env" :id="c.id" />
 

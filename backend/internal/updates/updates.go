@@ -318,14 +318,23 @@ func (s *Service) localDigest(ctx context.Context, c docker.Client, img use, rep
 		digests = res.RepoDigests
 		repoDigests[img.id] = digests
 	}
-	repo := repoOf(img.ref)
-	for _, d := range digests {
-		name, dg, ok := strings.Cut(d, "@")
-		if ok && repoOf(name) == repo {
-			return dg, nil
-		}
+	if dg := DigestFor(img.ref, digests); dg != "" {
+		return dg, nil
 	}
 	return "", errors.New("the image has no registry digest (built locally?)")
+}
+
+// DigestFor picks the digest of ref's repository from an image's RepoDigests
+// ("nginx@sha256:..."); empty if the image wasn't pulled from there.
+func DigestFor(ref string, repoDigests []string) string {
+	repo := repoOf(ref)
+	for _, d := range repoDigests {
+		name, dg, ok := strings.Cut(d, "@")
+		if ok && repoOf(name) == repo {
+			return dg
+		}
+	}
+	return ""
 }
 
 // remoteDigest asks the daemon for the registry's digest of ref. Its errors are safe to

@@ -26,13 +26,24 @@ import (
 
 var start = time.Unix(1_700_000_000, 0).UTC()
 
-// fakeClock stands still; After records the wait and fires at once.
+// fakeClock stands still until advanced; After records the wait and fires at once.
 type fakeClock struct {
-	mu    sync.Mutex
-	waits []time.Duration
+	mu     sync.Mutex
+	waits  []time.Duration
+	offset time.Duration
 }
 
-func (c *fakeClock) Now() time.Time { return start }
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return start.Add(c.offset)
+}
+
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.offset += d
+}
 
 func (c *fakeClock) After(d time.Duration) <-chan time.Time {
 	c.mu.Lock()

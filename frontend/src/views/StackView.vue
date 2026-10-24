@@ -7,6 +7,7 @@ import {
   getStack,
   removeStack,
   updateStack,
+  updateStackImages,
   upStack,
   type Stack,
   type StackLine,
@@ -15,6 +16,7 @@ import LoadState from '../components/LoadState.vue';
 import StackEditor from '../components/StackEditor.vue';
 import StackLogs from '../components/StackLogs.vue';
 import StateBadge from '../components/StateBadge.vue';
+import UpdateHistory from '../components/UpdateHistory.vue';
 import { readCompose } from '../compose';
 import { useLiveReload } from '../composables/useEvents';
 import { useLoad } from '../composables/useLoad';
@@ -110,8 +112,12 @@ async function run(
   }
 }
 
-const onUp = (pull: boolean) =>
-  run(pull ? 'Update' : 'Deploy', (onLine, signal) => upStack(env.value, id.value, pull, onLine, signal));
+const history = ref<InstanceType<typeof UpdateHistory> | null>(null);
+const onDeploy = () => run('Deploy', (onLine, signal) => upStack(env.value, id.value, false, onLine, signal));
+async function onUpdate() {
+  await run('Update', (onLine, signal) => updateStackImages(env.value, id.value, onLine, signal));
+  void history.value?.reload();
+}
 
 function onDown() {
   const what = volumes.value
@@ -164,7 +170,7 @@ async function save(): Promise<boolean> {
 async function onSaveAndDeploy() {
   if (await save()) {
     saveResult.value = 'Saved.';
-    await onUp(false);
+    await onDeploy();
   }
 }
 
@@ -183,8 +189,8 @@ function onRevert() {
       <h1>{{ stack.name }}</h1>
       <p class="muted">{{ stack.running }} of {{ stack.containers }} containers running</p>
       <div class="actions">
-        <button type="button" class="primary" :disabled="busy" @click="onUp(false)">Deploy</button>
-        <button type="button" :disabled="busy" title="Pull newer images, then deploy" @click="onUp(true)">
+        <button type="button" class="primary" :disabled="busy" @click="onDeploy">Deploy</button>
+        <button type="button" :disabled="busy" title="Pull newer images, then deploy" @click="onUpdate">
           Update
         </button>
         <button type="button" class="danger" :disabled="busy || stack.containers === 0" @click="onDown">
@@ -242,6 +248,8 @@ function onRevert() {
           </table>
         </div>
       </section>
+
+      <UpdateHistory ref="history" :env="env" kind="stack" :target="stack.name" />
 
       <section class="card">
         <h2>Files</h2>

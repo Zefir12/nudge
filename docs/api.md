@@ -36,6 +36,7 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | POST | `/api/v1/environments/{env}/containers` | session | create (and start) a container; `201`; see Container create and recreate |
 | GET | `/api/v1/environments/{env}/containers/{id}/spec` | session | a container's settings in the create shape |
 | POST | `/api/v1/environments/{env}/containers/{id}/recreate` | session | replace a container, optionally pulling first or with changed settings |
+| POST | `/api/v1/environments/{env}/containers/{id}/update` | session | pull the container's image and recreate it if that brought a newer one; see Image updates |
 | GET | `/api/v1/environments/{env}/containers/{id}/logs` | session | WebSocket: a container's logs, one JSON frame per line; see Container logs |
 | GET | `/api/v1/environments/{env}/containers/{id}/stats` | session | WebSocket: a running container's usage, a sample about every second; see Stats |
 | GET | `/api/v1/environments/{env}/containers/{id}/exec` | session | WebSocket: a command with a terminal in a running container (audited); see Container exec |
@@ -58,6 +59,10 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | DELETE | `/api/v1/environments/{env}/stacks/{name}` | session | delete a stack that is down; `204` |
 | POST | `/api/v1/environments/{env}/stacks/{name}/up` | session | deploy `{"pull": bool}`, compose output as JSON lines |
 | POST | `/api/v1/environments/{env}/stacks/{name}/down` | session | stop and remove the containers `{"volumes": bool}`, output as JSON lines |
+| POST | `/api/v1/environments/{env}/stacks/{name}/update` | session | pull the images and deploy, output as JSON lines; recorded in the update history |
+| GET | `/api/v1/environments/{env}/updates` | session | the last image update check; see Image updates |
+| POST | `/api/v1/environments/{env}/updates/check` | session | check the environment's images now |
+| GET | `/api/v1/environments/{env}/updates/history` | session | updates made through nudge, with the image each replaced |
 
 "session" means a session cookie or an API token.
 
@@ -476,6 +481,32 @@ environment (see docs/config/server.md) and on request.
   one per image reference and environment per check, at most 500 images per
   environment. Each environment's daemon does its own lookups, with its own mirrors and
   proxy.
+
+Updates (one click in the UI) are writes, so each is in the audit log under its own
+action. Both keep the image that ran before in the update history, for a rollback by
+hand: the previous image stays on the host (untagged) until it is pruned.
+
+- `POST /api/v1/environments/{env}/containers/{id}/update` (no body) pulls the image
+  reference the container was created from, with the registry's stored credentials. If
+  the pulled image is the one the container runs, it answers `{"updated": false, "id":
+  "<container ID>", "previous_image_id": "sha256:…", "image_id": "sha256:…"}` and leaves
+  the container alone; else it recreates it as `recreate` does (same settings, restored
+  if the create or start fails) and answers `{"updated": true, "id": "<new container
+  ID>", ...}`. `400` the container runs an image by ID or digest; otherwise the errors of
+  a recreate with `"pull": true`.
+- `POST /api/v1/environments/{env}/stacks/{name}/update` (no body) is `up` with
+  `--pull always` and answers the same stream. When compose ends (also when it failed or
+  was cut short, as some services may have been replaced), each service whose
+  containers run another image ID than before is recorded.
+- `GET /api/v1/environments/{env}/updates/history` lists the environment's updates,
+  newest first (at most 500); `?kind=container|stack&target=<name>` narrows it to one
+  container or stack (by name, which survives a recreate): `[{"id": 1, "kind":
+  "container", "target": "web", "service": "", "image": "nginx:1.29", "old_image_id":
+  "sha256:…", "old_digest": "sha256:…", "new_image_id": "sha256:…", "new_digest":
+  "sha256:…", "user": "admin", "time": "..."}]`. `service` is the compose service of a
+  stack's row; a digest is empty when the image has none from that repository. The last
+  20 updates per container or stack (a stack's with a row per service) and 5000 rows per
+  environment are kept. `400` an unknown kind.
 
 ### Audit log
 Every `POST`, `PUT`, `PATCH` and `DELETE` that reaches a route is recorded after it is

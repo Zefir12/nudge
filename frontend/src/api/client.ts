@@ -412,6 +412,19 @@ export const recreateContainer = (
   opts: { pull?: boolean; spec?: ContainerSpec } = {},
 ) => apiFetch<CreatedContainer>(envPath(env, `/containers/${enc(id)}/recreate`), post(opts));
 
+// UpdatedContainer is the outcome of an update: updated is false when the registry had
+// nothing newer and the container was left alone; id is the (new) container's.
+export interface UpdatedContainer {
+  updated: boolean;
+  id: string;
+  previous_image_id: string;
+  image_id: string;
+}
+
+// updateContainer pulls the container's image and recreates it if that brought a newer one.
+export const updateContainer = (env: string, id: string) =>
+  apiFetch<UpdatedContainer>(envPath(env, `/containers/${enc(id)}/update`), post({}));
+
 export type ContainerAction = 'start' | 'stop' | 'restart' | 'kill';
 export const containerAction = (env: string, id: string, action: ContainerAction) =>
   apiFetch<void>(envPath(env, `/containers/${enc(id)}/${action}`), { method: 'POST' });
@@ -852,6 +865,14 @@ export const upStack = (
   onLine: (l: StackLine) => void,
   signal?: AbortSignal,
 ) => runStack(env, name, 'up', { pull }, onLine, signal);
+// updateStackImages pulls the stack's images and deploys it, recording the services
+// whose image changed in the update history; it streams like upStack.
+export const updateStackImages = (
+  env: string,
+  name: string,
+  onLine: (l: StackLine) => void,
+  signal?: AbortSignal,
+) => runStack(env, name, 'update', {}, onLine, signal);
 // downStack stops and removes a stack's containers (volumes also its volumes).
 export const downStack = (
   env: string,
@@ -864,7 +885,7 @@ export const downStack = (
 async function runStack(
   env: string,
   name: string,
-  op: 'up' | 'down',
+  op: 'up' | 'down' | 'update',
   body: unknown,
   onLine: (l: StackLine) => void,
   signal?: AbortSignal,
@@ -904,3 +925,32 @@ export const listUpdates = (env: string) => apiFetch<ImageUpdate[]>(envPath(env,
 // checkUpdates checks the environment's images now; it can take a while.
 export const checkUpdates = (env: string) =>
   apiFetch<ImageUpdate[]>(envPath(env, '/updates/check'), post({}));
+
+// UpdateRecord is an update made through nudge: the image a container (or a stack's
+// service) ran before and after, for a rollback by hand. Digests are empty when unknown.
+export interface UpdateRecord {
+  id: number;
+  kind: 'container' | 'stack';
+  target: string;
+  service: string;
+  image: string;
+  old_image_id: string;
+  old_digest: string;
+  new_image_id: string;
+  new_digest: string;
+  user: string;
+  time: string;
+}
+
+// listUpdateHistory lists the environment's updates, newest first, or one container's or
+// stack's (by name).
+export const listUpdateHistory = (
+  env: string,
+  filter: { kind?: 'container' | 'stack'; target?: string } = {},
+) => {
+  const q = new URLSearchParams();
+  if (filter.kind) q.set('kind', filter.kind);
+  if (filter.target) q.set('target', filter.target);
+  const qs = q.toString();
+  return apiFetch<UpdateRecord[]>(envPath(env, `/updates/history${qs ? `?${qs}` : ''}`));
+};

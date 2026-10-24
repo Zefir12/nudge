@@ -16,6 +16,7 @@ import (
 
 	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
 	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/image"
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
@@ -433,67 +434,106 @@ func (s *server) recreateContainer(w http.ResponseWriter, r *http.Request) {
 	if req.Spec != nil && !s.decodeSpec(w, req.Spec) {
 		return
 	}
-	env, c, ok := s.environment(w, r)
+	rp, ok := s.beginReplace(w, r, id)
 	if !ok {
 		return
 	}
-	inspectCtx, cancel := context.WithTimeout(r.Context(), dockerTimeout)
+	defer rp.done()
+	ref := rp.old.Config.Image
+	if req.Spec != nil {
+		ref = req.Spec.Image
+	}
+	if req.Pull && (digest.MatchString(ref) || !validPullRef(ref)) {
+		s.writeError(w, http.StatusBadRequest, "the image is an ID, not a reference such as nginx:1.29, so it can't be pulled")
+		return
+	}
+	if req.Pull && !s.pullForReplace(w, r, rp, ref) {
+		return
+	}
+	newID, ok := s.finishReplace(w, r, rp, req.Spec)
+	if !ok {
+		return
+	}
+	s.log.Info("container recreate", "env", rp.env.ID, "container", rp.old.ID, "new", newID, "pull", req.Pull, "ip", clientIP(r))
+	s.writeJSON(w, http.StatusOK, createContainerResponse{ID: newID, Warnings: []string{}})
+}
+
+// replacement is a recreate or update under way: the container and the image it runs
+// (zero if the image is gone), inspected before anything changed.
+type replacement struct {
+	env      environments.Environment
+	c        docker.Client
+	old      container.InspectResponse
+	oldImage image.InspectResponse
+	done     func()
+}
+
+// beginReplace inspects container id and its image and claims it for one recreate at a
+// time; on false it has answered. The caller defers done.
+func (s *server) beginReplace(w http.ResponseWriter, r *http.Request, id string) (*replacement, bool) {
+	env, c, ok := s.environment(w, r)
+	if !ok {
+		return nil, false
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), dockerTimeout)
 	defer cancel()
-	res, err := c.ContainerInspect(inspectCtx, id, client.ContainerInspectOptions{})
+	res, err := c.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
 	if err != nil {
 		s.recreateError(w, r, env, err)
-		return
+		return nil, false
 	}
 	old := res.Container
 	if old.Config == nil || old.HostConfig == nil || old.State == nil {
 		s.recreateError(w, r, env, errors.New("inspect: incomplete container settings"))
-		return
+		return nil, false
 	}
 	// Before a pull, while the old image is surely still there.
-	img, err := imageConfig(inspectCtx, c, old.Image)
-	if err != nil {
-		s.recreateError(w, r, env, err)
-		return
+	var oldImage image.InspectResponse
+	ires, err := c.ImageInspect(ctx, old.Image)
+	switch {
+	case docker.NotFound(err):
+	case err != nil:
+		s.recreateError(w, r, env, fmt.Errorf("inspect image: %w", err))
+		return nil, false
+	default:
+		oldImage = ires.InspectResponse
 	}
 	done, ok := s.beginRecreate(env.ID, old.ID)
 	if !ok {
 		s.writeError(w, http.StatusConflict, "this container is already being recreated")
-		return
+		return nil, false
 	}
-	defer done()
-	image := old.Config.Image
-	if req.Spec != nil {
-		image = req.Spec.Image
+	return &replacement{env: env, c: c, old: old, oldImage: oldImage, done: done}, true
+}
+
+// pullForReplace pulls ref with its registry's credentials; on false it has answered.
+func (s *server) pullForReplace(w http.ResponseWriter, r *http.Request, rp *replacement, ref string) bool {
+	opts, password, ok := s.pullOptions(w, r, ref)
+	if !ok {
+		return false
 	}
-	if req.Pull && (digest.MatchString(image) || !validPullRef(image)) {
-		s.writeError(w, http.StatusBadRequest, "the image is an ID, not a reference such as nginx:1.29, so it can't be pulled")
-		return
+	ctx, cancel := context.WithTimeout(r.Context(), pullTimeout)
+	defer cancel()
+	if err := pullAndWait(ctx, rp.c, ref, opts); err != nil {
+		s.pullError(w, r, rp.env, err, password)
+		return false
 	}
-	if req.Pull {
-		opts, password, ok := s.pullOptions(w, r, image)
-		if !ok {
-			return
-		}
-		pullCtx, cancel := context.WithTimeout(r.Context(), pullTimeout)
-		err := pullAndWait(pullCtx, c, image, opts)
-		cancel()
-		if err != nil {
-			s.pullError(w, r, env, err, password)
-			return
-		}
-	}
-	// The pull has its own timeout; the steps that change containers start now and don't
-	// stop when the client goes away.
+	return true
+}
+
+// finishReplace replaces the container (with spec's settings, if not nil) and returns
+// the new one's ID; on false it has answered. The pull has its own timeout; the steps
+// that change containers start now and don't stop when the client goes away.
+func (s *server) finishReplace(w http.ResponseWriter, r *http.Request, rp *replacement, spec *containerSpec) (string, bool) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), recreateTimeout)
 	defer cancel()
-	newID, err := s.replace(ctx, c, old, img, req.Spec)
+	newID, err := s.replace(ctx, rp.c, rp.old, rp.oldImage.Config, spec)
 	if err != nil {
-		s.recreateError(w, r, env, err)
-		return
+		s.recreateError(w, r, rp.env, err)
+		return "", false
 	}
-	s.envs.Seen(r.Context(), &env)
-	s.log.Info("container recreate", "env", env.ID, "container", old.ID, "new", newID, "pull", req.Pull, "ip", clientIP(r))
-	s.writeJSON(w, http.StatusOK, createContainerResponse{ID: newID, Warnings: []string{}})
+	s.envs.Seen(r.Context(), &rp.env)
+	return newID, true
 }
 
 // pullAndWait pulls ref and waits for the pull to finish.
