@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 type request struct {
@@ -143,6 +144,28 @@ func TestSecureCookieOverTLS(t *testing.T) {
 	h.ServeHTTP(rec, r)
 	if c := sessionCookieOf(t, rec); !c.Secure {
 		t.Error("cookie not Secure over TLS")
+	}
+}
+
+func TestSecureCookieConfigured(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		secure bool
+	}{
+		{name: "configured: Secure over plain HTTP too (TLS proxy without X-Forwarded-Proto)", secure: true},
+		{name: "not configured: only over HTTPS", secure: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s := &server{secureCookies: tt.secure}
+			rec := httptest.NewRecorder()
+			s.setSessionCookie(rec, httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", nil), "tok", time.Now().Add(time.Hour), 0)
+			if c := sessionCookieOf(t, rec); c.Secure != tt.secure {
+				t.Errorf("Secure = %v, want %v", c.Secure, tt.secure)
+			}
+		})
 	}
 }
 

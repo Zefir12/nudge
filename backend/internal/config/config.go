@@ -9,9 +9,14 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 )
+
+// hostPort is a host name or IP literal with an optional port. The public URL goes into
+// the docker run command users paste into a shell, so nothing else is allowed.
+var hostPort = regexp.MustCompile(`^[A-Za-z0-9.\-]+(:[0-9]{1,5})?$|^\[[0-9A-Fa-f:.]+\](:[0-9]{1,5})?$`)
 
 // Server is the configuration of `nudge serve`.
 type Server struct {
@@ -26,7 +31,16 @@ type Server struct {
 	AdminPassword string
 	// DockerHost is the local environment's Docker API, unix:// or tcp://.
 	DockerHost string
+	// TLSCert and TLSKey are PEM files; when set the server speaks HTTPS only.
+	TLSCert string
+	TLSKey  string
+	// PublicURL is the URL browsers and agents reach the server at, scheme://host[:port]
+	// without a trailing slash; empty means guess it from each request.
+	PublicURL string
 }
+
+// TLS reports whether the server serves HTTPS itself.
+func (c Server) TLS() bool { return c.TLSCert != "" }
 
 // LoadServer parses args (without the program and subcommand name). A flag wins over
 // its environment variable, which wins over the default. Usage and errors go to out.
@@ -37,6 +51,9 @@ func LoadServer(args []string, getenv func(string) string, out io.Writer) (Serve
 	fs.StringVar(&c.Addr, "addr", envOr(getenv, "NUDGE_ADDR", ":8080"), "listen address (NUDGE_ADDR)")
 	fs.StringVar(&c.DataDir, "data", envOr(getenv, "NUDGE_DATA", "/data"), "data directory (NUDGE_DATA)")
 	fs.StringVar(&c.DockerHost, "docker-host", envOr(getenv, "DOCKER_HOST", "unix:///var/run/docker.sock"), "Docker API of the local environment, unix:// or tcp:// (DOCKER_HOST)")
+	fs.StringVar(&c.TLSCert, "tls-cert", getenv("NUDGE_TLS_CERT"), "PEM certificate (chain) file; serve HTTPS with -tls-key (NUDGE_TLS_CERT)")
+	fs.StringVar(&c.TLSKey, "tls-key", getenv("NUDGE_TLS_KEY"), "PEM private key file for -tls-cert (NUDGE_TLS_KEY)")
+	fs.StringVar(&c.PublicURL, "public-url", getenv("NUDGE_PUBLIC_URL"), "URL browsers and agents reach the server at, e.g. https://nudge.example.net (NUDGE_PUBLIC_URL)")
 	level := fs.String("log-level", envOr(getenv, "NUDGE_LOG_LEVEL", "info"), "debug, info, warn or error (NUDGE_LOG_LEVEL)")
 	if err := fs.Parse(args); err != nil {
 		return Server{}, err
@@ -56,6 +73,16 @@ func LoadServer(args []string, getenv func(string) string, out io.Writer) (Serve
 	}
 	if c.DataDir == "" {
 		return Server{}, errors.New("data directory must not be empty")
+	}
+	if (c.TLSCert == "") != (c.TLSKey == "") {
+		return Server{}, errors.New("set both -tls-cert and -tls-key (NUDGE_TLS_CERT, NUDGE_TLS_KEY) or neither")
+	}
+	if c.PublicURL != "" {
+		u, err := parsePublicURL(c.PublicURL)
+		if err != nil {
+			return Server{}, err
+		}
+		c.PublicURL = u
 	}
 	return c, nil
 }
@@ -137,6 +164,28 @@ func parseServerURL(s string, insecure bool) (*url.URL, error) {
 	u.Path = strings.TrimSuffix(u.Path, "/")
 	u.RawPath = ""
 	return u, nil
+}
+
+// parsePublicURL accepts http(s)://host[:port] with an optional trailing slash and
+// returns it without one. nudge serves from the root, so a path is refused.
+func parsePublicURL(s string) (string, error) {
+	u, err := url.Parse(s)
+	if err != nil {
+		return "", fmt.Errorf("public URL %q: %w", s, err)
+	}
+	switch {
+	case u.Scheme != "http" && u.Scheme != "https":
+		return "", fmt.Errorf("public URL %q: want http:// or https://", s)
+	case u.Host == "":
+		return "", fmt.Errorf("public URL %q: missing host", s)
+	case u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.ForceQuery:
+		return "", fmt.Errorf("public URL %q: want only scheme, host and port", s)
+	case u.Path != "" && u.Path != "/":
+		return "", fmt.Errorf("public URL %q: nudge serves from the root; a path is not supported", s)
+	case !hostPort.MatchString(u.Host):
+		return "", fmt.Errorf("public URL %q: invalid host", s)
+	}
+	return u.Scheme + "://" + u.Host, nil
 }
 
 func envOr(getenv func(string) string, key, def string) string {

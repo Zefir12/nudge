@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -20,6 +22,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/agent"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/api"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/certs"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/config"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
@@ -97,6 +100,12 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 	if err := prepareDataDir(cfg.DataDir); err != nil {
 		return err
 	}
+	var certLoader *certs.Loader
+	if cfg.TLS() {
+		if certLoader, err = certs.Load(cfg.TLSCert, cfg.TLSKey, log); err != nil {
+			return err
+		}
+	}
 	// Not cancelled by a signal: migrations are short, and a signal during startup should
 	// still end in a clean shutdown below rather than a failed start. The timeout bounds
 	// a database locked by another process.
@@ -152,6 +161,15 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 		wg.Wait()
 	}()
 	wg.Go(func() { authSvc.RunCleanup(cleanupCtx, 10*time.Minute) })
+	if certLoader != nil {
+		// SIGHUP would otherwise kill the process.
+		hup := make(chan os.Signal, 1)
+		signal.Notify(hup, syscall.SIGHUP)
+		defer signal.Stop(hup)
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		wg.Go(func() { certLoader.Watch(cleanupCtx, ticker.C, hup) })
+	}
 
 	srv := &http.Server{
 		Addr: cfg.Addr,
@@ -161,15 +179,26 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 			Auth:    authSvc,
 			Envs:    envs,
 			Web:     web.Handler(web.Dist()),
+
+			PublicURL:     cfg.PublicURL,
+			SecureCookies: cfg.TLS() || strings.HasPrefix(cfg.PublicURL, "https://"),
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}
 
+	if certLoader != nil {
+		srv.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: certLoader.GetCertificate}
+	}
+
 	errc := make(chan error, 1)
 	go func() {
-		log.Info("listening", "addr", cfg.Addr, "version", version.Version)
+		log.Info("listening", "addr", cfg.Addr, "tls", cfg.TLS(), "public_url", cfg.PublicURL, "version", version.Version)
+		if certLoader != nil {
+			errc <- srv.ListenAndServeTLS("", "")
+			return
+		}
 		errc <- srv.ListenAndServe()
 	}()
 

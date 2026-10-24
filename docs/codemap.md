@@ -29,7 +29,8 @@ lets patterns in `publicRoutes` through without either credential) to the API mu
 | `internal/environments` | environments table, Docker client per environment (cached), online checks, auto-created `local`; agent enrollment in agents.go (join tokens, agent ID + secret); agent tunnels in sessions.go (one per environment, Docker client dials a stream) | `New`, `Options.Connect`, `LocalConnect`, `EnsureLocal`, `Service.Client`, `Online`, `CreateAgent`, `RegenerateJoinToken`, `Enroll`, `AuthenticateAgent`, `Revoke`, `ServeAgent` |
 | `internal/tunnel` | WebSocket ↔ yamux tunnel: JSON hello (protocol version), server = yamux client, keepalives | `Accept` (server), `Connect` (agent), `Session.Open`/`Accept`/`Done`/`Close`, `ProtocolVersion`; `tunneltest.Connect` fake agent serving an `http.Handler` |
 | `internal/agent` | `nudge agent`: enroll with the join token, `agent.json` (credentials.go), dial the tunnel with backoff, pipe each stream to the Docker socket | `New`, `Options`, `Agent.Run`, `FatalError`, `Clock` |
-| `internal/config` | flags with NUDGE_* env fallbacks | `LoadServer`, `Server`, `LoadAgent`, `Agent` |
+| `internal/certs` | TLS certificate from PEM files, reloaded on file change (polled) or SIGHUP | `Load`, `Loader.GetCertificate`, `Reload`, `Watch` |
+| `internal/config` | flags with NUDGE_* env fallbacks | `LoadServer`, `Server` (`TLS()`, `PublicURL`), `LoadAgent`, `Agent` |
 | `internal/store` | SQLite (`<data>/nudge.db`), embedded migrations | `Open`, `Store.DB`, `migrations/NNNN_name.sql` |
 | `internal/web` | embedded frontend, SPA fallback | `Dist`, `Handler` |
 | `internal/version` | build version via ldflags | `Version` |

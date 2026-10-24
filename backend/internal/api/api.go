@@ -21,6 +21,12 @@ type Options struct {
 	Envs    *environments.Service
 	// Web serves every path outside /api/.
 	Web http.Handler
+	// PublicURL is the URL agents reach the server at (scheme://host[:port]); empty means
+	// guess it from each request.
+	PublicURL string
+	// SecureCookies marks the session cookie Secure on every response, not only on
+	// requests that came over HTTPS (set when nudge serves TLS or PublicURL is https).
+	SecureCookies bool
 }
 
 // publicRoutes need no session; every other pattern, including the /api/ catch-all,
@@ -40,7 +46,10 @@ var publicRoutes = map[string]bool{
 
 // New returns the server's root handler: the API plus the web UI.
 func New(opts Options) http.Handler {
-	s := &server{log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs}
+	s := &server{
+		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs,
+		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies,
+	}
 	api := http.NewServeMux()
 	api.HandleFunc("GET /api/v1/health", s.health)
 	api.HandleFunc("GET /api/v1/setup", s.setupStatus)
@@ -79,6 +88,9 @@ type server struct {
 	version string
 	auth    *auth.Service
 	envs    *environments.Service
+
+	publicURL     string
+	secureCookies bool
 }
 
 // protect requires a session or an API token for every route outside publicRoutes.
