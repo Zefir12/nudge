@@ -37,7 +37,8 @@ Add a row (and a section below, for anything non-trivial) with every new endpoin
 `{"username": "admin", "password": "..."}` and answer with the user
 `{"id": 1, "username": "admin", "created_at": "2026-10-24T12:00:00Z"}` (`201` for setup,
 `200` for login) plus the session cookie: `HttpOnly`, `SameSite=Strict`, `Path=/`,
-`Secure` when the request came over HTTPS (directly or with `X-Forwarded-Proto: https`),
+`Secure` when nudge serves TLS or `NUDGE_PUBLIC_URL` is `https://`, else when the request
+came over HTTPS (with `X-Forwarded-Proto: https`),
 valid for 7 days. `GET /api/v1/auth/me` returns the same user object.
 
 - Setup works only while no user exists, else `409`. The username is 1 to 64 bytes
@@ -91,8 +92,9 @@ settings are not.
   environment (`kind` must be `agent`: the local one is created automatically) and answers
   `201` with the environment plus its join token:
   `"join_token": {"token": "nudge_join_…", "expires_at": "...", "docker_run": "docker run -d … nudge:latest agent"}`.
-  `docker_run` starts the agent on the remote host; its `NUDGE_SERVER_URL` comes from the
-  request's host until a public URL can be configured (#12). Names follow the token
+  `docker_run` starts the agent on the remote host; its `NUDGE_SERVER_URL` is
+  `NUDGE_PUBLIC_URL`, or when that is unset the request's host (`https://` over TLS or
+  with `X-Forwarded-Proto: https`). Names follow the token
   rules (1 to 64 bytes, no control characters or surrounding spaces); `409` if taken.
 - `POST /api/v1/environments/{env}/join-tokens` replaces the environment's join token
   (`201`, same object as `join_token`), for an agent that never enrolled or lost its

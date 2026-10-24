@@ -196,6 +196,24 @@ func TestAgentWithoutCredentials(t *testing.T) {
 	}
 }
 
+func TestServeFailsOnBadCertificate(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cert := filepath.Join(dir, "cert.pem")
+	if err := os.WriteFile(cert, []byte("not a certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	getenv := func(string) string { return "" }
+	args := []string{"serve", "-addr", "127.0.0.1:0", "-docker-host", noDocker(t), "-data", t.TempDir(), "-tls-cert", cert, "-tls-key", filepath.Join(dir, "missing.pem")}
+	if code := realMain(context.Background(), args, getenv, &stdout, &stderr); code != 1 {
+		t.Fatalf("code = %d, want 1 (stderr %q)", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "TLS") {
+		t.Errorf("stderr %q does not mention TLS", stderr.String())
+	}
+}
+
 // noDocker is a Docker host that doesn't exist, so serve never reaches the host's daemon.
 func noDocker(t *testing.T) string {
 	t.Helper()

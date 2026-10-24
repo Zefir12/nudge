@@ -68,7 +68,7 @@ func (s *server) createEnvironment(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	s.writeJSON(w, http.StatusCreated, createdEnvironmentResponse{
 		environmentResponse: toEnvironmentResponse(env, false),
-		JoinToken:           toJoinTokenResponse(r, jt),
+		JoinToken:           s.toJoinTokenResponse(r, jt),
 	})
 }
 
@@ -83,7 +83,7 @@ func (s *server) createJoinToken(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("join token created", "env", id, "ip", clientIP(r))
 	w.Header().Set("Cache-Control", "no-store")
-	s.writeJSON(w, http.StatusCreated, toJoinTokenResponse(r, jt))
+	s.writeJSON(w, http.StatusCreated, s.toJoinTokenResponse(r, jt))
 }
 
 func (s *server) revokeAgent(w http.ResponseWriter, r *http.Request) {
@@ -185,18 +185,22 @@ func (s *server) agentError(w http.ResponseWriter, err error, msg string) bool {
 	return true
 }
 
-func toJoinTokenResponse(r *http.Request, jt environments.JoinToken) joinTokenResponse {
-	return joinTokenResponse{Token: jt.Token, ExpiresAt: jt.ExpiresAt.UTC(), DockerRun: dockerRun(serverURL(r), jt.Token)}
+func (s *server) toJoinTokenResponse(r *http.Request, jt environments.JoinToken) joinTokenResponse {
+	return joinTokenResponse{Token: jt.Token, ExpiresAt: jt.ExpiresAt.UTC(), DockerRun: dockerRun(s.serverURL(r), jt.Token)}
 }
 
-// serverURL guesses the URL agents reach the server at from the request.
-// TODO(#12): use the configured public URL once there is one.
-func serverURL(r *http.Request) string {
+// serverURL is the URL agents reach the server at: the configured public URL, else a
+// guess from the request (behind a TLS-terminating proxy, X-Forwarded-Proto: https
+// makes it https://).
+func (s *server) serverURL(r *http.Request) string {
+	if s.publicURL != "" {
+		return s.publicURL
+	}
 	if !hostHeader.MatchString(r.Host) {
 		return "https://<server>"
 	}
 	scheme := "http"
-	if r.TLS != nil {
+	if isTLS(r) {
 		scheme = "https"
 	}
 	return scheme + "://" + r.Host

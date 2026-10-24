@@ -114,7 +114,7 @@ func (s *server) startSession(w http.ResponseWriter, r *http.Request, c credenti
 		return
 	}
 	s.log.Info("logged in", "username", sess.User.Username, "ip", ip)
-	setSessionCookie(w, r, sess.Token, sess.ExpiresAt, 0)
+	s.setSessionCookie(w, r, sess.Token, sess.ExpiresAt, 0)
 	s.writeJSON(w, code, toUserResponse(sess.User))
 }
 
@@ -123,7 +123,7 @@ func (s *server) logout(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, "logout", err)
 		return
 	}
-	setSessionCookie(w, r, "", time.Time{}, -1)
+	s.setSessionCookie(w, r, "", time.Time{}, -1)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -137,9 +137,9 @@ func (s *server) me(w http.ResponseWriter, r *http.Request) {
 }
 
 // setSessionCookie sets the session cookie; maxAge -1 deletes it.
-func setSessionCookie(w http.ResponseWriter, r *http.Request, value string, expires time.Time, maxAge int) {
-	// Secure only over HTTPS: nudge also serves plain HTTP (the default on a LAN), where
-	// a Secure cookie would never come back.
+func (s *server) setSessionCookie(w http.ResponseWriter, r *http.Request, value string, expires time.Time, maxAge int) {
+	// Secure over HTTPS or when configured: nudge also serves plain HTTP (the default on
+	// a LAN), where a Secure cookie would never come back.
 	http.SetCookie(w, &http.Cookie{ // #nosec G124 -- see above
 		Name:     sessionCookie,
 		Value:    value,
@@ -147,7 +147,7 @@ func setSessionCookie(w http.ResponseWriter, r *http.Request, value string, expi
 		Expires:  expires,
 		MaxAge:   maxAge,
 		HttpOnly: true,
-		Secure:   isTLS(r),
+		Secure:   s.secureCookies || isTLS(r),
 		SameSite: http.SameSiteStrictMode,
 	})
 }

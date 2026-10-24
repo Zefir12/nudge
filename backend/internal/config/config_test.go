@@ -39,6 +39,25 @@ func TestLoadServer(t *testing.T) {
 		{name: "empty docker host", args: []string{"-docker-host", ""}, wantErr: true},
 		{name: "empty data dir", args: []string{"-data", ""}, wantErr: true},
 		{name: "stray argument", args: []string{"extra"}, wantErr: true},
+		{
+			name: "tls and public url",
+			env:  map[string]string{"NUDGE_TLS_CERT": "/certs/cert.pem", "NUDGE_TLS_KEY": "/certs/key.pem", "NUDGE_PUBLIC_URL": "https://nudge.example.net:8443/"},
+			want: Server{Addr: ":8080", DataDir: "/data", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", TLSCert: "/certs/cert.pem", TLSKey: "/certs/key.pem", PublicURL: "https://nudge.example.net:8443"},
+		},
+		{
+			name: "public url flag",
+			args: []string{"-public-url", "http://10.0.0.5:8080"},
+			want: Server{Addr: ":8080", DataDir: "/data", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", PublicURL: "http://10.0.0.5:8080"},
+		},
+		{name: "cert without key", args: []string{"-tls-cert", "/c.pem"}, wantErr: true},
+		{name: "key without cert", env: map[string]string{"NUDGE_TLS_KEY": "/k.pem"}, wantErr: true},
+		{name: "public url without scheme", args: []string{"-public-url", "nudge.example.net"}, wantErr: true},
+		{name: "public url other scheme", args: []string{"-public-url", "ftp://nudge.example.net"}, wantErr: true},
+		{name: "public url with path", args: []string{"-public-url", "https://example.net/nudge"}, wantErr: true},
+		{name: "public url with query", args: []string{"-public-url", "https://example.net/?a=b"}, wantErr: true},
+		{name: "public url with credentials", args: []string{"-public-url", "https://u:p@example.net"}, wantErr: true},
+		{name: "public url with shell characters", args: []string{"-public-url", "https://a;b"}, wantErr: true},
+		{name: "public url without host", args: []string{"-public-url", "https://"}, wantErr: true},
 		{name: "unknown flag", args: []string{"-nope"}, wantErr: true},
 	}
 	for _, tt := range tests {

