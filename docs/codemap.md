@@ -27,6 +27,7 @@ lets patterns in `publicRoutes` through without either credential) to the API mu
 | `internal/auth` | users, argon2id, sessions, login rate limit, API tokens (tokens.go) | `New`, `Options`, `Service.Login`, `SessionUser`, `TokenUser`, `CreateToken`, `CreateFirstUser`, `EnsureAdmin`, `RunCleanup` |
 | `internal/docker` | Docker client over a dialer per kind; `Client` interface handlers use; `dockertest.Fake` | `New`, `LocalDialer`, `Client`, `Unreachable` |
 | `internal/environments` | environments table, Docker client per environment (cached), online checks, auto-created `local` | `New`, `Options.Connect`, `LocalConnect`, `EnsureLocal`, `Service.Client`, `Online` |
+| `internal/tunnel` | WebSocket ↔ yamux tunnel: JSON hello (protocol version), server = yamux client, keepalives | `Accept` (server), `Connect` (agent), `Session.Open`/`Accept`/`Done`/`Close`, `ProtocolVersion` |
 | `internal/config` | flags with NUDGE_* env fallbacks | `LoadServer`, `Server` |
 | `internal/store` | SQLite (`<data>/nudge.db`), embedded migrations | `Open`, `Store.DB`, `migrations/NNNN_name.sql` |
 | `internal/web` | embedded frontend, SPA fallback | `Dist`, `Handler` |
@@ -55,6 +56,8 @@ lets patterns in `publicRoutes` through without either credential) to the API mu
   `config_test.go`, README table, docs/config/<topic>.md.
 - **Schema change:** new `internal/store/migrations/NNNN_name.sql` with the next number
   (never edit an applied one); it runs in one transaction at start.
+- **Tunnel tests:** `newWSPair` (httptest + WebSocket) and `newPipePair` (`net.Pipe`) in
+  tunnel_test.go, `echo` as a fake agent, `checkLeaks` (non-parallel tests only).
 - **Test helpers:** `api.newTestHandler(t)` (api_test.go: empty database, returns the
   `auth.Service`; create a user with `CreateFirstUser`, get a cookie from a login via
   `do`/`sessionCookieOf` in auth_test.go); `auth.newTestService(t)` with `fakeClock`; `fstest.MapFS` for web

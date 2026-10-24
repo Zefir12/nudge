@@ -48,6 +48,12 @@ small interface over the client, so tests run against fakes.
    the **server is the yamux client**: it opens streams, and the agent accepts each one and
    pipes it to its local Docker socket. A small JSON hello at connect carries the agent's
    version and host name; liveness uses yamux keepalives.
+   Wire format (`internal/tunnel`): the agent sends one text message
+   `{"protocol": 1, "version": "...", "hostname": "..."}`, the server answers
+   `{"protocol": 1, "version": "..."}` or `{"protocol": 1, "error": "..."}` and closes
+   (policy violation) on a protocol mismatch or invalid fields; after that every message
+   is binary yamux data. Keepalive pings every 15 s, the session closes when one isn't
+   answered within 10 s. Streams opened by the agent are refused.
 5. The agent reconnects with exponential backoff and jitter (1 s → 60 s). The server marks
    the environment offline when the session closes and records `last_seen`.
 
