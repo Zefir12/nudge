@@ -451,35 +451,105 @@ export function streamLogs(env: string, id: string, opts: LogOptions, h: LogHand
   if (opts.follow) q.set('follow', 'true');
   if (opts.timestamps) q.set('timestamps', 'true');
   if (opts.tail !== undefined) q.set('tail', String(opts.tail));
+  return openStream<LogLine>(
+    envPath(env, `/containers/${enc(id)}/logs?${q}`),
+    'log',
+    (m) => m.line !== undefined,
+    h.onLine,
+    h.onEnd,
+  );
+}
+
+// openStream opens a WebSocket under /api/v1 that sends items, then a last frame with
+// done or error, and returns a function that closes it. onEnd runs once, unless the
+// caller closed the socket.
+function openStream<T>(
+  path: string,
+  what: string,
+  isItem: (m: Partial<T>) => boolean,
+  onItem: (item: T) => void,
+  onEnd: (error?: string) => void,
+): () => void {
   const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const path = envPath(env, `/containers/${enc(id)}/logs`);
-  const ws = new WebSocket(`${scheme}//${location.host}/api/v1${path}?${q}`);
+  const ws = new WebSocket(`${scheme}//${location.host}/api/v1${path}`);
   let ended = false;
   const end = (error?: string) => {
     if (ended) return;
     ended = true;
-    h.onEnd(error);
+    onEnd(error);
   };
   ws.onmessage = (ev: MessageEvent<string>) => {
-    let m: Partial<LogLine> & { done?: boolean; error?: string };
+    let m: Partial<T> & { done?: boolean; error?: string };
     try {
       m = JSON.parse(ev.data) as typeof m;
     } catch {
-      end('The log stream sent a malformed frame.');
+      end(`The ${what} stream sent a malformed frame.`);
       ws.close();
       return;
     }
-    if (m.line !== undefined) h.onLine(m as LogLine);
+    if (isItem(m)) onItem(m as T);
     else if (m.error) end(m.error);
     else if (m.done) end();
   };
   // A refused upgrade (session expired, container gone) only shows as a close.
-  ws.onclose = () => end('The log stream closed unexpectedly.');
+  ws.onclose = () => end(`The ${what} stream closed unexpectedly.`);
   return () => {
     ended = true;
     ws.close();
   };
 }
+
+// StatsSample is a container's usage: CPU as a percentage of one CPU (it can pass 100
+// on several), memory without the page cache, network and block I/O as totals since
+// the container started.
+export interface StatsSample {
+  time: string;
+  cpu_percent: number;
+  memory_usage: number;
+  memory_limit: number;
+  memory_percent: number;
+  network_rx: number;
+  network_tx: number;
+  block_read: number;
+  block_write: number;
+  pids: number;
+}
+
+export interface StatsHandlers {
+  onSample: (s: StatsSample) => void;
+  // onEnd runs once when the stream ends: without an error when the container stopped.
+  onEnd: (error?: string) => void;
+}
+
+// streamStats opens the container's stats WebSocket (a sample about every second) and
+// returns a function that closes it.
+export const streamStats = (env: string, id: string, h: StatsHandlers) =>
+  openStream<StatsSample>(
+    envPath(env, `/containers/${enc(id)}/stats`),
+    'stats',
+    (m) => m.time !== undefined,
+    h.onSample,
+    h.onEnd,
+  );
+
+export interface ContainerUsage extends StatsSample {
+  id: string;
+  name: string;
+}
+
+export interface EnvironmentStats {
+  containers: ContainerUsage[];
+  // skipped counts running containers that could not be sampled.
+  skipped: number;
+  total: Pick<
+    StatsSample,
+    'cpu_percent' | 'memory_usage' | 'network_rx' | 'network_tx' | 'block_read' | 'block_write'
+  >;
+}
+
+// getEnvironmentStats samples every running container once (it takes about a second).
+export const getEnvironmentStats = (env: string, signal?: AbortSignal) =>
+  apiFetch<EnvironmentStats>(envPath(env, '/stats'), { signal });
 
 // force also removes an image with several tags or used by stopped containers.
 export const removeImage = (env: string, id: string, force = false) =>

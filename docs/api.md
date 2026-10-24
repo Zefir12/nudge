@@ -37,6 +37,8 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | GET | `/api/v1/environments/{env}/containers/{id}/spec` | session | a container's settings in the create shape |
 | POST | `/api/v1/environments/{env}/containers/{id}/recreate` | session | replace a container, optionally pulling first or with changed settings |
 | GET | `/api/v1/environments/{env}/containers/{id}/logs` | session | WebSocket: a container's logs, one JSON frame per line; see Container logs |
+| GET | `/api/v1/environments/{env}/containers/{id}/stats` | session | WebSocket: a running container's usage, a sample about every second; see Stats |
+| GET | `/api/v1/environments/{env}/stats` | session | one usage sample of every running container, with totals; see Stats |
 | POST | `/api/v1/environments/{env}/images/pull` | session | pull `{"image": "nginx:1.29"}`, progress as JSON lines; see Image actions |
 | POST | `/api/v1/environments/{env}/images/prune` | session | remove untagged images, or with `?all=true` every unused one |
 | DELETE | `/api/v1/environments/{env}/images/{id}` | session | remove an image or tag (`?force=true`); `204` |
@@ -266,6 +268,29 @@ ended (the container stopped, or without `follow` every line was sent) or `{"err
 "..."}`, then the server closes the socket normally. Closing the socket stops the stream
 on the Docker host. The server pings every 30 s and ends a stream whose client doesn't
 answer.
+
+### Stats
+Usage is computed on the server from the daemon's counters. A sample:
+`{"time": "...", "cpu_percent": 12.5, "memory_usage": 268435456, "memory_limit": 1073741824,
+"memory_percent": 25, "network_rx": 1024, "network_tx": 256, "block_read": 8192,
+"block_write": 512, "pids": 7}`. `cpu_percent` is a percentage of one CPU (like `docker
+stats`, it can pass 100 on several CPUs); memory leaves out the inactive page cache, and
+the limit is the host's memory when the container has none (Windows containers report no
+limit). Network and block I/O are byte totals since the container started; rates come
+from two samples.
+
+`GET /api/v1/environments/{env}/containers/{id}/stats` upgrades to a WebSocket like the
+log stream (same authentication, `Origin` check, pings and close behaviour). Before the
+upgrade: `404` unknown environment or container, `409` container is not running, and the
+usual Docker errors. Then each sample is a text frame (the daemon's first reading, which
+has no previous one to compute CPU from, is skipped); the last frame is `{"done": true}`
+when the container stopped or `{"error": "..."}`.
+
+`GET /api/v1/environments/{env}/stats` answers `{"containers": [{"id", "name", ...sample}],
+"skipped": 0, "total": {"cpu_percent", "memory_usage", "network_rx", "network_tx", "block_read",
+"block_write"}}`, sorted by name. It takes about a second (the daemon waits for a second
+reading) and samples 8 containers at a time, for at most a minute; a container that stops
+meanwhile, or isn't sampled in time, is left out and counted in `skipped`.
 
 ### Image actions
 - `POST /api/v1/environments/{env}/images/pull` with `{"image": "ghcr.io/org/app:1.2"}`

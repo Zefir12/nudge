@@ -91,6 +91,8 @@ func New(opts Options) http.Handler {
 	api.HandleFunc("POST /api/v1/environments/{env}/containers/{id}/restart", s.restartContainer)
 	api.HandleFunc("POST /api/v1/environments/{env}/containers/{id}/kill", s.killContainer)
 	api.HandleFunc("GET /api/v1/environments/{env}/containers/{id}/logs", s.containerLogs)
+	api.HandleFunc("GET /api/v1/environments/{env}/containers/{id}/stats", s.containerStats)
+	api.HandleFunc("GET /api/v1/environments/{env}/stats", s.environmentStats)
 	api.HandleFunc("GET /api/v1/environments/{env}/images", s.listImages)
 	api.HandleFunc("POST /api/v1/environments/{env}/images/pull", s.pullImage)
 	api.HandleFunc("POST /api/v1/environments/{env}/images/prune", s.pruneImages)

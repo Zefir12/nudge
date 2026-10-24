@@ -58,6 +58,12 @@ describe('DashboardView', () => {
       'GET /environments/1': { body: env },
       'GET /environments/1/volumes': { body: [{}, {}] },
       'GET /environments/1/networks': { body: [{}, {}, {}] },
+      'GET /environments/1/stats': {
+        body: {
+          containers: [],
+          total: { cpu_percent: 12.5, memory_usage: 2e9, network_rx: 0, network_tx: 0 },
+        },
+      },
     });
     const wrapper = await mountAt('/env/1');
     const counts = wrapper.findAll('.count').map((c) => c.text());
@@ -68,6 +74,7 @@ describe('DashboardView', () => {
     expect(wrapper.text()).toContain('Debian GNU/Linux 13');
     expect(wrapper.text()).toContain('16.0 GB');
     expect(wrapper.find('.count').attributes('href')).toBe('/env/1/containers');
+    expect(wrapper.find('.totals').text()).toContain('12.5% CPU');
   });
 
   it('shows an offline environment', async () => {
@@ -76,6 +83,7 @@ describe('DashboardView', () => {
       'GET /environments/1': offline,
       'GET /environments/1/volumes': offline,
       'GET /environments/1/networks': offline,
+      'GET /environments/1/stats': offline,
     });
     const wrapper = await mountAt('/env/1');
     expect(wrapper.find('[role=alert]').text()).toContain('the environment is offline');
