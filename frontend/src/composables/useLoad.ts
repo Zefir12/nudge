@@ -8,7 +8,7 @@ export interface Load<T> {
 }
 
 // useLoad runs fetch now and whenever source changes (the route's environment or ID), and
-// drops answers that arrive after a newer request started.
+// drops answers that arrive after a newer request started. Empty sources are skipped.
 export function useLoad<T, S>(source: WatchSource<S>, fetch: (s: S) => Promise<T>): Load<T> {
   const data = ref<T | null>(null) as Ref<T | null>;
   const error = ref('');
@@ -34,10 +34,14 @@ export function useLoad<T, S>(source: WatchSource<S>, fetch: (s: S) => Promise<T
     }
   }
 
+  // A route param turns empty while the router leaves the page, before the view
+  // unmounts; that is no request to make. Tuple sources are new arrays on every change,
+  // so the old data is always dropped when the environment or ID changes.
   watch(
     source,
-    (s, old) => {
-      if (s !== old) data.value = null;
+    (s) => {
+      if (Array.isArray(s) ? s.some((part) => !part) : !s) return;
+      data.value = null;
       void run(s);
     },
     { immediate: true },

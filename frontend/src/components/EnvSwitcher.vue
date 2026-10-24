@@ -40,6 +40,13 @@ onMounted(async () => {
     <span class="muted">Environment</span>
     <select :value="current" :disabled="!environments" @change="onChange">
       <option v-if="!current" value="" disabled>Choose…</option>
+      <option
+        v-else-if="environments && !environments.some((e) => String(e.id) === current)"
+        :value="current"
+        disabled
+      >
+        Unknown environment
+      </option>
       <option v-for="env in environments ?? []" :key="env.id" :value="String(env.id)">
         {{ env.name }}{{ env.online ? '' : ' (offline)' }}
       </option>
