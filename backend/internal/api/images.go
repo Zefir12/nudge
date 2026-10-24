@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -12,7 +11,6 @@ import (
 
 	"github.com/moby/moby/api/types/image"
 	"github.com/moby/moby/api/types/jsonstream"
-	"github.com/moby/moby/api/types/registry"
 	"github.com/moby/moby/client"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
@@ -245,9 +243,7 @@ func (s *server) pullOptions(w http.ResponseWriter, r *http.Request, ref string)
 	if !found {
 		return client.ImagePullOptions{}, "", true
 	}
-	opts := client.ImagePullOptions{RegistryAuth: encodeRegistryAuth(registry.AuthConfig{
-		Username: auth.Username, Password: auth.Password, ServerAddress: auth.Address,
-	})}
+	opts := client.ImagePullOptions{RegistryAuth: auth.Header()}
 	return opts, auth.Password, true
 }
 
@@ -287,15 +283,6 @@ func (s *server) pullError(w http.ResponseWriter, r *http.Request, env environme
 	s.envs.Seen(r.Context(), &env)
 	s.log.Warn("image pull", "env", env.ID, "err", err)
 	s.writeError(w, code, "pull failed: "+maskSecret(strings.TrimPrefix(err.Error(), "Error response from daemon: "), password))
-}
-
-// encodeRegistryAuth is the X-Registry-Auth header value: the credentials as JSON in
-// URL-safe base64.
-func encodeRegistryAuth(a registry.AuthConfig) string {
-	// Marshalling a struct of strings can't fail.
-	b, _ := json.Marshal(a) // #nosec G117 -- the header hands the credentials to the daemon by design
-
-	return base64.URLEncoding.EncodeToString(b)
 }
 
 func pullStreamError(err error) string {

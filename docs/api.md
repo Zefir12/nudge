@@ -447,6 +447,31 @@ with `null`) the stored one is kept.
 - A pull reference may contain `@` only before a digest (`app@sha256:…`), so the
   credentials always match the host the daemon pulls from.
 
+### Image updates
+nudge checks the images that containers run by tag (an implicit `latest` included) for a
+newer version: it asks the environment's daemon for the registry's digest of the tag
+(with the stored registry credentials, as a pull would) and compares it with the digests
+the local image was pulled as. Images pinned to a digest, named by ID or built locally
+aren't updatable by tag. The check runs every `NUDGE_UPDATE_CHECK_INTERVAL` over every
+environment (see docs/config/server.md) and on request.
+
+- `GET /api/v1/environments/{env}/updates` answers the last check of the environment,
+  `[]` before the first:
+  `[{"image": "nginx:1.29", "image_id": "sha256:…", "status": "available",
+  "local_digest": "sha256:…", "remote_digest": "sha256:…", "error": "", "checked_at":
+  "..."}]`, by image. `status` is `available` (the registry has another digest for the
+  tag), `current` or `unknown`; for `unknown`, `error` says why (no such tag, access
+  refused, built locally, ...) without the daemon's message. A container has an update
+  when its `image` and `image_id` match a row with `available`.
+- `POST /api/v1/environments/{env}/updates/check` checks the environment now and answers
+  the same list; it replaces the environment's results. One check runs at a time (`409`
+  while another one, scheduled or not, runs); `503` when the environment is offline,
+  `504` when its daemon doesn't answer. The check goes on when the client disconnects and
+  stops after five minutes.
+- Lookups are bounded: four at a time, at most one request per registry every 500 ms,
+  one per image reference per check (shared by the environments in a scheduled check),
+  at most 500 images per environment.
+
 ### Audit log
 Every `POST`, `PUT`, `PATCH` and `DELETE` that reaches a route is recorded after it is
 answered, by one middleware: time, user, the API token's name (empty for a session), the
