@@ -1,19 +1,38 @@
 package api
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/store"
 )
 
-func newTestHandler() http.Handler {
+// newTestHandler returns the API over a fresh database with no users, and its auth
+// service (cheap argon2 params, fixed clock).
+func newTestHandler(t *testing.T) (http.Handler, *auth.Service) {
+	t.Helper()
+	st, err := store.Open(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	now := time.Unix(1_700_000_000, 0)
+	svc := auth.New(auth.Options{
+		DB:     st.DB(),
+		Now:    func() time.Time { return now },
+		Params: auth.Params{Memory: 64, Time: 1, Threads: 1},
+	})
 	web := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "web")
 	})
-	return New(Options{Log: slog.New(slog.DiscardHandler), Version: "v1.0.0", Web: web})
+	return New(Options{Log: slog.New(slog.DiscardHandler), Version: "v1.0.0", Auth: svc, Web: web}), svc
 }
 
 func TestRoutes(t *testing.T) {
@@ -27,12 +46,15 @@ func TestRoutes(t *testing.T) {
 		wantJSON bool
 	}{
 		{name: "health", method: http.MethodGet, path: "/api/v1/health", wantCode: 200, wantBody: `{"status":"ok","version":"v1.0.0"}`, wantJSON: true},
-		// The /api/ catch-all answers wrong methods too, so clients always get JSON.
-		{name: "health wrong method", method: http.MethodPost, path: "/api/v1/health", wantCode: 404, wantBody: `{"error":"not found"}`, wantJSON: true},
-		{name: "unknown api path", method: http.MethodGet, path: "/api/v1/nope", wantCode: 404, wantBody: `{"error":"not found"}`, wantJSON: true},
+		// The /api/ catch-all answers wrong methods too, so clients always get JSON;
+		// without a session that answer is 401, so route names don't leak.
+		{name: "health wrong method", method: http.MethodPost, path: "/api/v1/health", wantCode: 401, wantBody: `{"error":"authentication required"}`, wantJSON: true},
+		{name: "unknown api path", method: http.MethodGet, path: "/api/v1/nope", wantCode: 401, wantBody: `{"error":"authentication required"}`, wantJSON: true},
+		{name: "me needs a session", method: http.MethodGet, path: "/api/v1/auth/me", wantCode: 401, wantBody: `{"error":"authentication required"}`, wantJSON: true},
+		{name: "setup status", method: http.MethodGet, path: "/api/v1/setup", wantCode: 200, wantBody: `{"needed":true}`, wantJSON: true},
 		{name: "web ui", method: http.MethodGet, path: "/containers", wantCode: 200, wantBody: "web"},
 	}
-	h := newTestHandler()
+	h, _ := newTestHandler(t)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()

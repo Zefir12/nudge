@@ -14,10 +14,12 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/api"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/config"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/store"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/version"
@@ -92,11 +94,34 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 		}
 	}()
 
+	authSvc := auth.New(auth.Options{DB: st.DB(), Log: log})
+	if cfg.AdminPassword != "" {
+		// Like the migrations: part of startup, not cancelled by a signal.
+		adminCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		created, err := authSvc.EnsureAdmin(adminCtx, cfg.AdminPassword)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("NUDGE_ADMIN_PASSWORD: %w", err)
+		}
+		if created {
+			log.Info("created admin user from NUDGE_ADMIN_PASSWORD", "username", auth.AdminUsername)
+		}
+	}
+	// The cleanup stops before the deferred st.Close above.
+	var wg sync.WaitGroup
+	cleanupCtx, stopCleanup := context.WithCancel(ctx)
+	defer func() {
+		stopCleanup()
+		wg.Wait()
+	}()
+	wg.Go(func() { authSvc.RunCleanup(cleanupCtx, 10*time.Minute) })
+
 	srv := &http.Server{
 		Addr: cfg.Addr,
 		Handler: api.New(api.Options{
 			Log:     log,
 			Version: version.Version,
+			Auth:    authSvc,
 			Web:     web.Handler(web.Dist()),
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -120,6 +145,11 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("shutdown: %w", err)
+	}
+	// ListenAndServe returns ErrServerClosed once Shutdown started; wait for it so the
+	// goroutine doesn't outlive serve.
+	if err := <-errc; !errors.Is(err, http.ErrServerClosed) {
+		return fmt.Errorf("listen: %w", err)
 	}
 	return nil
 }

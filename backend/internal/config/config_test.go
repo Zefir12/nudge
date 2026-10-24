@@ -21,8 +21,8 @@ func TestLoadServer(t *testing.T) {
 		},
 		{
 			name: "env",
-			env:  map[string]string{"NUDGE_ADDR": ":9000", "NUDGE_DATA": "/var/lib/nudge", "NUDGE_LOG_LEVEL": "debug"},
-			want: Server{Addr: ":9000", DataDir: "/var/lib/nudge", LogLevel: slog.LevelDebug},
+			env:  map[string]string{"NUDGE_ADDR": ":9000", "NUDGE_DATA": "/var/lib/nudge", "NUDGE_LOG_LEVEL": "debug", "NUDGE_ADMIN_PASSWORD": "s3cret-pw"},
+			want: Server{Addr: ":9000", DataDir: "/var/lib/nudge", LogLevel: slog.LevelDebug, AdminPassword: "s3cret-pw"},
 		},
 		{
 			name: "flag wins over env",

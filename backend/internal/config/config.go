@@ -19,6 +19,9 @@ type Server struct {
 	DataDir string
 	// LogLevel is debug, info, warn or error.
 	LogLevel slog.Level
+	// AdminPassword, if set, creates the user "admin" at start when no user exists.
+	// Environment only (NUDGE_ADMIN_PASSWORD): a flag would show in the process list.
+	AdminPassword string
 }
 
 // LoadServer parses args (without the program and subcommand name). A flag wins over
@@ -39,6 +42,7 @@ func LoadServer(args []string, getenv func(string) string, out io.Writer) (Serve
 	if err := c.LogLevel.UnmarshalText([]byte(*level)); err != nil {
 		return Server{}, fmt.Errorf("log level %q: %w", *level, err)
 	}
+	c.AdminPassword = getenv("NUDGE_ADMIN_PASSWORD")
 	if c.Addr == "" {
 		return Server{}, errors.New("listen address must not be empty")
 	}
