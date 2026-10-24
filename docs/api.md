@@ -84,8 +84,57 @@ the host answered (updated at most once a minute, `null` if it never did).
 (`mem_total` in bytes). Only these fields are passed on; Docker's proxy and registry
 settings are not.
 
+### Containers, images, volumes and networks
+Read-only lists and details of an environment's resources. Responses are nudge's own
+types, stable across Docker versions; times are RFC 3339 in UTC, or `null` when Docker
+doesn't know them (a container that never started has `"started_at": null`). Lists and
+maps are `[]` and `{}`, never `null`.
+
+`{id}` is an ID or a name; image references may contain `/`, encoded as `%2F`
+(`/images/ghcr.io%2Forg%2Fapp:1.2`). An `{id}` with other characters, or an object that
+doesn't exist, answers `404` `{"error": "container not found"}` (or `image`, `volume`,
+`network`).
+
+- `GET /api/v1/environments/{env}/containers` lists every container, running or not;
+  `?state=running` (or `created`, `paused`, `restarting`, `removing`, `exited`, `dead`)
+  filters by state, other values answer `400`. Each item:
+  `{"id": "abc123…", "name": "web", "image": "nginx:1.29", "image_id": "sha256:…",
+  "command": "nginx -g 'daemon off;'", "created_at": "...", "state": "running",
+  "status": "Up 2 hours", "health": "healthy", "ports": [{"private_port": 80,
+  "protocol": "tcp", "host_ip": "0.0.0.0", "public_port": 8080}], "labels": {},
+  "networks": ["front"], "mounts": [{"type": "volume", "name": "data", "source": "...",
+  "destination": "/data", "rw": true}]}`. `health` is `""` without a health check; an
+  unpublished port has `"host_ip": ""` and `"public_port": 0`.
+- `GET /api/v1/environments/{env}/containers/{id}`:
+  `{"id", "name", "image", "image_id", "created_at", "state": {"status", "running",
+  "paused", "restarting", "oom_killed", "dead", "pid", "exit_code", "error", "started_at",
+  "finished_at", "health"}, "restart_count", "path", "args", "config": {"hostname",
+  "user", "env", "cmd", "entrypoint", "working_dir", "exposed_ports", "labels", "tty"},
+  "restart_policy": {"name", "maximum_retry_count"}, "network_mode", "privileged",
+  "ports", "mounts", "networks": [{"name", "network_id", "ip_address", "gateway",
+  "mac_address", "aliases"}]}`. `config.env`, `path`, `args`, `config.cmd` and labels are
+  returned as Docker reports them, values included: anyone with API access sees secrets
+  passed that way (as they could through the Docker socket).
+- `GET /api/v1/environments/{env}/images`: `[{"id": "sha256:…", "tags": ["nginx:1.29"],
+  "digests": ["nginx@sha256:…"], "created_at": "...", "size": 1000, "labels": {},
+  "dangling": false}]`; `dangling` images have no tag.
+- `GET /api/v1/environments/{env}/images/{id}`: `{"id", "tags", "digests", "created_at",
+  "size", "author", "comment", "architecture", "variant", "os", "config": {"user", "env",
+  "cmd", "entrypoint", "working_dir", "exposed_ports", "volumes", "labels"}, "layers"}`.
+- `GET /api/v1/environments/{env}/volumes` and `/volumes/{name}`, sorted by name:
+  `{"name": "data", "driver": "local", "mountpoint": "/var/lib/docker/volumes/data/_data",
+  "scope": "local", "created_at": "...", "labels": {}}`. Driver options are left out:
+  CIFS and NFS volumes keep their mount credentials there.
+- `GET /api/v1/environments/{env}/networks`, sorted by name: `{"id", "name", "driver",
+  "scope", "created_at", "internal", "attachable", "ingress", "ipam": [{"subnet":
+  "172.18.0.0/16", "ip_range": "", "gateway": "172.18.0.1"}], "labels"}`.
+  `/networks/{id}` adds `"options": {}` (driver options such as the bridge name or
+  macvlan parent; unlike volume options they hold no credentials) and `"containers": [{"id",
+  "name", "ipv4_address", "ipv6_address", "mac_address"}]` (addresses with prefix length).
+
 Docker errors (every environment route):
 - `404` unknown environment.
-- `502` the host is unreachable, or its daemon answered with an error. The daemon's
-  message is logged, never returned, since it can contain secrets.
+- `503` the environment is offline: its Docker host can't be reached.
+- `502` the daemon answered with an error. Its message is logged, never returned, since
+  it can contain secrets.
 - `504` the host did not answer within 10 s.

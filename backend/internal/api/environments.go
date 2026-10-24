@@ -167,7 +167,7 @@ func (s *server) dockerError(w http.ResponseWriter, r *http.Request, env environ
 		s.writeError(w, http.StatusGatewayTimeout, "the environment's Docker host did not answer in time")
 	case docker.Unreachable(err):
 		s.log.Warn(msg, "env", env.ID, "err", err)
-		s.writeError(w, http.StatusBadGateway, "the environment's Docker host is unreachable")
+		s.writeError(w, http.StatusServiceUnavailable, "the environment is offline")
 	default:
 		s.log.Error(msg, "env", env.ID, "err", err)
 		s.writeError(w, http.StatusBadGateway, "the environment's Docker host returned an error")

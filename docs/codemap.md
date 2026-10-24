@@ -23,7 +23,7 @@ lets patterns in `publicRoutes` through without either credential) to the API mu
 | Package | What | Entry points |
 |---|---|---|
 | `cmd/nudge` | subcommands, wiring, graceful shutdown | `realMain`, `serve` |
-| `internal/api` | HTTP API under /api/v1 | `New`, `Options`, `publicRoutes`, `server.protect`, `userFrom`, `server.decodeJSON`, `server.writeJSON`, `server.writeError`, `server.internalError` |
+| `internal/api` | HTTP API under /api/v1; resource lists/details in containers.go, images.go, volumes.go, networks.go | `New`, `Options`, `publicRoutes`, `server.protect`, `userFrom`, `server.decodeJSON`, `server.writeJSON`, `server.writeError`, `server.internalError`, `server.dockerCall`, `server.pathID` |
 | `internal/auth` | users, argon2id, sessions, login rate limit, API tokens (tokens.go) | `New`, `Options`, `Service.Login`, `SessionUser`, `TokenUser`, `CreateToken`, `CreateFirstUser`, `EnsureAdmin`, `RunCleanup` |
 | `internal/docker` | Docker client over a dialer per kind; `Client` interface handlers use; `dockertest.Fake` | `New`, `LocalDialer`, `Client`, `Unreachable` |
 | `internal/environments` | environments table, Docker client per environment (cached), online checks, auto-created `local` | `New`, `Options.Connect`, `LocalConnect`, `EnsureLocal`, `Service.Client`, `Online` |
@@ -66,5 +66,7 @@ lets patterns in `publicRoutes` through without either credential) to the API mu
   client and `api.newTestHandlerWith(t, connect)` to hand it to environments (see
   api/environments_test.go); main tests pass `-docker-host noDocker(t)` so serve never
   reaches the host's daemon.
-- **New Docker call:** add the method to `docker.Client` and `dockertest.Fake`; in the
-  handler use `s.environment(w, r)`, a `dockerTimeout` context and `s.dockerError`.
+- **New Docker call:** add the method to `docker.Client` and `dockertest.Fake` (resource
+  fixtures live in `dockertest.Resources`); a handler that answers with one call uses
+  `s.dockerCall` (environment lookup, timeout, 404 on `docker.NotFound`, `s.dockerError`);
+  validate path IDs with `s.pathID`. Tests: `newResourceTest` in api/resources_test.go.
