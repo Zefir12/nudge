@@ -9,6 +9,11 @@ services:
       # Root-equivalent access to the host's Docker. No --privileged needed.
       - /var/run/docker.sock:/var/run/docker.sock
       - nudge-data:/data
+      # Stacks at the same path on the host and in the container, so their relative
+      # bind mounts (./data) work.
+      - /opt/nudge/stacks:/opt/nudge/stacks
+    environment:
+      NUDGE_STACKS_DIR: /opt/nudge/stacks
 
 volumes:
   nudge-data:
