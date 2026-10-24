@@ -28,7 +28,12 @@ const shown = computed(() =>
 </script>
 
 <template>
-  <h1>Containers</h1>
+  <div class="title">
+    <h1>Containers</h1>
+    <RouterLink class="button primary" :to="{ name: 'container-new', params: { env } }"
+      >New container</RouterLink
+    >
+  </div>
   <section class="card">
     <div class="filters">
       <input v-model="query" type="search" placeholder="Search name, image or ID" aria-label="Search" />
@@ -90,6 +95,14 @@ const shown = computed(() =>
 </template>
 
 <style scoped>
+.title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
 .filters {
   display: flex;
   flex-wrap: wrap;

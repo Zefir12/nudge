@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
@@ -51,7 +52,7 @@ var publicRoutes = map[string]bool{
 func New(opts Options) http.Handler {
 	s := &server{
 		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries,
-		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies,
+		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, recreating: map[string]bool{},
 	}
 	api := http.NewServeMux()
 	api.HandleFunc("GET /api/v1/health", s.health)
@@ -76,7 +77,10 @@ func New(opts Options) http.Handler {
 	api.HandleFunc("POST /api/v1/agents/enroll", s.enrollAgent)
 	api.HandleFunc("GET /api/v1/agents/connect", s.connectAgent)
 	api.HandleFunc("GET /api/v1/environments/{env}/containers", s.listContainers)
+	api.HandleFunc("POST /api/v1/environments/{env}/containers", s.createContainer)
 	api.HandleFunc("GET /api/v1/environments/{env}/containers/{id}", s.getContainer)
+	api.HandleFunc("GET /api/v1/environments/{env}/containers/{id}/spec", s.getContainerSpec)
+	api.HandleFunc("POST /api/v1/environments/{env}/containers/{id}/recreate", s.recreateContainer)
 	api.HandleFunc("DELETE /api/v1/environments/{env}/containers/{id}", s.removeContainer)
 	api.HandleFunc("POST /api/v1/environments/{env}/containers/{id}/start", s.startContainer)
 	api.HandleFunc("POST /api/v1/environments/{env}/containers/{id}/stop", s.stopContainer)
@@ -115,6 +119,10 @@ type server struct {
 
 	publicURL     string
 	secureCookies bool
+
+	mu sync.Mutex
+	// recreating holds "<env>/<container ID>" of the recreates running now.
+	recreating map[string]bool
 }
 
 // protect requires a session or an API token for every route outside publicRoutes.

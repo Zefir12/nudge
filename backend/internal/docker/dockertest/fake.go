@@ -26,6 +26,7 @@ type Fake struct {
 	pings   int
 	closed  bool
 	actions []Action
+	created []string
 }
 
 // Ping counts the call and answers with PingErr.

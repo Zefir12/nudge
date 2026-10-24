@@ -2,8 +2,10 @@ package dockertest
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"iter"
+	"slices"
 	"strings"
 
 	cerrdefs "github.com/containerd/errdefs"
@@ -29,6 +31,9 @@ type Resources struct {
 	// ActionErr fails the calls that change a container, image, volume or network (after
 	// the not found check).
 	ActionErr error
+	// FailAction, if set, is asked before each action is recorded; an error fails that
+	// call only (such as the start of a new container: Name "start", ID "new-1").
+	FailAction func(a Action) error
 	// PullMessages are the progress messages ImagePull streams; PullErr fails it before
 	// any.
 	PullMessages []jsonstream.Message
@@ -42,7 +47,7 @@ type Resources struct {
 }
 
 // Action is a recorded call that changes a container, image, volume or network: its name
-// ("start", "stop", "restart", "kill", "remove", "image-pull", "image-remove",
+// ("create", "rename", "start", "stop", "restart", "kill", "remove", "image-pull", "image-remove",
 // "image-prune", "volume-create", "volume-remove", "volume-prune", "network-create",
 // "network-remove", "network-prune"), the object and the options passed.
 type Action struct {
@@ -108,9 +113,35 @@ func (f *Fake) Actions() []Action {
 	return append([]Action(nil), f.actions...)
 }
 
+// ContainerCreate records the action (the ID is the requested name) and answers with the
+// ID "new-<n>", which later container actions accept.
+func (f *Fake) ContainerCreate(ctx context.Context, opts client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
+	if err := f.resourceErr(ctx); err != nil {
+		return client.ContainerCreateResult{}, err
+	}
+	if err := f.record("create", opts.Name, opts); err != nil {
+		return client.ContainerCreateResult{}, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.created = append(f.created, fmt.Sprintf("new-%d", len(f.created)+1))
+	return client.ContainerCreateResult{ID: f.created[len(f.created)-1]}, nil
+}
+
+// ContainerRename records the action; the container must be in ContainerDetails or
+// created by ContainerCreate.
+func (f *Fake) ContainerRename(ctx context.Context, id string, opts client.ContainerRenameOptions) (client.ContainerRenameResult, error) {
+	return client.ContainerRenameResult{}, f.action(ctx, "rename", id, opts)
+}
+
 func (f *Fake) action(ctx context.Context, name, id string, opts any) error {
 	if _, err := lookup(ctx, f, f.ContainerDetails, id); err != nil {
-		return err
+		f.mu.Lock()
+		created := slices.Contains(f.created, id)
+		f.mu.Unlock()
+		if !created || !cerrdefs.IsNotFound(err) {
+			return err
+		}
 	}
 	return f.record(name, id, opts)
 }
@@ -119,9 +150,15 @@ func (f *Fake) record(name, id string, opts any) error {
 	if f.ActionErr != nil {
 		return f.ActionErr
 	}
+	a := Action{Name: name, ID: id, Options: opts}
+	if f.FailAction != nil {
+		if err := f.FailAction(a); err != nil {
+			return err
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.actions = append(f.actions, Action{Name: name, ID: id, Options: opts})
+	f.actions = append(f.actions, a)
 	return nil
 }
 

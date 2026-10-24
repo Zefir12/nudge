@@ -180,32 +180,20 @@ func (s *server) pullImage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	opts := client.ImagePullOptions{}
-	auth, found, err := s.registries.AuthFor(r.Context(), ref)
-	if errors.Is(err, secretbox.ErrDecrypt) {
-		s.log.Error("registry credentials", "image", ref, "err", err)
-		s.writeError(w, http.StatusInternalServerError, "the stored registry password can't be decrypted (was secret.key replaced?): enter it again under Registries")
+	opts, password, ok := s.pullOptions(w, r, ref)
+	if !ok {
 		return
-	}
-	if err != nil {
-		s.internalError(w, "registry credentials", err)
-		return
-	}
-	if found {
-		opts.RegistryAuth = encodeRegistryAuth(registry.AuthConfig{
-			Username: auth.Username, Password: auth.Password, ServerAddress: auth.Address,
-		})
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), pullTimeout)
 	defer cancel()
 	resp, err := c.ImagePull(ctx, ref, opts)
 	if err != nil {
-		s.pullError(w, r, env, err, auth.Password)
+		s.pullError(w, r, env, err, password)
 		return
 	}
 	defer func() { _ = resp.Close() }()
 	s.envs.Seen(r.Context(), &env)
-	s.log.Info("image pull", "env", env.ID, "image", ref, "registry_auth", found, "ip", clientIP(r))
+	s.log.Info("image pull", "env", env.ID, "image", ref, "registry_auth", opts.RegistryAuth != "", "ip", clientIP(r))
 
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.Header().Set("Cache-Control", "no-store")
@@ -226,7 +214,7 @@ func (s *server) pullImage(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		if !send(toPullEvent(msg, auth.Password)) {
+		if !send(toPullEvent(msg, password)) {
 			return
 		}
 		if msg.Error != nil {
@@ -235,6 +223,29 @@ func (s *server) pullImage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	send(pullEvent{Done: true})
+}
+
+// pullOptions returns the options for pulling ref with the stored credentials of its
+// registry, if any, and their password (to mask in the daemon's messages); it answers a
+// failed lookup itself.
+func (s *server) pullOptions(w http.ResponseWriter, r *http.Request, ref string) (client.ImagePullOptions, string, bool) {
+	auth, found, err := s.registries.AuthFor(r.Context(), ref)
+	if errors.Is(err, secretbox.ErrDecrypt) {
+		s.log.Error("registry credentials", "image", ref, "err", err)
+		s.writeError(w, http.StatusInternalServerError, "the stored registry password can't be decrypted (was secret.key replaced?): enter it again under Registries")
+		return client.ImagePullOptions{}, "", false
+	}
+	if err != nil {
+		s.internalError(w, "registry credentials", err)
+		return client.ImagePullOptions{}, "", false
+	}
+	if !found {
+		return client.ImagePullOptions{}, "", true
+	}
+	opts := client.ImagePullOptions{RegistryAuth: encodeRegistryAuth(registry.AuthConfig{
+		Username: auth.Username, Password: auth.Password, ServerAddress: auth.Address,
+	})}
+	return opts, auth.Password, true
 }
 
 // digest matches the part after "@" in a reference pinned to a digest.

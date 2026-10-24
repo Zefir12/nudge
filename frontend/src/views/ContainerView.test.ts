@@ -135,6 +135,29 @@ describe('ContainerView', () => {
     expect(router.currentRoute.value.fullPath).toBe('/env/1/containers');
   });
 
+  it('recreates the container with a pull and opens the new one', async () => {
+    const fetch = stubApi({
+      'GET /environments/1/containers/web': { body: detail },
+      [`POST /environments/1/containers/${detail.id}/recreate`]: { body: { id: 'new1', warnings: [] } },
+      'GET /environments/1/containers/new1': { body: { ...detail, id: 'new1' } },
+    });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const router = createAppRouter(createMemoryHistory());
+    await router.push('/env/1/containers/web');
+    const wrapper = mount(ContainerView, { global: { plugins: [router] } });
+    await flushPromises();
+    await wrapper.find('.recreate input[type=checkbox]').setValue(true);
+    await wrapper
+      .findAll('button')
+      .find((b) => b.text() === 'Recreate')!
+      .trigger('click');
+    await flushPromises();
+    const call = fetch.mock.calls.find(([url]) => String(url).endsWith('/recreate'));
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ pull: true });
+    expect(router.currentRoute.value.fullPath).toBe('/env/1/containers/new1');
+    expect(wrapper.findAll('a').map((a) => a.attributes('href'))).toContain('/env/1/containers/new1/edit');
+  });
+
   it('shows a missing container', async () => {
     stubApi({
       'GET /environments/1/containers/gone': { status: 404, body: { error: 'container not found' } },

@@ -32,6 +32,9 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | GET | `/api/v1/registries/{id}` | session | one registry, without its password |
 | PUT | `/api/v1/registries/{id}` | session | change a registry; a missing password keeps the stored one |
 | DELETE | `/api/v1/registries/{id}` | session | delete a registry's credentials; `204` |
+| POST | `/api/v1/environments/{env}/containers` | session | create (and start) a container; `201`; see Container create and recreate |
+| GET | `/api/v1/environments/{env}/containers/{id}/spec` | session | a container's settings in the create shape |
+| POST | `/api/v1/environments/{env}/containers/{id}/recreate` | session | replace a container, optionally pulling first or with changed settings |
 | POST | `/api/v1/environments/{env}/images/pull` | session | pull `{"image": "nginx:1.29"}`, progress as JSON lines; see Image actions |
 | POST | `/api/v1/environments/{env}/images/prune` | session | remove untagged images, or with `?all=true` every unused one |
 | DELETE | `/api/v1/environments/{env}/images/{id}` | session | remove an image or tag (`?force=true`); `204` |
@@ -199,6 +202,51 @@ still completes), `404` for an unknown container
   container first (without it a running container answers `409`), `?volumes=true` also
   removes its anonymous volumes. Invalid `timeout`, `signal`, `force` or `volumes` values
   answer `400`.
+
+### Container create and recreate
+A container spec is nudge's own subset of Docker's settings:
+
+```json
+{"image": "nginx:1.29", "name": "web", "command": ["nginx", "-g", "daemon off;"],
+ "env": ["MODE=prod"],
+ "ports": [{"host_ip": "", "host_port": 8080, "container_port": 80, "protocol": "tcp"}],
+ "mounts": [{"type": "volume", "source": "data", "target": "/data", "read_only": false},
+            {"type": "bind", "source": "/srv/conf", "target": "/etc/app", "read_only": true}],
+ "networks": ["front", "back"], "restart_policy": "unless-stopped", "labels": {"app": "web"}}
+```
+
+Only `image` (a reference or an image ID) is required. An empty `command` uses the image's;
+`host_ip` empty publishes on every address and `host_port` 0 picks a free port; `protocol`
+defaults to `tcp`; a volume mount without `source` gets a new anonymous volume; empty
+`networks` means Docker's default bridge (or, on a recreate, the container's own networks);
+`restart_policy` is `no`, `always`, `unless-stopped` or `on-failure`. Invalid settings
+answer `400` with a message per field: `{"error": "invalid container settings", "fields":
+{"ports.0.host_port": "must be 0 (any free port) to 65535"}}`.
+
+When Docker refuses a create or a start, the answer is `400` (`409` for a name in use) with
+Docker's message, such as "port is already allocated" or "No such image", with the
+container's environment values masked.
+
+- `POST /api/v1/environments/{env}/containers` with a spec plus `"start": true` to start
+  it. Answers `201` with `{"id": "…", "warnings": []}`. A container that doesn't start is
+  removed again.
+- `GET /api/v1/environments/{env}/containers/{id}/spec`: the container's settings as a
+  spec, to edit and send to recreate. What the image sets (its environment, command,
+  labels) is left out, so the spec shows the container's own settings.
+- `POST /api/v1/environments/{env}/containers/{id}/recreate` with `{"pull": true, "spec":
+  {...}}`, both optional. It starts from the container's full Docker settings, so the ones
+  a spec doesn't cover (capabilities, devices, resource limits, …) are kept; a `spec`
+  replaces the ones it covers, and mounts it keeps keep their options (such as `:z`).
+  What the old image set (environment, command, labels, volumes, ports, healthcheck) is
+  left to the image, so a pulled newer image brings its own. `pull` pulls the image first with its registry's stored
+  credentials (errors as for an image pull; `400` if the image is an ID). Then the old
+  container is stopped, renamed to `<name>-nudge-old`, the new one created with the
+  original name (or the spec's), started if the old one ran, and the old one removed.
+  Its anonymous volumes are mounted in the new container, so their data stays. If the
+  create or start fails, the new container is removed and the old one gets its name back
+  and is started again (the answer says if that failed too). Answers `200` with the new
+  container's `{"id", "warnings"}`; `409` while another recreate of the container runs or
+  when a `<name>-nudge-old` container is left from an earlier one.
 
 ### Image actions
 - `POST /api/v1/environments/{env}/images/pull` with `{"image": "ghcr.io/org/app:1.2"}`

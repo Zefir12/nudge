@@ -112,12 +112,14 @@ textarea {
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible,
-button:focus-visible {
+button:focus-visible,
+a.button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 
-button {
+button,
+a.button {
   padding: 0.45rem 0.9rem;
   font: inherit;
   color: var(--text);
@@ -127,12 +129,19 @@ button {
   cursor: pointer;
 }
 
+/* a.button is a link that looks like a button. */
+a.button {
+  display: inline-block;
+  text-decoration: none;
+}
+
 button:disabled {
   opacity: 0.6;
   cursor: default;
 }
 
-button.primary {
+button.primary,
+a.button.primary {
   color: #fff;
   background: var(--accent);
   border-color: var(--accent);

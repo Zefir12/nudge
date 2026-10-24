@@ -57,10 +57,14 @@ func (s *server) runDocker(base context.Context, w http.ResponseWriter, r *http.
 	defer cancel()
 	resp, err := call(ctx, c)
 	var bad *badRequestError
+	var se *statusError
 	switch {
 	case errors.As(err, &bad):
 		s.envs.Seen(r.Context(), &env)
 		s.writeError(w, http.StatusBadRequest, bad.msg)
+	case errors.As(err, &se):
+		s.envs.Seen(r.Context(), &env)
+		s.writeError(w, se.code, se.msg)
 	case err == nil:
 		s.envs.Seen(r.Context(), &env)
 		return resp, true

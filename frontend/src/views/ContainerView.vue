@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
 
-import { getContainer } from '../api/client';
+import { getContainer, recreateContainer } from '../api/client';
 import ContainerActions from '../components/ContainerActions.vue';
 import KeyValues from '../components/KeyValues.vue';
 import LoadState from '../components/LoadState.vue';
@@ -21,6 +21,26 @@ const {
   () => [env.value, id.value] as const,
   ([e, i]) => getContainer(e, i),
 );
+
+const pull = ref(false);
+const recreating = ref(false);
+const recreateError = ref('');
+
+async function onRecreate() {
+  if (!c.value) return;
+  const how = pull.value ? 'Pull its image and recreate' : 'Recreate';
+  if (!window.confirm(`${how} "${c.value.name}" with the same settings? It is stopped and replaced.`)) return;
+  recreating.value = true;
+  recreateError.value = '';
+  try {
+    const res = await recreateContainer(env.value, c.value.id, { pull: pull.value });
+    await router.replace({ name: 'container', params: { env: env.value, id: res.id } });
+  } catch (e) {
+    recreateError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    recreating.value = false;
+  }
+}
 
 const onRemoved = () => router.push({ name: 'containers', params: { env: env.value } });
 
@@ -45,6 +65,16 @@ const labels = computed(() =>
         @changed="reload"
         @removed="onRemoved"
       />
+      <div class="recreate">
+        <RouterLink class="button" :to="{ name: 'container-edit', params: { env, id: c.id } }"
+          >Edit</RouterLink
+        >
+        <button type="button" :disabled="recreating" @click="onRecreate">
+          {{ recreating ? 'Recreating…' : 'Recreate' }}
+        </button>
+        <label><input v-model="pull" type="checkbox" :disabled="recreating" /> pull the image first</label>
+      </div>
+      <p v-if="recreateError" class="error" role="alert">{{ recreateError }}</p>
       <section class="card">
         <h2>Overview</h2>
         <KeyValues
@@ -168,7 +198,21 @@ const labels = computed(() =>
 
 <style scoped>
 .detail-actions {
+  margin-bottom: 0.5rem;
+}
+
+.recreate {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
   margin-bottom: 1rem;
+}
+
+.recreate label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
 }
 
 .card + .card {
