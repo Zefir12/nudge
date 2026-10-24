@@ -101,6 +101,19 @@ export interface Environment {
   online: boolean;
   created_at: string;
   last_seen_at: string | null;
+  // Only on agent environments.
+  agent?: { enrolled: boolean; version: string };
+}
+
+export interface JoinToken {
+  token: string;
+  expires_at: string;
+  // docker_run starts the agent on the remote host with this token.
+  docker_run: string;
+}
+
+export interface CreatedEnvironment extends Environment {
+  join_token: JoinToken;
 }
 
 export interface DockerInfo {
@@ -129,6 +142,12 @@ export interface EnvironmentDetail extends Environment {
 
 export const listEnvironments = () => apiFetch<Environment[]>('/environments');
 export const getEnvironment = (env: string) => apiFetch<EnvironmentDetail>(`/environments/${enc(env)}`);
+export const createEnvironment = (name: string) =>
+  apiFetch<CreatedEnvironment>('/environments', post({ name, kind: 'agent' }));
+export const createJoinToken = (env: number) =>
+  apiFetch<JoinToken>(`/environments/${env}/join-tokens`, { method: 'POST' });
+export const revokeAgent = (env: number) =>
+  apiFetch<void>(`/environments/${env}/credentials`, { method: 'DELETE' });
 
 export interface Port {
   private_port: number;

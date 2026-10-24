@@ -12,6 +12,7 @@ import { apiError, currentUser, loadUser } from './session';
 import ContainersView from './views/ContainersView.vue';
 import ContainerView from './views/ContainerView.vue';
 import DashboardView from './views/DashboardView.vue';
+import EnvironmentsView from './views/EnvironmentsView.vue';
 import HomeView from './views/HomeView.vue';
 import ImagesView from './views/ImagesView.vue';
 import ImageView from './views/ImageView.vue';
@@ -47,6 +48,7 @@ export function createAppRouter(history: RouterHistory) {
       { path: '/env/:env/volumes/:id', name: 'volume', component: VolumeView },
       { path: '/env/:env/networks', name: 'networks', component: NetworksView },
       { path: '/env/:env/networks/:id', name: 'network', component: NetworkView },
+      { path: '/environments', name: 'environments', component: EnvironmentsView },
       { path: '/tokens', name: 'tokens', component: TokensView },
       { path: '/setup', name: 'setup', component: SetupView, meta: { public: true } },
       { path: '/login', name: 'login', component: LoginView, meta: { public: true } },

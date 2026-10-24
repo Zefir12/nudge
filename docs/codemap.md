@@ -47,7 +47,7 @@ lets patterns in `publicRoutes` through without either credential) to the API mu
 | `api/client.ts` | `apiFetch<T>` (cookies, 401 → `setUnauthorizedHandler`), `ApiError`, one typed function per endpoint |
 | `test-utils.ts` | `stubApi({'GET /path': {status, body}})` fetch stub, `admin` user |
 | `views/` | one component per route |
-| `components/` | reusable pieces: `LoadState` (loading/empty/error + retry), `KeyValues`, `StateBadge`, `EnvSwitcher` |
+| `components/` | reusable pieces: `LoadState` (loading/empty/error + retry), `KeyValues`, `StateBadge`, `EnvSwitcher`, `EnvStatus` (online/offline/waiting badge + last seen), `JoinTokenCard` (one-time agent command + copy) |
 | `style.css` | design tokens (CSS variables, light/dark) and base styles |
 
 ## Recipes
