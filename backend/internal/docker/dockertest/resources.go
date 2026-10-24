@@ -26,8 +26,8 @@ type Resources struct {
 	Networks         []network.Summary
 	NetworkDetails   map[string]network.Inspect
 	ResourceErr      error
-	// ActionErr fails the calls that change a container or image (after the not found
-	// check).
+	// ActionErr fails the calls that change a container, image, volume or network (after
+	// the not found check).
 	ActionErr error
 	// PullMessages are the progress messages ImagePull streams; PullErr fails it before
 	// any.
@@ -35,11 +35,16 @@ type Resources struct {
 	PullErr      error
 	// PruneReport is what ImagePrune answers.
 	PruneReport image.PruneReport
+	// VolumePruneReport and NetworkPruneReport are what VolumePrune and NetworkPrune
+	// answer.
+	VolumePruneReport  volume.PruneReport
+	NetworkPruneReport network.PruneReport
 }
 
-// Action is a recorded call that changes a container or image: its name ("start",
-// "stop", "restart", "kill", "remove", "image-pull", "image-remove", "image-prune"), the
-// container or image and the options passed.
+// Action is a recorded call that changes a container, image, volume or network: its name
+// ("start", "stop", "restart", "kill", "remove", "image-pull", "image-remove",
+// "image-prune", "volume-create", "volume-remove", "volume-prune", "network-create",
+// "network-remove", "network-prune"), the object and the options passed.
 type Action struct {
 	Name    string
 	ID      string
@@ -219,6 +224,44 @@ func (f *Fake) VolumeInspect(ctx context.Context, id string, _ client.VolumeInsp
 	return client.VolumeInspectResult{}, cerrdefs.ErrNotFound
 }
 
+// VolumeCreate records the action (the ID is the requested name) and answers with the
+// new volume.
+func (f *Fake) VolumeCreate(ctx context.Context, opts client.VolumeCreateOptions) (client.VolumeCreateResult, error) {
+	if err := f.resourceErr(ctx); err != nil {
+		return client.VolumeCreateResult{}, err
+	}
+	if err := f.record("volume-create", opts.Name, opts); err != nil {
+		return client.VolumeCreateResult{}, err
+	}
+	v := volume.Volume{Name: opts.Name, Driver: opts.Driver, Labels: opts.Labels, Options: opts.DriverOpts, Scope: "local"}
+	if v.Name == "" {
+		v.Name = "generated"
+	}
+	if v.Driver == "" {
+		v.Driver = "local"
+	}
+	return client.VolumeCreateResult{Volume: v}, nil
+}
+
+// VolumeRemove records the action; the volume must be in Volumes.
+func (f *Fake) VolumeRemove(ctx context.Context, id string, opts client.VolumeRemoveOptions) (client.VolumeRemoveResult, error) {
+	if _, err := f.VolumeInspect(ctx, id, client.VolumeInspectOptions{}); err != nil {
+		return client.VolumeRemoveResult{}, err
+	}
+	return client.VolumeRemoveResult{}, f.record("volume-remove", id, opts)
+}
+
+// VolumePrune records the action and answers with VolumePruneReport.
+func (f *Fake) VolumePrune(ctx context.Context, opts client.VolumePruneOptions) (client.VolumePruneResult, error) {
+	if err := f.resourceErr(ctx); err != nil {
+		return client.VolumePruneResult{}, err
+	}
+	if err := f.record("volume-prune", "", opts); err != nil {
+		return client.VolumePruneResult{}, err
+	}
+	return client.VolumePruneResult{Report: f.VolumePruneReport}, nil
+}
+
 // NetworkList answers with Networks.
 func (f *Fake) NetworkList(ctx context.Context, _ client.NetworkListOptions) (client.NetworkListResult, error) {
 	if err := f.resourceErr(ctx); err != nil {
@@ -231,6 +274,36 @@ func (f *Fake) NetworkList(ctx context.Context, _ client.NetworkListOptions) (cl
 func (f *Fake) NetworkInspect(ctx context.Context, id string, _ client.NetworkInspectOptions) (client.NetworkInspectResult, error) {
 	n, err := lookup(ctx, f, f.NetworkDetails, id)
 	return client.NetworkInspectResult{Network: n}, err
+}
+
+// NetworkCreate records the action and answers with the ID "id-<name>".
+func (f *Fake) NetworkCreate(ctx context.Context, name string, opts client.NetworkCreateOptions) (client.NetworkCreateResult, error) {
+	if err := f.resourceErr(ctx); err != nil {
+		return client.NetworkCreateResult{}, err
+	}
+	if err := f.record("network-create", name, opts); err != nil {
+		return client.NetworkCreateResult{}, err
+	}
+	return client.NetworkCreateResult{ID: "id-" + name}, nil
+}
+
+// NetworkRemove records the action; the network must be in NetworkDetails.
+func (f *Fake) NetworkRemove(ctx context.Context, id string, opts client.NetworkRemoveOptions) (client.NetworkRemoveResult, error) {
+	if _, err := lookup(ctx, f, f.NetworkDetails, id); err != nil {
+		return client.NetworkRemoveResult{}, err
+	}
+	return client.NetworkRemoveResult{}, f.record("network-remove", id, opts)
+}
+
+// NetworkPrune records the action and answers with NetworkPruneReport.
+func (f *Fake) NetworkPrune(ctx context.Context, opts client.NetworkPruneOptions) (client.NetworkPruneResult, error) {
+	if err := f.resourceErr(ctx); err != nil {
+		return client.NetworkPruneResult{}, err
+	}
+	if err := f.record("network-prune", "", opts); err != nil {
+		return client.NetworkPruneResult{}, err
+	}
+	return client.NetworkPruneResult{Report: f.NetworkPruneReport}, nil
 }
 
 func (f *Fake) resourceErr(ctx context.Context) error {

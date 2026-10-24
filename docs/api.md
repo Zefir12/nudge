@@ -35,6 +35,12 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | POST | `/api/v1/environments/{env}/images/pull` | session | pull `{"image": "nginx:1.29"}`, progress as JSON lines; see Image actions |
 | POST | `/api/v1/environments/{env}/images/prune` | session | remove untagged images, or with `?all=true` every unused one |
 | DELETE | `/api/v1/environments/{env}/images/{id}` | session | remove an image or tag (`?force=true`); `204` |
+| POST | `/api/v1/environments/{env}/volumes` | session | create a volume; `201`; see Volume and network actions |
+| POST | `/api/v1/environments/{env}/volumes/prune` | session | remove unused anonymous volumes, or with `?all=true` named ones too |
+| DELETE | `/api/v1/environments/{env}/volumes/{name}` | session | remove a volume (`?force=true`); `204` |
+| POST | `/api/v1/environments/{env}/networks` | session | create a network; `201` |
+| POST | `/api/v1/environments/{env}/networks/prune` | session | remove custom networks no container uses |
+| DELETE | `/api/v1/environments/{env}/networks/{id}` | session | remove a network by ID or name; `204` |
 
 "session" means a session cookie or an API token.
 
@@ -216,6 +222,33 @@ still completes), `404` for an unknown container
   removing a reference of an image with several tags only untags it. `409` when
   containers use the image or it has several tags and is removed by ID; `?force=true`
   removes it anyway, except while a running container uses it.
+
+### Volume and network actions
+- `POST /api/v1/environments/{env}/volumes` with `{"name": "media", "driver": "local",
+  "options": {"type": "nfs", "o": "addr=10.0.0.5,rw", "device": ":/export"}, "labels":
+  {"app": "web"}}`, every field optional (no name: Docker picks one; no driver: `local`).
+  Answers `201` with the volume as in the list (without its options, which may hold mount
+  credentials). An existing volume with the same name and driver is answered as is, like
+  `docker volume create`; `409` when it exists with another driver. `400` for an invalid
+  name or driver, empty option or label names, a driver the host doesn't have, or options
+  the driver refuses (the daemon's message isn't shown, since it can quote the options).
+- `POST /api/v1/environments/{env}/volumes/prune`: removes the anonymous volumes no
+  container uses, or with `?all=true` named ones too. Answers `{"deleted": ["name"],
+  "space_reclaimed": 1234}`; `409` while another prune runs.
+- `DELETE /api/v1/environments/{env}/volumes/{name}`: `409` while a container (running
+  or not) uses it; `?force=true` removes it even if its driver fails to.
+- `POST /api/v1/environments/{env}/networks` with `{"name": "apps", "driver": "bridge",
+  "internal": false, "attachable": false, "ipv6": false, "subnet": "172.30.0.0/16",
+  "gateway": "172.30.0.1", "ip_range": "172.30.5.0/24", "options": {}, "labels": {}}`;
+  only `name` is required (no driver: `bridge`; no subnet: Docker picks one from its
+  pools, and then `gateway` and `ip_range` must be empty). `gateway` must be in the
+  subnet and `ip_range` inside it. Answers `201` with `{"id": "…", "warnings": []}`;
+  `409` when a network has the name; `400` for invalid fields, a driver the host doesn't
+  have, or settings the daemon refuses (such as an overlapping subnet).
+- `POST /api/v1/environments/{env}/networks/prune`: removes custom networks no container
+  uses; answers `{"deleted": ["name"]}`.
+- `DELETE /api/v1/environments/{env}/networks/{id}`: `409` while containers are attached
+  and for Docker's predefined networks (`bridge`, `host`, `none`).
 
 ### Registries
 `POST /api/v1/registries` with `{"name": "GitHub", "address": "ghcr.io", "username":

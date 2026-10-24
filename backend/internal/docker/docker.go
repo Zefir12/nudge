@@ -36,8 +36,14 @@ type Client interface {
 	ImagePrune(ctx context.Context, opts client.ImagePruneOptions) (client.ImagePruneResult, error)
 	VolumeList(ctx context.Context, opts client.VolumeListOptions) (client.VolumeListResult, error)
 	VolumeInspect(ctx context.Context, id string, opts client.VolumeInspectOptions) (client.VolumeInspectResult, error)
+	VolumeCreate(ctx context.Context, opts client.VolumeCreateOptions) (client.VolumeCreateResult, error)
+	VolumeRemove(ctx context.Context, id string, opts client.VolumeRemoveOptions) (client.VolumeRemoveResult, error)
+	VolumePrune(ctx context.Context, opts client.VolumePruneOptions) (client.VolumePruneResult, error)
 	NetworkList(ctx context.Context, opts client.NetworkListOptions) (client.NetworkListResult, error)
 	NetworkInspect(ctx context.Context, id string, opts client.NetworkInspectOptions) (client.NetworkInspectResult, error)
+	NetworkCreate(ctx context.Context, name string, opts client.NetworkCreateOptions) (client.NetworkCreateResult, error)
+	NetworkRemove(ctx context.Context, id string, opts client.NetworkRemoveOptions) (client.NetworkRemoveResult, error)
+	NetworkPrune(ctx context.Context, opts client.NetworkPruneOptions) (client.NetworkPruneResult, error)
 	Close() error
 }
 
@@ -100,6 +106,15 @@ func NotFound(err error) bool {
 // such as removing a running container without force.
 func Conflict(err error) bool {
 	return cerrdefs.IsConflict(err)
+}
+
+// ErrConflict is a conflict error for callers that turn another refusal into one.
+var ErrConflict = cerrdefs.ErrConflict
+
+// Forbidden reports whether the daemon refused a change it never allows in the object's
+// current state, such as removing a predefined network or one with containers attached.
+func Forbidden(err error) bool {
+	return cerrdefs.IsPermissionDenied(err)
 }
 
 // InvalidArgument reports whether the daemon refused the request's parameters.
