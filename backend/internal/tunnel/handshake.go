@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"unicode"
 
@@ -86,8 +87,18 @@ func connect(ctx context.Context, ws *websocket.Conn, self Hello, protocol int, 
 
 func start(ctx context.Context, ws *websocket.Conn, client bool, peer Hello, cfg Config) (*Session, error) {
 	// NetConn lifts the read limit; it reads messages as a stream, so that costs no memory.
-	return newSession(ctx, websocket.NetConn(ctx, ws, websocket.MessageBinary), client, peer, cfg)
+	conn := websocket.NetConn(ctx, ws, websocket.MessageBinary)
+	return newSession(ctx, abruptConn{Conn: conn, ws: ws}, client, peer, cfg)
 }
+
+// abruptConn closes the WebSocket without the close handshake, which can wait seconds
+// for a dead peer; a closed session should be Done at once.
+type abruptConn struct {
+	net.Conn
+	ws *websocket.Conn
+}
+
+func (c abruptConn) Close() error { return c.ws.CloseNow() }
 
 func readHello(ctx context.Context, ws *websocket.Conn) (hello, error) {
 	ws.SetReadLimit(maxHelloSize)

@@ -113,12 +113,19 @@ func newSession(ctx context.Context, conn net.Conn, client bool, peer Hello, cfg
 		// The agent has no business opening streams to the server; refuse them so they
 		// can't pile up in the accept backlog.
 		s.wg.Go(func() {
+			refused := 0
 			for {
 				st, err := mux.AcceptStream()
 				if err != nil {
+					if refused > 0 {
+						cfg.Log.Warn("tunnel: refused streams opened by the agent", "agent", peer.Hostname, "count", refused)
+					}
 					return
 				}
-				cfg.Log.Warn("tunnel: refusing a stream opened by the agent", "agent", peer.Hostname)
+				if refused == 0 {
+					cfg.Log.Warn("tunnel: refusing streams opened by the agent", "agent", peer.Hostname)
+				}
+				refused++
 				_ = st.Close()
 			}
 		})
