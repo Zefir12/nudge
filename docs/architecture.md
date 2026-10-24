@@ -54,10 +54,11 @@ small interface over the client, so tests run against fakes.
    pipes it to its local Docker socket. A small JSON hello at connect carries the agent's
    version and host name; liveness uses yamux keepalives.
    Wire format (`internal/tunnel`): the agent sends one text message
-   `{"protocol": 1, "version": "...", "hostname": "..."}`, the server answers
-   `{"protocol": 1, "version": "..."}` or `{"protocol": 1, "error": "..."}` and closes
-   (policy violation) on a protocol mismatch or invalid fields; after that every message
-   is binary yamux data. Keepalive pings every 15 s, the session closes when one isn't
+   `{"protocol": 2, "version": "...", "hostname": "..."}`, the server answers
+   `{"protocol": 2, "version": "..."}` (in the agent's protocol for an agent on 1) or
+   `{"protocol": 2, "error": "..."}` and closes (policy violation) on an unsupported
+   protocol or invalid fields; after that every message is binary yamux data. On protocol
+   2 every stream starts with a kind byte: `0x00` Docker, `0x01` control. Keepalive pings every 15 s, the session closes when one isn't
    answered within 10 s. Streams opened by the agent are refused.
 5. The agent reconnects with exponential backoff and jitter (1 s → 60 s). The server marks
    the environment offline when the session closes and records `last_seen`.
@@ -128,7 +129,7 @@ to the UI as they are.
   `com.docker.compose.project` label, the same for both kinds; logs use the existing
   container log stream. No control endpoint is needed for reads.
 
-### Agent control protocol (sketch)
+### Agent control protocol
 - Tunnel protocol 2: every stream the server opens starts with one byte, `0x00` Docker
   socket or `0x01` control. The hello carries the protocol; with an agent on protocol 1
   the server opens plain Docker streams and stacks on that environment answer `409
@@ -138,16 +139,16 @@ to the UI as they are.
   the server can reach it (the tunnel is already authenticated); there is no listening
   port.
 - Endpoints:
-  - `PUT /v1/stacks/{name}`: body is a tar of the project files (at most 10 MB; regular
-    files only, no absolute paths, `..` or symlinks). Written to a temporary directory and
-    swapped in with a rename.
+  - `PUT /v1/stacks/{name}`: body is `{"compose": "...", "env": "..."}` (at most 2 MB),
+    each file written to a temporary file and swapped in with a rename. (A tar of extra
+    project files can come later, when the UI edits them.)
   - `POST /v1/stacks/{name}/up` `{"pull": bool}`: runs compose, answers NDJSON
     `{"stream": "stdout"|"stderr", "line": "..."}` frames, then `{"exit_code": N}`.
     Cancelling the request kills the process.
   - `POST /v1/stacks/{name}/down` `{"volumes": bool}`: the same output format.
   - `DELETE /v1/stacks/{name}`: removes the files after `down`.
-  - `GET /v1/stacks`: names and a SHA-256 of each project's files, so the server can show
-    a stack that differs from what it last sent.
+  - Not built yet: `GET /v1/stacks` with names and a SHA-256 of each project's files, so
+    the server can show a stack that differs from what it last sent.
 - One deploy per stack at a time (the server serializes per environment and name; the
   agent refuses a second one with `409`).
 - Security: no new privilege (the server can already do anything on the remote daemon),
@@ -155,9 +156,9 @@ to the UI as they are.
   validates names and tar entries before writing.
 
 In code: a `stacks.Runner` interface (`Sync`, `Up`, `Down`, `Remove`) with a local
-implementation (writes the files, runs compose) used by the server for the local
-environment and by the agent's control service, and an agent implementation that calls
-the control endpoints.
+implementation (`stacks.Local`: writes the files, runs compose) used by the server for the
+local environment and by the agent's control service (`stacks.NewControl`), and
+`stacks.Remote`, which calls the control endpoints over `environments.ControlDialer`.
 
 Out of scope for phase 5: swarm stacks, compose `build` with large contexts (git URLs
 are fine), and editing a project's extra files beyond compose.yaml and `.env` in the UI.

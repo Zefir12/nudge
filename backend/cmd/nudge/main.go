@@ -205,7 +205,7 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 			Web:        web.Handler(web.Dist()),
 
 			StacksDir:   cfg.StacksDir,
-			StackRunner: stackRunner(cfg),
+			StackRunner: stackRunner(cfg, envs),
 			// Drafts are checked next to the stacks, on the data volume.
 			StackChecker: stacks.NewChecker(stacks.CheckerOptions{TempDir: cfg.StacksDir, Compose: cfg.Compose}).Check,
 
@@ -271,9 +271,12 @@ func runAgent(ctx context.Context, cfg config.Agent, log *slog.Logger) error {
 		JoinToken: cfg.JoinToken,
 		DataDir:   cfg.DataDir,
 		Dial:      dial,
-		Version:   version.Version,
-		Hostname:  hostname,
-		Log:       log,
+		Control: stacks.NewControl(stacks.NewLocal(stacks.LocalOptions{
+			Dir: stacks.NewDir(cfg.StacksDir), Compose: cfg.Compose, DockerHost: cfg.DockerHost,
+		}), log),
+		Version:  version.Version,
+		Hostname: hostname,
+		Log:      log,
 	}).Run(ctx)
 	if err == nil {
 		log.Info("agent stopped")
@@ -281,12 +284,12 @@ func runAgent(ctx context.Context, cfg config.Agent, log *slog.Logger) error {
 	return err
 }
 
-// stackRunner deploys the local environment's stacks with compose here; agent
-// environments can't deploy stacks yet.
-func stackRunner(cfg config.Server) func(environments.Environment) stacks.Runner {
+// stackRunner deploys the local environment's stacks with compose here, and an agent
+// environment's through its agent's control service.
+func stackRunner(cfg config.Server, envs *environments.Service) func(environments.Environment) stacks.Runner {
 	return func(env environments.Environment) stacks.Runner {
-		if env.Kind != environments.KindLocal {
-			return nil
+		if env.Kind == environments.KindAgent {
+			return stacks.NewRemote(envs.ControlDialer(env.ID))
 		}
 		return stacks.NewLocal(stacks.LocalOptions{
 			Dir:     stacks.NewDir(filepath.Join(cfg.StacksDir, strconv.FormatInt(env.ID, 10))),

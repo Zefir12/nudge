@@ -244,7 +244,13 @@ func (r *running) wait(t *testing.T) error {
 // get sends one HTTP request over a new stream and returns the body.
 func get(t *testing.T, sess *tunnel.Session, path string) string {
 	t.Helper()
-	conn, err := sess.Open(context.Background())
+	return getOn(t, sess.Open, path)
+}
+
+// getOn is get over a stream from open (sess.Open or sess.OpenControl).
+func getOn(t *testing.T, open func(ctx context.Context) (net.Conn, error), path string) string {
+	t.Helper()
+	conn, err := open(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,6 +269,48 @@ func get(t *testing.T, sess *tunnel.Session, path string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+func TestControlStreams(t *testing.T) {
+	t.Parallel()
+	fs := newFakeServer(t)
+	control := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "control:"+r.URL.Path)
+	})
+	start(t, fs, Options{JoinToken: joinToken, Control: control})
+	sess := fs.session(t)
+	// Streams of both kinds, interleaved, each reach their own side.
+	for range 3 {
+		if got := getOn(t, sess.OpenControl, "/v1/stacks/web"); got != "control:/v1/stacks/web" {
+			t.Errorf("control stream answered %q", got)
+		}
+		if got := get(t, sess, "/_ping"); got != "docker:/_ping" {
+			t.Errorf("Docker stream answered %q", got)
+		}
+	}
+}
+
+func TestControlStreamsRefusedWithoutHandler(t *testing.T) {
+	t.Parallel()
+	fs := newFakeServer(t)
+	start(t, fs, Options{JoinToken: joinToken})
+	sess := fs.session(t)
+	conn, err := sess.OpenControl(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := io.WriteString(conn, "GET /v1/stacks HTTP/1.1\r\nHost: agent\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := conn.Read(make([]byte, 1)); n != 0 || !errors.Is(err, io.EOF) {
+		t.Errorf("read = %d, %v; want the stream closed", n, err)
+	}
+	// Docker still works.
+	if got := get(t, sess, "/_ping"); got != "docker:/_ping" {
+		t.Errorf("Docker stream answered %q", got)
+	}
 }
 
 func TestFirstConnectEnrollsAndServesDocker(t *testing.T) {
@@ -560,4 +608,37 @@ func TestDockerUnreachableClosesStream(t *testing.T) {
 		t.Error("session closed")
 	default:
 	}
+}
+
+func TestControlStreamsBounded(t *testing.T) {
+	t.Parallel()
+	fs := newFakeServer(t)
+	entered, release := make(chan struct{}, maxControlStreams), make(chan struct{})
+	control := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		entered <- struct{}{}
+		<-release
+		_, _ = io.WriteString(w, "done")
+	})
+	start(t, fs, Options{JoinToken: joinToken, Control: control})
+	sess := fs.session(t)
+	var wg sync.WaitGroup
+	for range maxControlStreams {
+		wg.Go(func() { _ = getOn(t, sess.OpenControl, "/v1/stacks/web") })
+	}
+	for range maxControlStreams {
+		<-entered
+	}
+	// One more is refused while all slots are taken.
+	conn, err := sess.OpenControl(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	_, _ = io.WriteString(conn, "GET /v1/stacks HTTP/1.1\r\nHost: agent\r\n\r\n")
+	if n, err := conn.Read(make([]byte, 1)); n != 0 || !errors.Is(err, io.EOF) {
+		t.Errorf("read = %d, %v; want the extra stream closed", n, err)
+	}
+	_ = conn.Close()
+	close(release)
+	wg.Wait()
 }

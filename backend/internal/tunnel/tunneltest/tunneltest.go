@@ -25,10 +25,17 @@ type Agent struct {
 }
 
 // Connect dials url (http:// or https://, turned into ws:// or wss://) with header, runs
-// the agent handshake as hello and serves h on each stream until the session closes. The
+// the agent handshake as hello and serves h on each stream, Docker and control alike,
+// until the session closes. The
 // agent is closed when t ends. A refused upgrade comes back as an error with the
 // response's status code.
 func Connect(t testing.TB, url string, header http.Header, hello tunnel.Hello, h http.Handler) (*Agent, error) {
+	t.Helper()
+	return ConnectConfig(t, url, header, hello, h, tunnel.Config{})
+}
+
+// ConnectConfig is Connect with a tunnel configuration, such as an older Protocol.
+func ConnectConfig(t testing.TB, url string, header http.Header, hello tunnel.Hello, h http.Handler, cfg tunnel.Config) (*Agent, error) {
 	t.Helper()
 	ctx := context.Background()
 	ws, resp, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(url, "http"), &websocket.DialOptions{HTTPHeader: header})
@@ -41,7 +48,7 @@ func Connect(t testing.TB, url string, header http.Header, hello tunnel.Hello, h
 		}
 		return nil, err
 	}
-	sess, err := tunnel.Connect(ctx, ws, hello, tunnel.Config{})
+	sess, err := tunnel.Connect(ctx, ws, hello, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +82,29 @@ func (l listener) Accept() (net.Conn, error) {
 	if errors.Is(err, tunnel.ErrClosed) {
 		return nil, net.ErrClosed
 	}
-	return c, err
+	if err != nil {
+		return nil, err
+	}
+	if l.sess.Protocol() < 2 {
+		return c, nil
+	}
+	return &kindConn{Conn: c}, nil
+}
+
+// kindConn drops the stream's kind byte before the first read, so Accept doesn't wait
+// for it.
+type kindConn struct {
+	net.Conn
+	once sync.Once
+	err  error
+}
+
+func (c *kindConn) Read(p []byte) (int, error) {
+	c.once.Do(func() { _, c.err = tunnel.ReadKind(c.Conn, 10*time.Second) })
+	if c.err != nil {
+		return 0, c.err
+	}
+	return c.Conn.Read(p)
 }
 
 func (l listener) Close() error { return l.sess.Close() }

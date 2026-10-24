@@ -423,11 +423,15 @@ is in the audit log with the stack's name as its target.
   line is `{"exit_code": 0}` (non-zero: compose failed, recorded as `502` in the audit log)
   or `{"error": "..."}` if the run was cut short; a stream without either was cut off.
   Errors before compose starts are ordinary JSON errors: `404` no such stack, `409` the
-  stack is being changed or deployed (one change per stack at a time) or the environment
-  is an agent environment (not supported yet), `503` the image has no `docker-compose`.
+  stack is being changed or deployed (one change per stack at a time) or the agent is too
+  old for stacks ("update the agent to use stacks", tunnel protocol 1), `503` no
+  `docker-compose` (in the server's image, or the agent's for agent environments) or the
+  agent is offline. On an agent environment the server first sends the stack's files to
+  the agent, and compose runs there, next to that host's daemon.
   The run is killed when the client disconnects and after one hour.
 - `DELETE .../stacks/{name}` deletes the files; `409` while the project has containers
-  (take it down first).
+  (take it down first). On an agent environment the agent's copy is deleted too, so the
+  agent must be online (`503` otherwise); an agent too old for stacks never had one.
 
 ### Registries
 `POST /api/v1/registries` with `{"name": "GitHub", "address": "ghcr.io", "username":

@@ -88,14 +88,14 @@ func (d Dir) Read(name string) (Files, error) {
 	if !ValidName(name) {
 		return Files{}, ErrNotFound
 	}
-	compose, err := os.ReadFile(filepath.Join(d.Path(name), ComposeFile))
+	compose, err := os.ReadFile(filepath.Join(d.Path(name), ComposeFile)) // #nosec G703 -- ValidName above: the name stays inside the stacks directory
 	if errors.Is(err, fs.ErrNotExist) {
 		return Files{}, ErrNotFound
 	}
 	if err != nil {
 		return Files{}, fmt.Errorf("read stack %s: %w", name, err)
 	}
-	env, err := os.ReadFile(filepath.Join(d.Path(name), EnvFile))
+	env, err := os.ReadFile(filepath.Join(d.Path(name), EnvFile)) // #nosec G703 -- ValidName above: the name stays inside the stacks directory
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return Files{}, fmt.Errorf("read stack %s: %w", name, err)
 	}
@@ -125,7 +125,7 @@ func (d Dir) Write(name string, f Files) error {
 	if !ValidName(name) {
 		return fmt.Errorf("stack name %q is invalid", name)
 	}
-	if err := os.MkdirAll(d.Path(name), 0o700); err != nil {
+	if err := os.MkdirAll(d.Path(name), 0o700); err != nil { // #nosec G703 -- ValidName above: the name stays inside the stacks directory
 		return fmt.Errorf("create stack %s: %w", name, err)
 	}
 	return d.write(name, f)
@@ -144,7 +144,7 @@ func (d Dir) write(name string, f Files) error {
 		return fmt.Errorf("write stack %s: %w", name, err)
 	}
 	if f.Env == "" {
-		err := os.Remove(filepath.Join(d.Path(name), EnvFile))
+		err := os.Remove(filepath.Join(d.Path(name), EnvFile)) // #nosec G703 -- callers checked ValidName
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("write stack %s: %w", name, err)
 		}
@@ -162,7 +162,7 @@ func writeFile(dir, name, content string) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = os.Remove(tmp.Name()) }()
+	defer func() { _ = os.Remove(tmp.Name()) }() // #nosec G703 -- a temporary file in the stack directory
 	if _, err := tmp.WriteString(content); err != nil {
 		_ = tmp.Close()
 		return err
@@ -170,7 +170,7 @@ func writeFile(dir, name, content string) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), filepath.Join(dir, name))
+	return os.Rename(tmp.Name(), filepath.Join(dir, name)) // #nosec G703 -- name is ComposeFile or EnvFile, dir a ValidName stack
 }
 
 // Remove deletes stack name and every file in its directory.
@@ -178,7 +178,7 @@ func (d Dir) Remove(name string) error {
 	if _, err := d.Read(name); err != nil {
 		return err
 	}
-	if err := os.RemoveAll(d.Path(name)); err != nil {
+	if err := os.RemoveAll(d.Path(name)); err != nil { // #nosec G703 -- Read above checked ValidName
 		return fmt.Errorf("remove stack %s: %w", name, err)
 	}
 	return nil

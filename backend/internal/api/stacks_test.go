@@ -303,7 +303,7 @@ func TestStackWithoutRunner(t *testing.T) {
 		t.Fatalf("create = %d %s", code, body)
 	}
 	code, body := st.do(t, "POST", "broken", "/web/up", "")
-	if code != http.StatusConflict || !strings.Contains(body, "agent environments") {
+	if code != http.StatusConflict || !strings.Contains(body, "can't be deployed to this environment") {
 		t.Errorf("up without a runner = %d %s, want 409", code, body)
 	}
 	if code, body := st.do(t, "DELETE", "broken", "/web", ""); code != http.StatusNoContent {

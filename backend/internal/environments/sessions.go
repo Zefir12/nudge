@@ -96,6 +96,28 @@ func (s *Service) agentDialer(envID int64) docker.DialFunc {
 	}
 }
 
+// ControlDialer opens a stream to the agent environment's control service on its current
+// session per connection. An offline agent fails with a *net.OpError (docker.Unreachable),
+// one on tunnel protocol 1 with tunnel.ErrNoControl.
+func (s *Service) ControlDialer(envID int64) func(ctx context.Context) (net.Conn, error) {
+	return func(ctx context.Context) (net.Conn, error) {
+		s.sessMu.Lock()
+		sess := s.sessions[envID]
+		s.sessMu.Unlock()
+		if sess == nil {
+			return nil, &net.OpError{Op: "dial", Net: "tunnel", Err: ErrAgentOffline}
+		}
+		conn, err := sess.OpenControl(ctx)
+		if errors.Is(err, tunnel.ErrNoControl) {
+			return nil, err
+		}
+		if err != nil {
+			return nil, &net.OpError{Op: "dial", Net: "tunnel", Err: err}
+		}
+		return conn, nil
+	}
+}
+
 // recordConnect stores the agent's version and last_seen if agentID still holds the
 // environment's credentials. It reports whether it does; a database failure counts as
 // no, since then nothing vouches for the session.

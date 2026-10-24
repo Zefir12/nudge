@@ -112,8 +112,10 @@ func TestLoadAgent(t *testing.T) {
 		insecure   bool
 		level      slog.Level
 		dockerHost string
+		stacksDir  string
+		compose    string
 	}
-	def := want{server: "https://nudge.example.net", dataDir: "/data", level: slog.LevelInfo, dockerHost: "unix:///var/run/docker.sock"}
+	def := want{server: "https://nudge.example.net", dataDir: "/data", level: slog.LevelInfo, dockerHost: "unix:///var/run/docker.sock", stacksDir: "/data/stacks", compose: "/usr/local/bin/docker-compose"}
 	tests := []struct {
 		name    string
 		args    []string
@@ -128,15 +130,23 @@ func TestLoadAgent(t *testing.T) {
 				"NUDGE_SERVER_URL": "http://10.0.0.1:8080/nudge/", "NUDGE_JOIN_TOKEN": "nudge_join_x", "NUDGE_DATA": "/var/lib/agent",
 				"NUDGE_INSECURE": "true", "NUDGE_LOG_LEVEL": "debug", "DOCKER_HOST": "unix:///run/docker.sock",
 			},
-			want: want{server: "http://10.0.0.1:8080/nudge", joinToken: "nudge_join_x", dataDir: "/var/lib/agent", insecure: true, level: slog.LevelDebug, dockerHost: "unix:///run/docker.sock"},
+			want: want{server: "http://10.0.0.1:8080/nudge", joinToken: "nudge_join_x", dataDir: "/var/lib/agent", insecure: true, level: slog.LevelDebug, dockerHost: "unix:///run/docker.sock", stacksDir: "/var/lib/agent/stacks", compose: "/usr/local/bin/docker-compose"},
 		},
 		{
 			name: "flag wins over env",
 			args: []string{"-server", "https://b.example.net", "-insecure=false"},
 			env:  map[string]string{"NUDGE_SERVER_URL": "http://a.example.net", "NUDGE_INSECURE": "1"},
-			want: want{server: "https://b.example.net", dataDir: "/data", level: slog.LevelInfo, dockerHost: "unix:///var/run/docker.sock"},
+			want: want{server: "https://b.example.net", dataDir: "/data", level: slog.LevelInfo, dockerHost: "unix:///var/run/docker.sock", stacksDir: "/data/stacks", compose: "/usr/local/bin/docker-compose"},
 		},
-		{name: "bare insecure flag", args: []string{"-insecure", "-server", "http://a.example.net"}, want: want{server: "http://a.example.net", insecure: true, dataDir: "/data", level: slog.LevelInfo, dockerHost: "unix:///var/run/docker.sock"}},
+		{name: "bare insecure flag", args: []string{"-insecure", "-server", "http://a.example.net"}, want: want{server: "http://a.example.net", insecure: true, dataDir: "/data", level: slog.LevelInfo, dockerHost: "unix:///var/run/docker.sock", stacksDir: "/data/stacks", compose: "/usr/local/bin/docker-compose"}},
+		{
+			name: "stacks",
+			args: []string{"-server", "https://nudge.example.net"},
+			env:  map[string]string{"NUDGE_STACKS_DIR": "/opt/nudge/stacks", "NUDGE_COMPOSE": "/bin/compose"},
+			want: want{server: "https://nudge.example.net", dataDir: "/data", level: slog.LevelInfo, dockerHost: "unix:///var/run/docker.sock", stacksDir: "/opt/nudge/stacks", compose: "/bin/compose"},
+		},
+		{name: "relative stacks dir", args: []string{"-server", "https://a.example.net", "-stacks-dir", "stacks"}, wantErr: "absolute path"},
+		{name: "empty compose", args: []string{"-server", "https://a.example.net", "-compose", ""}, wantErr: "compose binary"},
 		{name: "missing server", wantErr: "server URL is required"},
 		{name: "http without insecure", args: []string{"-server", "http://a.example.net"}, wantErr: "-insecure"},
 		{name: "other scheme", args: []string{"-server", "ftp://a.example.net"}, wantErr: "want https://"},
@@ -164,7 +174,7 @@ func TestLoadAgent(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			g := want{server: got.ServerURL.String(), joinToken: got.JoinToken, dataDir: got.DataDir, insecure: got.Insecure, level: got.LogLevel, dockerHost: got.DockerHost}
+			g := want{server: got.ServerURL.String(), joinToken: got.JoinToken, dataDir: got.DataDir, insecure: got.Insecure, level: got.LogLevel, dockerHost: got.DockerHost, stacksDir: got.StacksDir, compose: got.Compose}
 			if g != tt.want {
 				t.Errorf("got %+v, want %+v", g, tt.want)
 			}

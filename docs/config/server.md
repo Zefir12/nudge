@@ -37,8 +37,9 @@ directory **at the same path on the host and in the container**:
 `-v /opt/nudge/stacks:/opt/nudge/stacks -e NUDGE_STACKS_DIR=/opt/nudge/stacks`.
 With the default (inside the `/data` volume) stacks that use only named volumes work,
 but relative bind mounts get an empty directory on the host. compose gets only
-`DOCKER_HOST`, `HOME` and `PATH`, none of nudge's own environment. Agent environments
-can't deploy stacks yet.
+`DOCKER_HOST`, `HOME` and `PATH`, none of nudge's own environment. Stacks of agent
+environments are deployed by the agent on its host (docs/config/agent.md, Stacks); the
+server keeps the source files here either way.
 
 ## First user
 With no user in the database the web UI asks for an admin username and password

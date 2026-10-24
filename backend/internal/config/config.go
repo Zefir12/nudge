@@ -140,6 +140,11 @@ type Agent struct {
 	LogLevel slog.Level
 	// DockerHost is the Docker API streams are piped to, unix:// or tcp://.
 	DockerHost string
+	// StacksDir holds the stacks the server deploys here; empty flag means <DataDir>/stacks.
+	// Absolute, mounted at the same path on the host.
+	StacksDir string
+	// Compose is the docker-compose binary that deploys them.
+	Compose string
 }
 
 // LoadAgent parses the agent's args like LoadServer.
@@ -157,6 +162,8 @@ func LoadAgent(args []string, getenv func(string) string, out io.Writer) (Agent,
 	}
 	fs.BoolVar(&c.Insecure, "insecure", insecure, "allow an http:// server URL, for testing only (NUDGE_INSECURE)")
 	fs.StringVar(&c.DockerHost, "docker-host", envOr(getenv, "DOCKER_HOST", "unix:///var/run/docker.sock"), "Docker API to serve, unix:// or tcp:// (DOCKER_HOST)")
+	fs.StringVar(&c.StacksDir, "stacks-dir", getenv("NUDGE_STACKS_DIR"), "directory of the stacks the server deploys here, mounted at the same path on the host (NUDGE_STACKS_DIR; default <data>/stacks)")
+	fs.StringVar(&c.Compose, "compose", envOr(getenv, "NUDGE_COMPOSE", "/usr/local/bin/docker-compose"), "docker-compose binary that deploys stacks (NUDGE_COMPOSE)")
 	level := fs.String("log-level", envOr(getenv, "NUDGE_LOG_LEVEL", "info"), "debug, info, warn or error (NUDGE_LOG_LEVEL)")
 	if err := fs.Parse(args); err != nil {
 		return Agent{}, err
@@ -178,6 +185,15 @@ func LoadAgent(args []string, getenv func(string) string, out io.Writer) (Agent,
 	}
 	if c.DataDir == "" {
 		return Agent{}, errors.New("data directory must not be empty")
+	}
+	if c.StacksDir == "" {
+		c.StacksDir = filepath.Join(c.DataDir, "stacks")
+	}
+	if !filepath.IsAbs(c.StacksDir) {
+		return Agent{}, errors.New("stacks directory must be an absolute path")
+	}
+	if c.Compose == "" {
+		return Agent{}, errors.New("compose binary must not be empty")
 	}
 	return c, nil
 }

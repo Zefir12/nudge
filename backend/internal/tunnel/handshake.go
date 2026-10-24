@@ -37,27 +37,36 @@ func Accept(ctx context.Context, ws *websocket.Conn, self Hello, cfg Config) (*S
 	defer cancel()
 
 	peer, err := readHello(hctx, ws)
+	// An older agent is answered in its own protocol.
+	protocol := ProtocolVersion
+	if err == nil && peer.Protocol >= MinProtocolVersion && peer.Protocol < ProtocolVersion {
+		protocol = peer.Protocol
+	}
 	if err == nil {
-		err = checkHello(peer, ProtocolVersion)
+		err = checkHello(peer, protocol)
 	}
 	if err != nil {
 		// Tell the agent why before hanging up; a failed write changes nothing.
-		_ = writeHello(hctx, ws, hello{Protocol: ProtocolVersion, Version: self.Version, Error: err.Error()})
+		_ = writeHello(hctx, ws, hello{Protocol: protocol, Version: self.Version, Error: err.Error()})
 		_ = ws.Close(websocket.StatusPolicyViolation, "handshake failed")
 		return nil, fmt.Errorf("agent hello: %w", err)
 	}
-	if err := writeHello(hctx, ws, hello{Protocol: ProtocolVersion, Version: self.Version}); err != nil {
+	if err := writeHello(hctx, ws, hello{Protocol: protocol, Version: self.Version}); err != nil {
 		_ = ws.CloseNow()
 		return nil, fmt.Errorf("server hello: %w", err)
 	}
-	return start(ctx, ws, true, Hello{Version: peer.Version, Hostname: peer.Hostname}, cfg)
+	return start(ctx, ws, true, Hello{Version: peer.Version, Hostname: peer.Hostname}, protocol, cfg)
 }
 
 // Connect runs the agent side of the handshake on a dialed WebSocket: it sends self,
 // reads the server's answer and returns the session, whose lifetime ctx bounds. A refusal
 // comes back as an error with the server's reason. On error the WebSocket is closed.
 func Connect(ctx context.Context, ws *websocket.Conn, self Hello, cfg Config) (*Session, error) {
-	return connect(ctx, ws, self, ProtocolVersion, cfg)
+	protocol := cfg.Protocol
+	if protocol == 0 {
+		protocol = ProtocolVersion
+	}
+	return connect(ctx, ws, self, protocol, cfg)
 }
 
 func connect(ctx context.Context, ws *websocket.Conn, self Hello, protocol int, cfg Config) (*Session, error) {
@@ -82,13 +91,13 @@ func connect(ctx context.Context, ws *websocket.Conn, self Hello, protocol int, 
 		_ = ws.Close(websocket.StatusPolicyViolation, "handshake failed")
 		return nil, fmt.Errorf("server hello: %w", err)
 	}
-	return start(ctx, ws, false, Hello{Version: peer.Version}, cfg)
+	return start(ctx, ws, false, Hello{Version: peer.Version}, protocol, cfg)
 }
 
-func start(ctx context.Context, ws *websocket.Conn, client bool, peer Hello, cfg Config) (*Session, error) {
+func start(ctx context.Context, ws *websocket.Conn, client bool, peer Hello, protocol int, cfg Config) (*Session, error) {
 	// NetConn lifts the read limit; it reads messages as a stream, so that costs no memory.
 	conn := websocket.NetConn(ctx, ws, websocket.MessageBinary)
-	return newSession(ctx, abruptConn{Conn: conn, ws: ws}, client, peer, cfg)
+	return newSession(ctx, abruptConn{Conn: conn, ws: ws}, client, peer, protocol, cfg)
 }
 
 // abruptConn closes the WebSocket without the close handshake, which can wait seconds
@@ -131,7 +140,7 @@ func writeHello(ctx context.Context, ws *websocket.Conn, h hello) error {
 // The fields end up in logs and the UI, so they must be short and printable.
 func checkHello(h hello, protocol int) error {
 	if h.Protocol != protocol {
-		return fmt.Errorf("tunnel protocol mismatch: peer speaks version %d, this side speaks %d; run the same nudge version on server and agent", h.Protocol, protocol)
+		return fmt.Errorf("tunnel protocol mismatch: peer speaks version %d, this side speaks %d; update the older of server and agent", h.Protocol, protocol)
 	}
 	if !printable(h.Version, maxVersion) {
 		return fmt.Errorf("invalid version: want up to %d printable characters", maxVersion)
