@@ -112,8 +112,9 @@ doesn't exist, answers `404` `{"error": "container not found"}` (or `image`, `vo
   "user", "env", "cmd", "entrypoint", "working_dir", "exposed_ports", "labels", "tty"},
   "restart_policy": {"name", "maximum_retry_count"}, "network_mode", "privileged",
   "ports", "mounts", "networks": [{"name", "network_id", "ip_address", "gateway",
-  "mac_address", "aliases"}]}`. `config.env` is the container's environment as Docker
-  reports it, values included.
+  "mac_address", "aliases"}]}`. `config.env`, `path`, `args`, `config.cmd` and labels are
+  returned as Docker reports them, values included: anyone with API access sees secrets
+  passed that way (as they could through the Docker socket).
 - `GET /api/v1/environments/{env}/images`: `[{"id": "sha256:…", "tags": ["nginx:1.29"],
   "digests": ["nginx@sha256:…"], "created_at": "...", "size": 1000, "labels": {},
   "dangling": false}]`; `dangling` images have no tag.
@@ -127,7 +128,8 @@ doesn't exist, answers `404` `{"error": "container not found"}` (or `image`, `vo
 - `GET /api/v1/environments/{env}/networks`, sorted by name: `{"id", "name", "driver",
   "scope", "created_at", "internal", "attachable", "ingress", "ipam": [{"subnet":
   "172.18.0.0/16", "ip_range": "", "gateway": "172.18.0.1"}], "labels"}`.
-  `/networks/{id}` adds `"options": {}` (driver options) and `"containers": [{"id",
+  `/networks/{id}` adds `"options": {}` (driver options such as the bridge name or
+  macvlan parent; unlike volume options they hold no credentials) and `"containers": [{"id",
   "name", "ipv4_address", "ipv6_address", "mac_address"}]` (addresses with prefix length).
 
 Docker errors (every environment route):

@@ -240,6 +240,8 @@ func TestResourceErrors(t *testing.T) {
 		{name: "unknown network", path: env("local", "/networks/nope"), wantCode: 404, wantErr: "network not found"},
 		{name: "container id with a slash", path: env("local", "/containers/..%2Fimages%2Fjson"), wantCode: 404, wantErr: "container not found"},
 		{name: "image ref with dots", path: env("local", "/images/..%2F..%2Fcontainers"), wantCode: 404, wantErr: "image not found"},
+		{name: "image ref with a dot segment", path: env("local", "/images/a%2F.%2Fb"), wantCode: 404, wantErr: "image not found"},
+		{name: "image ref with an empty segment", path: env("local", "/images/a%2F%2Fb"), wantCode: 404, wantErr: "image not found"},
 		{name: "volume id with a space", path: env("local", "/volumes/a%20b"), wantCode: 404, wantErr: "volume not found"},
 	}
 	for _, tt := range tests {
