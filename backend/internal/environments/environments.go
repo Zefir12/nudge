@@ -1,6 +1,6 @@
 // Package environments manages the Docker hosts nudge controls and their Docker
 // clients. Each environment has a kind that decides how its client dials: "local" (the
-// server's own Docker socket) now, "agent" (a remote host's tunnel) with phase 2.
+// server's own Docker socket) or "agent" (a stream on the remote host's agent tunnel).
 package environments
 
 import (
@@ -15,6 +15,7 @@ import (
 	"github.com/moby/moby/client"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/tunnel"
 )
 
 // Kinds of environment.
@@ -59,7 +60,8 @@ type Options struct {
 	Log *slog.Logger
 	// Now is the clock (time.Now by default).
 	Now func() time.Time
-	// Connect builds the client of an environment; it is called once per environment.
+	// Connect builds the client of a local environment; it is called once per
+	// environment. Agent environments always use their tunnel.
 	Connect ConnectFunc
 }
 
@@ -73,16 +75,25 @@ type Service struct {
 	mu sync.Mutex
 	// clients are keyed by environment id, so bounded by the environments table.
 	clients map[int64]docker.Client
+
+	sessMu sync.Mutex
+	// sessions are the agents' live tunnels, one per environment id, so bounded by the
+	// environments table like clients.
+	sessions map[int64]*tunnel.Session
+	closed   bool
+	// serving counts running ServeAgent calls.
+	serving sync.WaitGroup
 }
 
 // New returns a Service.
 func New(opts Options) *Service {
 	s := &Service{
-		db:      opts.DB,
-		log:     opts.Log,
-		now:     opts.Now,
-		connect: opts.Connect,
-		clients: map[int64]docker.Client{},
+		db:       opts.DB,
+		log:      opts.Log,
+		now:      opts.Now,
+		connect:  opts.Connect,
+		clients:  map[int64]docker.Client{},
+		sessions: map[int64]*tunnel.Session{},
 	}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
@@ -94,7 +105,7 @@ func New(opts Options) *Service {
 }
 
 // LocalConnect connects local environments to the Docker host at host (unix:// or
-// tcp://); other kinds are refused until they are implemented.
+// tcp://); other kinds are refused.
 func LocalConnect(host string) (ConnectFunc, error) {
 	dial, err := docker.LocalDialer(host)
 	if err != nil {
@@ -181,7 +192,11 @@ func (s *Service) Client(env Environment) (docker.Client, error) {
 	if c, ok := s.clients[env.ID]; ok {
 		return c, nil
 	}
-	c, err := s.connect(env)
+	connect := s.connect
+	if env.Kind == KindAgent {
+		connect = s.connectAgent
+	}
+	c, err := connect(env)
 	if err != nil {
 		return nil, fmt.Errorf("connect environment %d: %w", env.ID, err)
 	}
@@ -223,8 +238,9 @@ func (s *Service) Seen(ctx context.Context, env *Environment) {
 	env.LastSeenAt = &seen
 }
 
-// Close closes every Docker client.
+// Close closes every agent tunnel and Docker client.
 func (s *Service) Close() error {
+	s.closeSessions()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var errs []error

@@ -119,8 +119,9 @@ func (s *Service) RegenerateJoinToken(ctx context.Context, envID int64) (JoinTok
 	return jt, nil
 }
 
-// Revoke deletes the agent environment's credentials and pending join token, so its agent
-// can no longer connect. The environment stays; a new join token re-enrolls it.
+// Revoke deletes the agent environment's credentials and pending join token and closes
+// its tunnel, so its agent is disconnected and can no longer connect. The environment
+// stays; a new join token re-enrolls it.
 func (s *Service) Revoke(ctx context.Context, envID int64) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -139,6 +140,7 @@ func (s *Service) Revoke(ctx context.Context, envID int64) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("revoke agent: %w", err)
 	}
+	s.dropSession(envID)
 	return nil
 }
 
@@ -181,6 +183,8 @@ func (s *Service) Enroll(ctx context.Context, token string) (Credentials, error)
 	if err := tx.Commit(); err != nil {
 		return Credentials{}, fmt.Errorf("enroll agent: %w", err)
 	}
+	// The old credentials are void, and so is a tunnel opened with them.
+	s.dropSession(envID)
 	return creds, nil
 }
 

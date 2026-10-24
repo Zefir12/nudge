@@ -104,6 +104,16 @@ settings are not.
   the credential), answers `201` `{"environment_id": 2, "agent_id": "agt_…", "agent_secret":
   "nudge_agent_…"}` and replaces any credentials the environment had. The secret is shown
   only this once. Unknown, used and expired tokens all answer `401`.
+- `GET /api/v1/agents/connect` (WebSocket), public: the agent authenticates with HTTP
+  Basic auth, its agent ID as the user name and its secret as the password, checked
+  before the upgrade (missing or wrong credentials answer `401`). Then the tunnel
+  handshake runs (docs/architecture.md) and the request lasts as long as the tunnel. One
+  tunnel per agent: a new connection closes the previous one, and revoking the
+  credentials or enrolling again closes it too. While the tunnel is up the environment is
+  `"online": true` and every environment endpoint works as for `local`; without one,
+  Docker endpoints answer `503` `{"error": "the environment is offline"}`. The agent's
+  version (`agent.version`) and `last_seen_at` are recorded at connect, `last_seen_at`
+  again at disconnect.
 
 Join tokens and agent secrets are 32 random bytes; nudge stores their SHA-256. A join
 token works once, within 24 h.
