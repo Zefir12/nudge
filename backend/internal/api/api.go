@@ -42,6 +42,9 @@ func New(opts Options) http.Handler {
 	api.HandleFunc("POST /api/v1/auth/login", s.login)
 	api.HandleFunc("POST /api/v1/auth/logout", s.logout)
 	api.HandleFunc("GET /api/v1/auth/me", s.me)
+	api.HandleFunc("GET /api/v1/tokens", s.listTokens)
+	api.HandleFunc("POST /api/v1/tokens", s.createToken)
+	api.HandleFunc("DELETE /api/v1/tokens/{id}", s.deleteToken)
 	api.HandleFunc("/api/", s.notFound)
 
 	mux := http.NewServeMux()
@@ -56,29 +59,55 @@ type server struct {
 	auth    *auth.Service
 }
 
-// protect refuses cross-origin writes (Sec-Fetch-Site, else Origin against Host) and
-// requires a session for every route outside publicRoutes.
+// protect requires a session or an API token for every route outside publicRoutes.
+// Requests with an Authorization header are authenticated by it alone (a cookie is
+// ignored) and skip the cross-origin check: browsers can't add that header to a
+// cross-origin request without a CORS preflight, which nudge never allows (this holds for
+// public routes too, which then skip both checks). All other
+// requests have cross-origin writes refused (Sec-Fetch-Site, else Origin against Host).
 func (s *server) protect(api *http.ServeMux) http.Handler {
 	cop := http.NewCrossOriginProtection()
 	cop.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		s.writeError(w, http.StatusForbidden, "cross-origin request refused")
 	}))
-	return cop.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	withSession := cop.Handler(s.authenticate(api, func(r *http.Request) (auth.User, error) {
+		return s.auth.SessionUser(r.Context(), sessionToken(r))
+	}))
+	withToken := s.authenticate(api, func(r *http.Request) (auth.User, error) {
+		token, ok := bearerToken(r)
+		if !ok {
+			return auth.User{}, auth.ErrNoSession
+		}
+		return s.auth.TokenUser(r.Context(), token)
+	})
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			withToken.ServeHTTP(w, r)
+			return
+		}
+		withSession.ServeHTTP(w, r)
+	})
+}
+
+// authenticate serves public routes as they are and every other route only to the user
+// that lookup finds.
+func (s *server) authenticate(api *http.ServeMux, lookup func(*http.Request) (auth.User, error)) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, pattern := api.Handler(r); publicRoutes[pattern] {
 			api.ServeHTTP(w, r)
 			return
 		}
-		u, err := s.auth.SessionUser(r.Context(), sessionToken(r))
+		u, err := lookup(r)
 		if errors.Is(err, auth.ErrNoSession) {
 			s.writeError(w, http.StatusUnauthorized, "authentication required")
 			return
 		}
 		if err != nil {
-			s.internalError(w, "session lookup", err)
+			s.internalError(w, "authenticate", err)
 			return
 		}
 		api.ServeHTTP(w, r.WithContext(withUser(r.Context(), u)))
-	}))
+	})
 }
 
 type healthResponse struct {
