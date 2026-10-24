@@ -88,8 +88,8 @@ func TestReopenIsNoop(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&migrations); err != nil {
 		t.Fatal(err)
 	}
-	if envs != 1 || migrations != 1 {
-		t.Errorf("after reopen: %d environments, %d migrations; want 1 and 1", envs, migrations)
+	if want := embeddedMigrations(t); envs != 1 || migrations != want {
+		t.Errorf("after reopen: %d environments, %d migrations; want 1 and %d", envs, migrations, want)
 	}
 }
 
@@ -119,9 +119,19 @@ func TestConcurrentOpen(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&migrations); err != nil {
 		t.Fatal(err)
 	}
-	if migrations != 1 {
-		t.Errorf("schema_migrations has %d rows, want 1", migrations)
+	if want := embeddedMigrations(t); migrations != want {
+		t.Errorf("schema_migrations has %d rows, want %d", migrations, want)
 	}
+}
+
+// embeddedMigrations counts the migrations nudge ships.
+func embeddedMigrations(t *testing.T) int {
+	t.Helper()
+	entries, err := migrationsFS.ReadDir(migrationsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(entries)
 }
 
 func TestOpenMissingDir(t *testing.T) {

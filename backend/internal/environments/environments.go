@@ -44,6 +44,10 @@ type Environment struct {
 	CreatedAt time.Time
 	// LastSeenAt is when the host last answered, nil if it never did.
 	LastSeenAt *time.Time
+	// Enrolled reports whether an agent environment has credentials; AgentVersion is the
+	// nudge version its agent reported last.
+	Enrolled     bool
+	AgentVersion string
 }
 
 // ConnectFunc returns a Docker client for an environment.
@@ -139,7 +143,7 @@ func (s *Service) EnsureLocal(ctx context.Context) (bool, error) {
 
 // List returns all environments, ordered by id.
 func (s *Service) List(ctx context.Context) ([]Environment, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, kind, created_at, last_seen_at FROM environments ORDER BY id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+columns+` FROM environments ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list environments: %w", err)
 	}
@@ -160,7 +164,7 @@ func (s *Service) List(ctx context.Context) ([]Environment, error) {
 
 // Get returns the environment with id, or ErrNotFound.
 func (s *Service) Get(ctx context.Context, id int64) (Environment, error) {
-	env, err := scan(s.db.QueryRowContext(ctx, `SELECT id, name, kind, created_at, last_seen_at FROM environments WHERE id = ?`, id))
+	env, err := scan(s.db.QueryRowContext(ctx, `SELECT `+columns+` FROM environments WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Environment{}, ErrNotFound
 	}
@@ -233,13 +237,16 @@ func (s *Service) Close() error {
 	return errors.Join(errs...)
 }
 
+// columns are what scan reads.
+const columns = `id, name, kind, created_at, last_seen_at, agent_id IS NOT NULL, COALESCE(agent_version, '')`
+
 type scanner interface{ Scan(...any) error }
 
 func scan(r scanner) (Environment, error) {
 	var env Environment
 	var created int64
 	var lastSeen sql.NullInt64
-	if err := r.Scan(&env.ID, &env.Name, &env.Kind, &created, &lastSeen); err != nil {
+	if err := r.Scan(&env.ID, &env.Name, &env.Kind, &created, &lastSeen, &env.Enrolled, &env.AgentVersion); err != nil {
 		return Environment{}, err
 	}
 	env.CreatedAt = time.Unix(created, 0)

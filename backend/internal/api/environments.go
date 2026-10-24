@@ -28,10 +28,20 @@ type environmentResponse struct {
 	Online     bool       `json:"online"`
 	CreatedAt  time.Time  `json:"created_at"`
 	LastSeenAt *time.Time `json:"last_seen_at"`
+	// Agent is set for agent environments only.
+	Agent *agentResponse `json:"agent,omitempty"`
+}
+
+type agentResponse struct {
+	Enrolled bool   `json:"enrolled"`
+	Version  string `json:"version"`
 }
 
 func toEnvironmentResponse(env environments.Environment, online bool) environmentResponse {
 	r := environmentResponse{ID: env.ID, Name: env.Name, Kind: env.Kind, Online: online, CreatedAt: env.CreatedAt.UTC()}
+	if env.Kind == environments.KindAgent {
+		r.Agent = &agentResponse{Enrolled: env.Enrolled, Version: env.AgentVersion}
+	}
 	if env.LastSeenAt != nil {
 		ls := env.LastSeenAt.UTC()
 		r.LastSeenAt = &ls
