@@ -5,11 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
@@ -30,6 +34,13 @@ type stackResponse struct {
 	stackSummaryResponse
 	Compose string `json:"compose"`
 	Env     string `json:"env"`
+	// Services are the project's containers by compose service, sorted by name.
+	Services []stackServiceResponse `json:"services"`
+}
+
+type stackServiceResponse struct {
+	Name       string                     `json:"name"`
+	Containers []containerSummaryResponse `json:"containers"`
 }
 
 type stackFilesRequest struct {
@@ -93,8 +104,9 @@ func (s *server) stackName(w http.ResponseWriter, r *http.Request) (string, bool
 	return name, true
 }
 
-// stackContainers counts each project's containers, all and running.
-func stackContainers(ctx context.Context, c docker.Client, project string) (map[string]stackSummaryResponse, error) {
+// projectContainers lists a project's containers in any state, or every project's
+// if project is empty.
+func projectContainers(ctx context.Context, c docker.Client, project string) ([]container.Summary, error) {
 	filter := stacks.ProjectLabel
 	if project != "" {
 		filter += "=" + project
@@ -103,8 +115,22 @@ func stackContainers(ctx context.Context, c docker.Client, project string) (map[
 	if err != nil {
 		return nil, err
 	}
+	return res.Items, nil
+}
+
+// stackContainers counts each project's containers, all and running.
+func stackContainers(ctx context.Context, c docker.Client, project string) (map[string]stackSummaryResponse, error) {
+	items, err := projectContainers(ctx, c, project)
+	if err != nil {
+		return nil, err
+	}
+	return countContainers(items), nil
+}
+
+// countContainers counts containers by project, all and running.
+func countContainers(items []container.Summary) map[string]stackSummaryResponse {
 	counts := map[string]stackSummaryResponse{}
-	for _, ctr := range res.Items {
+	for _, ctr := range items {
 		p := ctr.Labels[stacks.ProjectLabel]
 		n := counts[p]
 		n.Containers++
@@ -113,7 +139,23 @@ func stackContainers(ctx context.Context, c docker.Client, project string) (map[
 		}
 		counts[p] = n
 	}
-	return counts, nil
+	return counts
+}
+
+// stackServices groups a project's containers by service.
+func stackServices(items []container.Summary) []stackServiceResponse {
+	by := map[string][]containerSummaryResponse{}
+	for _, ctr := range items {
+		svc := ctr.Labels[stacks.ServiceLabel]
+		by[svc] = append(by[svc], toContainerSummary(ctr))
+	}
+	resp := make([]stackServiceResponse, 0, len(by))
+	for _, name := range slices.Sorted(maps.Keys(by)) {
+		ctrs := by[name]
+		slices.SortFunc(ctrs, func(a, b containerSummaryResponse) int { return strings.Compare(a.Name, b.Name) })
+		resp = append(resp, stackServiceResponse{Name: name, Containers: ctrs})
+	}
+	return resp
 }
 
 // listStacks lists env's stacks with their containers.
@@ -151,14 +193,55 @@ func (s *server) getStack(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, err
 		}
-		counts, err := stackContainers(ctx, c, name)
+		items, err := projectContainers(ctx, c, name)
 		if err != nil {
 			return nil, err
 		}
-		n := counts[name]
+		n := countContainers(items)[name]
 		n.Name = name
-		return stackResponse{stackSummaryResponse: n, Compose: f.Compose, Env: f.Env}, nil
+		return stackResponse{stackSummaryResponse: n, Compose: f.Compose, Env: f.Env, Services: stackServices(items)}, nil
 	})
+}
+
+// checkStackTimeout bounds one compose config run.
+const checkStackTimeout = 30 * time.Second
+
+// maxStackChecks bounds the compose processes checks run at once.
+const maxStackChecks = 4
+
+// checkStack answers compose's complaints about stack files {"compose", "env"}:
+// {"errors": [...]}, empty if compose accepts them. It writes nothing.
+func (s *server) checkStack(w http.ResponseWriter, r *http.Request) {
+	var req stackFilesRequest
+	if !s.decodeJSON(w, r, &req) || !s.validStackFiles(w, req) {
+		return
+	}
+	if s.stackChecker == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "stack checks are not available")
+		return
+	}
+	select {
+	case s.checks <- struct{}{}:
+		defer func() { <-s.checks }()
+	default:
+		s.writeError(w, http.StatusTooManyRequests, "too many stack checks at once, try again")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), checkStackTimeout)
+	defer cancel()
+	errs, err := s.stackChecker(ctx, stacks.Files{Compose: req.Compose, Env: req.Env})
+	if errors.Is(err, stacks.ErrNoCompose) {
+		s.log.Error("check stack", "err", err)
+		s.writeError(w, http.StatusServiceUnavailable, "docker-compose is not installed")
+		return
+	}
+	if err != nil {
+		s.internalError(w, "check stack", err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, struct {
+		Errors []string `json:"errors"`
+	}{errs})
 }
 
 // validStackFiles answers 400 itself for files compose can't use.
@@ -204,7 +287,10 @@ func (s *server) createStack(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, "create stack", err)
 		return
 	}
-	s.writeJSON(w, http.StatusCreated, stackResponse{stackSummaryResponse: stackSummaryResponse{Name: req.Name}, Compose: f.Compose, Env: f.Env})
+	s.writeJSON(w, http.StatusCreated, stackResponse{
+		stackSummaryResponse: stackSummaryResponse{Name: req.Name}, Compose: f.Compose, Env: f.Env,
+		Services: []stackServiceResponse{},
+	})
 }
 
 // updateStack replaces a stack's files {"compose", "env"}; the running stack changes

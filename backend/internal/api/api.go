@@ -37,6 +37,9 @@ type Options struct {
 	// StackRunner returns the runner that deploys env's stacks, nil if env can't
 	// deploy them.
 	StackRunner func(env environments.Environment) stacks.Runner
+	// StackChecker returns compose's complaints about stack files, none if they're valid;
+	// nil means stacks can't be checked.
+	StackChecker func(ctx context.Context, f stacks.Files) ([]string, error)
 	// Web serves every path outside /api/.
 	Web http.Handler
 	// PublicURL is the URL agents reach the server at (scheme://host[:port]); empty means
@@ -67,7 +70,8 @@ func New(opts Options) http.Handler {
 	s := &server{
 		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries, audit: opts.Audit,
 		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, recreating: map[string]bool{},
-		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackBusy: map[string]bool{},
+		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{},
+		checks: make(chan struct{}, maxStackChecks),
 		events: events.New(events.Options{Context: opts.Context, Log: opts.Log}),
 	}
 	if s.stackRunner == nil {
@@ -126,6 +130,7 @@ func New(opts Options) http.Handler {
 	api.HandleFunc("POST /api/v1/environments/{env}/networks/prune", s.pruneNetworks)
 	api.HandleFunc("GET /api/v1/environments/{env}/networks/{id}", s.getNetwork)
 	api.HandleFunc("DELETE /api/v1/environments/{env}/networks/{id}", s.removeNetwork)
+	api.HandleFunc("POST /api/v1/stacks/check", s.checkStack)
 	api.HandleFunc("GET /api/v1/environments/{env}/stacks", s.listStacks)
 	api.HandleFunc("POST /api/v1/environments/{env}/stacks", s.createStack)
 	api.HandleFunc("GET /api/v1/environments/{env}/stacks/{id}", s.getStack)
@@ -155,8 +160,11 @@ type server struct {
 	publicURL     string
 	secureCookies bool
 
-	stacksDir   string
-	stackRunner func(env environments.Environment) stacks.Runner
+	stacksDir    string
+	stackRunner  func(env environments.Environment) stacks.Runner
+	stackChecker func(ctx context.Context, f stacks.Files) ([]string, error)
+	// checks holds a slot per running stack check.
+	checks chan struct{}
 
 	mu sync.Mutex
 	// recreating holds "<env>/<container ID>" of the recreates running now.
