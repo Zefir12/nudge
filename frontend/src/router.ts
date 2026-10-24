@@ -9,11 +9,20 @@ import {
 
 import { getSetupStatus, setUnauthorizedHandler } from './api/client';
 import { apiError, currentUser, loadUser } from './session';
+import ContainersView from './views/ContainersView.vue';
+import ContainerView from './views/ContainerView.vue';
 import DashboardView from './views/DashboardView.vue';
+import HomeView from './views/HomeView.vue';
+import ImagesView from './views/ImagesView.vue';
+import ImageView from './views/ImageView.vue';
 import LoginView from './views/LoginView.vue';
+import NetworksView from './views/NetworksView.vue';
+import NetworkView from './views/NetworkView.vue';
 import NotFoundView from './views/NotFoundView.vue';
 import SetupView from './views/SetupView.vue';
 import TokensView from './views/TokensView.vue';
+import VolumesView from './views/VolumesView.vue';
+import VolumeView from './views/VolumeView.vue';
 
 declare module 'vue-router' {
   interface RouteMeta {
@@ -27,7 +36,17 @@ export function createAppRouter(history: RouterHistory) {
   const router = createRouter({
     history,
     routes: [
-      { path: '/', name: 'dashboard', component: DashboardView },
+      // The start page opens an environment; each environment's pages live under /env/:env.
+      { path: '/', name: 'dashboard', component: HomeView },
+      { path: '/env/:env', name: 'env', component: DashboardView },
+      { path: '/env/:env/containers', name: 'containers', component: ContainersView },
+      { path: '/env/:env/containers/:id', name: 'container', component: ContainerView },
+      { path: '/env/:env/images', name: 'images', component: ImagesView },
+      { path: '/env/:env/images/:id', name: 'image', component: ImageView },
+      { path: '/env/:env/volumes', name: 'volumes', component: VolumesView },
+      { path: '/env/:env/volumes/:id', name: 'volume', component: VolumeView },
+      { path: '/env/:env/networks', name: 'networks', component: NetworksView },
+      { path: '/env/:env/networks/:id', name: 'network', component: NetworkView },
       { path: '/tokens', name: 'tokens', component: TokensView },
       { path: '/setup', name: 'setup', component: SetupView, meta: { public: true } },
       { path: '/login', name: 'login', component: LoginView, meta: { public: true } },
