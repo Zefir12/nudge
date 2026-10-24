@@ -30,6 +30,9 @@ func TestRealMain(t *testing.T) {
 		{name: "default command is serve", args: []string{"-h"}, wantCode: 0, wantStderr: "-addr"},
 		{name: "unknown command", args: []string{"frobnicate"}, wantCode: 2, wantStderr: `unknown command "frobnicate"`},
 		{name: "bad flag", args: []string{"serve", "-log-level", "loud"}, wantCode: 2, wantStderr: "log level"},
+		{name: "agent help", args: []string{"agent", "-h"}, wantCode: 0, wantStderr: "-join-token"},
+		{name: "agent without server", args: []string{"agent"}, wantCode: 2, wantStderr: "server URL is required"},
+		{name: "agent refuses http", args: []string{"agent", "-server", "http://nudge.example.net"}, wantCode: 2, wantStderr: "-insecure"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -177,6 +180,19 @@ func TestServeFailsOnBadDataDir(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "data directory") {
 		t.Errorf("stderr %q does not mention the data directory", stderr.String())
+	}
+}
+
+func TestAgentWithoutCredentials(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	getenv := func(string) string { return "" }
+	args := []string{"agent", "-server", "http://127.0.0.1:1", "-insecure", "-docker-host", noDocker(t), "-data", t.TempDir()}
+	if code := realMain(context.Background(), args, getenv, &stdout, &stderr); code != 1 {
+		t.Fatalf("code = %d, want 1 (stderr %q)", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "no join token") {
+		t.Errorf("stderr = %q, want the missing join token explained", stderr.String())
 	}
 }
 

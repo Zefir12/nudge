@@ -32,6 +32,9 @@ Flags with `NUDGE_*` environment variable fallbacks; the defaults work in the im
 | `NUDGE_ADMIN_PASSWORD` | unset | create user `admin` at first start (env only) |
 | `DOCKER_HOST` | `unix:///var/run/docker.sock` | Docker API of the local environment |
 
+Remote hosts run the same image as `nudge agent` with `NUDGE_SERVER_URL` and
+`NUDGE_JOIN_TOKEN` (the UI's "Add environment" prints the `docker run` command).
+
 Details: [docs/config/server.md](docs/config/server.md), agents:
 [docs/config/agent.md](docs/config/agent.md). API: [docs/api.md](docs/api.md).
 

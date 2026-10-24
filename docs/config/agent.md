@@ -1,8 +1,8 @@
-# Agent configuration (`nudge agent`, phase 2)
+# Agent configuration (`nudge agent`)
 
-Not implemented yet; this is the target interface (docs/architecture.md has the design).
 The agent runs on a remote Docker host and dials out to the server, so it needs no
-inbound port.
+inbound port (docs/architecture.md has the design). "Add environment" in the UI prints
+the command below with the server URL and a join token filled in.
 
 ```sh
 docker run -d --name nudge-agent --restart unless-stopped \
@@ -19,3 +19,28 @@ docker run -d --name nudge-agent --restart unless-stopped \
 | `-data` | `NUDGE_DATA` | `/data` | stores `agent.json` (agent ID and secret) |
 | `-insecure` | `NUDGE_INSECURE` | `false` | allow `http://` server URLs (testing only) |
 | `-log-level` | `NUDGE_LOG_LEVEL` | `info` | as for the server |
+| `-docker-host` | `DOCKER_HOST` | `unix:///var/run/docker.sock` | the Docker API the agent serves, `unix://` or `tcp://` |
+
+The server URL is `https://host[:port][/path]`; a path prefix is kept for servers behind
+a reverse proxy. `http://` is refused unless `-insecure` is set, because the agent secret
+and all Docker traffic would travel in clear text.
+
+## Credentials
+On the first start the agent sends the join token to the server and saves the agent ID
+and secret it gets back to `<data>/agent.json` (mode 0600). Later starts use that file,
+so the join token (single use, 24 h) can stay in the environment: it is only spent again
+when the server refuses the saved credentials. Keep the `/data` volume: without
+`agent.json` the agent needs a new join token.
+
+The agent exits (code 1) instead of retrying when retrying can't help:
+- no `agent.json` and no join token;
+- the join token is refused (used, expired or replaced by a newer one);
+- the saved credentials are refused (the environment was revoked) and there is no unused
+  join token. Create a new join token in the UI and restart the agent with it.
+
+## Connection
+The agent connects to `/api/v1/agents/connect` and pipes every stream the server opens to
+its Docker socket. When the connection fails or drops it reconnects after an exponential
+backoff with jitter: 1 s, doubling up to 60 s, each delay randomly shortened by up to
+half. A connection that stayed up for a minute starts the backoff over. SIGTERM or
+SIGINT closes the tunnel and stops the agent.

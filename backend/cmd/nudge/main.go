@@ -1,6 +1,5 @@
-// Command nudge is a self-hosted Docker manager: `nudge serve` runs the API and web UI.
-// `nudge agent`, which connects a remote Docker host to a server, comes with PLAN.md
-// phase 2.
+// Command nudge is a self-hosted Docker manager: `nudge serve` runs the API and web UI,
+// `nudge agent` connects a remote Docker host to a server.
 package main
 
 import (
@@ -18,9 +17,11 @@ import (
 	"syscall"
 	"time"
 
+	"git.zefirlabs.net/zefir/nudge/backend/internal/agent"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/api"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/config"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/store"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/version"
@@ -31,9 +32,10 @@ const usage = `usage: nudge [command] [flags]
 
 commands:
   serve    run the API and web UI (default)
+  agent    connect this host's Docker to a nudge server
   version  print the version
 
-Run "nudge serve -h" for its flags.
+Run "nudge serve -h" or "nudge agent -h" for their flags.
 `
 
 func main() {
@@ -61,6 +63,21 @@ func realMain(ctx context.Context, args []string, getenv func(string) string, st
 		log := slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: cfg.LogLevel}))
 		if err := serve(ctx, cfg, log); err != nil {
 			log.Error("server stopped", "err", err)
+			return 1
+		}
+		return 0
+	case "agent":
+		cfg, err := config.LoadAgent(args, getenv, stderr)
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "nudge:", err)
+			return 2
+		}
+		log := slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: cfg.LogLevel}))
+		if err := runAgent(ctx, cfg, log); err != nil {
+			log.Error("agent stopped", "err", err)
 			return 1
 		}
 		return 0
@@ -173,6 +190,37 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 		return fmt.Errorf("listen: %w", err)
 	}
 	return nil
+}
+
+func runAgent(ctx context.Context, cfg config.Agent, log *slog.Logger) error {
+	if err := prepareDataDir(cfg.DataDir); err != nil {
+		return err
+	}
+	dial, err := docker.LocalDialer(cfg.DockerHost)
+	if err != nil {
+		return err
+	}
+	if cfg.ServerURL.Scheme == "http" {
+		log.Warn("connecting over http:// (-insecure): the agent secret and all Docker traffic travel in clear text")
+	}
+	hostname, err := os.Hostname()
+	if err != nil {
+		log.Warn("hostname unknown", "err", err)
+	}
+	log.Info("agent starting", "server", cfg.ServerURL.Redacted(), "docker_host", cfg.DockerHost, "version", version.Version)
+	err = agent.New(agent.Options{
+		ServerURL: cfg.ServerURL,
+		JoinToken: cfg.JoinToken,
+		DataDir:   cfg.DataDir,
+		Dial:      dial,
+		Version:   version.Version,
+		Hostname:  hostname,
+		Log:       log,
+	}).Run(ctx)
+	if err == nil {
+		log.Info("agent stopped")
+	}
+	return err
 }
 
 // prepareDataDir creates the data directory (0700) if it is missing and checks that it
