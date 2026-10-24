@@ -1,14 +1,35 @@
 <script setup lang="ts">
-import { RouterLink, RouterView } from 'vue-router';
+import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router';
+
+import { logout } from './api/client';
+import { currentUser } from './session';
+
+const route = useRoute();
+const router = useRouter();
+
+async function onLogout() {
+  try {
+    await logout();
+  } finally {
+    currentUser.value = null;
+    await router.replace({ name: 'login' });
+  }
+}
 </script>
 
 <template>
-  <div class="layout">
+  <RouterView v-if="route.meta.public" />
+  <div v-else class="layout">
     <aside class="sidebar">
       <RouterLink to="/" class="brand">nudge</RouterLink>
       <nav>
         <RouterLink to="/">Dashboard</RouterLink>
+        <RouterLink to="/tokens">API tokens</RouterLink>
       </nav>
+      <div v-if="currentUser" class="account">
+        <span class="muted">{{ currentUser.username }}</span>
+        <button type="button" @click="onLogout">Log out</button>
+      </div>
     </aside>
     <main class="content">
       <RouterView />
@@ -57,6 +78,14 @@ nav a.router-link-exact-active {
   color: var(--accent);
 }
 
+.account {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: auto;
+}
+
 .content {
   padding: 1.5rem 2rem;
 }
@@ -75,6 +104,11 @@ nav a.router-link-exact-active {
 
   nav {
     flex-direction: row;
+  }
+
+  .account {
+    margin-top: 0;
+    margin-left: auto;
   }
 
   .content {

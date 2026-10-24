@@ -1,15 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
 
-import { ApiError, apiFetch, getHealth } from './client';
+import { ApiError, apiFetch, deleteToken, getHealth, getMe, setUnauthorizedHandler } from './client';
 
 function mockFetch(status: number, body: string) {
-  const fn = vi.fn(async () => new Response(body, { status, statusText: 'Status' }));
+  const fn = vi.fn(async () => new Response(status === 204 ? null : body, { status, statusText: 'Status' }));
   vi.stubGlobal('fetch', fn);
   return fn;
 }
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  setUnauthorizedHandler(null);
 });
 
 describe('apiFetch', () => {
@@ -27,5 +28,38 @@ describe('apiFetch', () => {
   it('falls back to the status text when the body is not JSON', async () => {
     mockFetch(502, '<html>bad gateway</html>');
     await expect(apiFetch('/health')).rejects.toMatchObject({ status: 502, message: 'Status' });
+  });
+
+  it('sends cookies and JSON', async () => {
+    const fn = mockFetch(200, '{}');
+    await apiFetch('/x', { method: 'POST', body: '{}' });
+    expect(fn).toHaveBeenCalledWith(
+      '/api/v1/x',
+      expect.objectContaining({
+        credentials: 'same-origin',
+        headers: expect.objectContaining({ 'Content-Type': 'application/json' }),
+      }),
+    );
+  });
+
+  it('returns nothing for 204', async () => {
+    mockFetch(204, '');
+    await expect(deleteToken(1)).resolves.toBeUndefined();
+  });
+
+  it('calls the unauthorized handler on 401', async () => {
+    const handler = vi.fn();
+    setUnauthorizedHandler(handler);
+    mockFetch(401, '{"error":"authentication required"}');
+    await expect(apiFetch('/tokens')).rejects.toMatchObject({ status: 401 });
+    expect(handler).toHaveBeenCalledOnce();
+  });
+
+  it('leaves 401 to the caller when asked', async () => {
+    const handler = vi.fn();
+    setUnauthorizedHandler(handler);
+    mockFetch(401, '{"error":"authentication required"}');
+    await expect(getMe()).rejects.toMatchObject({ status: 401 });
+    expect(handler).not.toHaveBeenCalled();
   });
 });
