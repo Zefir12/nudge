@@ -27,6 +27,7 @@ lets patterns in `publicRoutes` through without either credential) to the API mu
 | `internal/auth` | users, argon2id, sessions, login rate limit, API tokens (tokens.go) | `New`, `Options`, `Service.Login`, `SessionUser`, `TokenUser`, `CreateToken`, `CreateFirstUser`, `EnsureAdmin`, `RunCleanup` |
 | `internal/docker` | Docker client over a dialer per kind; `Client` interface handlers use; `dockertest.Fake` | `New`, `LocalDialer`, `Client`, `Unreachable` |
 | `internal/environments` | environments table, Docker client per environment (cached), online checks, auto-created `local`; agent enrollment in agents.go (join tokens, agent ID + secret) | `New`, `Options.Connect`, `LocalConnect`, `EnsureLocal`, `Service.Client`, `Online`, `CreateAgent`, `RegenerateJoinToken`, `Enroll`, `AuthenticateAgent`, `Revoke` |
+| `internal/tunnel` | WebSocket ↔ yamux tunnel: JSON hello (protocol version), server = yamux client, keepalives | `Accept` (server), `Connect` (agent), `Session.Open`/`Accept`/`Done`/`Close`, `ProtocolVersion` |
 | `internal/config` | flags with NUDGE_* env fallbacks | `LoadServer`, `Server` |
 | `internal/store` | SQLite (`<data>/nudge.db`), embedded migrations | `Open`, `Store.DB`, `migrations/NNNN_name.sql` |
 | `internal/web` | embedded frontend, SPA fallback | `Dist`, `Handler` |
@@ -35,26 +36,31 @@ lets patterns in `publicRoutes` through without either credential) to the API mu
 ## Frontend (frontend/src)
 | Path | What |
 |---|---|
-| `main.ts`, `App.vue` | app setup, layout (sidebar with user + logout, `RouterView`; public routes render without it) |
+| `main.ts`, `App.vue` | app setup, layout (sidebar with `EnvSwitcher`, per-environment nav, user + logout, `RouterView`; public routes render without it) |
 | `router.ts` | routes (add one per view; `meta.public` for no-login pages), `createAppRouter` with the auth guard, `redirectOnUnauthorized` |
 | `session.ts` | `currentUser`, `loadUser`, `safeRedirect` |
+| `environments.ts` | `environments`, `loadEnvironments`, last used environment (localStorage), `defaultEnvironment` |
+| `composables/` | `useLoad(source, fetch)` (data/error/loading/reload, refetch on route change), `useParams()` (`:env`, `:id`) |
+| `format.ts` | `formatDate`, `formatBytes`, `shortId`, `formatPort`, `matches` (search) |
 | `api/client.ts` | `apiFetch<T>` (cookies, 401 → `setUnauthorizedHandler`), `ApiError`, one typed function per endpoint |
 | `test-utils.ts` | `stubApi({'GET /path': {status, body}})` fetch stub, `admin` user |
 | `views/` | one component per route |
-| `components/` | reusable pieces |
+| `components/` | reusable pieces: `LoadState` (loading/empty/error + retry), `KeyValues`, `StateBadge`, `EnvSwitcher` |
 | `style.css` | design tokens (CSS variables, light/dark) and base styles |
 
 ## Recipes
 - **New API endpoint:** handler method on `api.server` in a file per area
   (`internal/api/containers.go`), route in `api.New`, table test next to it with
   `httptest`, row in docs/api.md, typed function in `frontend/src/api/client.ts`.
-- **New view:** `frontend/src/views/FooView.vue`, route in `router.ts`, nav link in
-  `App.vue`, `FooView.test.ts` stubbing the API with `stubApi`; views that use the
+- **New view:** `frontend/src/views/FooView.vue`, route in `router.ts` (environment pages
+  under `/env/:env/...`, loading with `useLoad` + `LoadState`), nav link in `App.vue`, `FooView.test.ts` stubbing the API with `stubApi`; views that use the
   router mount with `createAppRouter(createMemoryHistory())` as a plugin.
 - **New config option:** field + flag in `internal/config`, test row in
   `config_test.go`, README table, docs/config/<topic>.md.
 - **Schema change:** new `internal/store/migrations/NNNN_name.sql` with the next number
   (never edit an applied one); it runs in one transaction at start.
+- **Tunnel tests:** `newWSPair` (httptest + WebSocket) and `newPipePair` (`net.Pipe`) in
+  tunnel_test.go, `echo` as a fake agent, `checkLeaks` (non-parallel tests only).
 - **Test helpers:** `api.newTestHandler(t)` (api_test.go: empty database, returns the
   `auth.Service`; create a user with `CreateFirstUser`, get a cookie from a login via
   `do`/`sessionCookieOf` in auth_test.go); `auth.newTestService(t)` with `fakeClock`; `fstest.MapFS` for web

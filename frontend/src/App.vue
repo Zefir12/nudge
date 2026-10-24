@@ -1,11 +1,31 @@
 <script setup lang="ts">
+import { computed, watch } from 'vue';
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router';
 
 import { logout } from './api/client';
+import EnvSwitcher from './components/EnvSwitcher.vue';
+import { lastEnvironment, rememberEnvironment } from './environments';
 import { apiError, currentUser } from './session';
 
 const route = useRoute();
 const router = useRouter();
+
+// The environment links follow the open environment, or the one used last.
+const env = computed(() => (typeof route.params.env === 'string' ? route.params.env : lastEnvironment()));
+watch(
+  () => route.params.env,
+  (e) => {
+    if (typeof e === 'string') rememberEnvironment(e);
+  },
+  { immediate: true },
+);
+
+const sections = [
+  { name: 'containers', label: 'Containers' },
+  { name: 'images', label: 'Images' },
+  { name: 'volumes', label: 'Volumes' },
+  { name: 'networks', label: 'Networks' },
+];
 
 async function onLogout() {
   try {
@@ -31,8 +51,21 @@ async function onLogout() {
   <div v-else class="layout">
     <aside class="sidebar">
       <RouterLink to="/" class="brand">nudge</RouterLink>
+      <EnvSwitcher />
       <nav>
-        <RouterLink to="/">Dashboard</RouterLink>
+        <template v-if="env">
+          <RouterLink :to="{ name: 'env', params: { env } }">Dashboard</RouterLink>
+          <!-- Active on a list and on its detail pages. -->
+          <RouterLink
+            v-for="s in sections"
+            :key="s.name"
+            :to="{ name: s.name, params: { env } }"
+            :class="{ active: route.name === s.name || route.name === s.name.slice(0, -1) }"
+          >
+            {{ s.label }}
+          </RouterLink>
+        </template>
+        <RouterLink v-else to="/">Dashboard</RouterLink>
         <RouterLink to="/tokens">API tokens</RouterLink>
       </nav>
       <div v-if="currentUser" class="account">
@@ -82,7 +115,8 @@ nav a {
   text-decoration: none;
 }
 
-nav a.router-link-exact-active {
+nav a.router-link-exact-active,
+nav a.active {
   background: var(--accent-soft);
   color: var(--accent);
 }
@@ -106,13 +140,18 @@ nav a.router-link-exact-active {
 
   .sidebar {
     flex-direction: row;
+    flex-wrap: wrap;
     align-items: center;
+    gap: 0.75rem 1rem;
     border-right: none;
     border-bottom: 1px solid var(--border);
   }
 
   nav {
     flex-direction: row;
+    flex-wrap: wrap;
+    order: 3;
+    width: 100%;
   }
 
   .account {
