@@ -808,6 +808,14 @@ export interface StackSummary {
 export interface Stack extends StackSummary {
   compose: string;
   env: string;
+  // services are the project's containers by compose service; a service shows up once it
+  // has a container.
+  services: StackService[];
+}
+
+export interface StackService {
+  name: string;
+  containers: ContainerSummary[];
 }
 
 export interface StackFiles {
@@ -827,6 +835,9 @@ export const createStack = (env: string, name: string, files: StackFiles) =>
   apiFetch<Stack>(envPath(env, '/stacks'), post({ name, ...files }));
 export const updateStack = (env: string, name: string, files: StackFiles) =>
   apiFetch<void>(envPath(env, `/stacks/${enc(name)}`), { method: 'PUT', body: JSON.stringify(files) });
+// checkStack asks compose about stack files without saving them: errors is empty if
+// compose accepts them.
+export const checkStack = (files: StackFiles) => apiFetch<{ errors: string[] }>('/stacks/check', post(files));
 // removeStack deletes a stack's files; it must be down first.
 export const removeStack = (env: string, name: string) =>
   apiFetch<void>(envPath(env, `/stacks/${enc(name)}`), { method: 'DELETE' });

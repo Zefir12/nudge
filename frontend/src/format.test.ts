@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vite-plus/test';
 
-import { formatBytes, formatPort, matches, parsePairs, shortId } from './format';
+import { formatBytes, formatPort, matches, parsePairs, shortId, timeKey } from './format';
 
 describe('format', () => {
   it.each([
@@ -35,5 +35,25 @@ describe('format', () => {
     expect(parsePairs('a=1\n\n  b = x=y \nflag\n')).toEqual({ a: '1', b: 'x=y', flag: '' });
     expect(parsePairs('')).toEqual({});
     expect(() => parsePairs('=oops')).toThrow('"=oops" has no name before "="');
+  });
+});
+
+describe('timeKey', () => {
+  it('sorts Docker timestamps of any precision', () => {
+    const times = [
+      '2026-10-01T12:00:00.12Z',
+      '2026-10-01T12:00:00Z',
+      '2026-10-01T12:00:00.1Z',
+      '2026-10-01T12:00:00.123456789Z',
+      '2026-10-01T11:59:59.9Z',
+    ];
+    expect([...times].sort((a, b) => timeKey(a).localeCompare(timeKey(b)))).toEqual([
+      '2026-10-01T11:59:59.9Z',
+      '2026-10-01T12:00:00Z',
+      '2026-10-01T12:00:00.1Z',
+      '2026-10-01T12:00:00.12Z',
+      '2026-10-01T12:00:00.123456789Z',
+    ]);
+    expect(timeKey(undefined)).toBe('');
   });
 });

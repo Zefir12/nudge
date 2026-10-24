@@ -159,8 +159,8 @@ type server struct {
 	publicURL     string
 	secureCookies bool
 
-	stacksDir   string
-	stackRunner func(env environments.Environment) stacks.Runner
+	stacksDir    string
+	stackRunner  func(env environments.Environment) stacks.Runner
 	stackChecker func(ctx context.Context, f stacks.Files) ([]string, error)
 
 	mu sync.Mutex

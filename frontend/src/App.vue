@@ -21,6 +21,7 @@ watch(
 );
 
 const sections = [
+  { name: 'stacks', label: 'Stacks' },
   { name: 'containers', label: 'Containers' },
   { name: 'images', label: 'Images' },
   { name: 'volumes', label: 'Volumes' },
@@ -56,12 +57,12 @@ async function onLogout() {
       <nav>
         <template v-if="env">
           <RouterLink :to="{ name: 'env', params: { env } }">Dashboard</RouterLink>
-          <!-- Active on a list and on its detail pages. -->
+          <!-- Active on a list and on its detail and form pages (stack, stack-new). -->
           <RouterLink
             v-for="s in sections"
             :key="s.name"
             :to="{ name: s.name, params: { env } }"
-            :class="{ active: route.name === s.name || route.name === s.name.slice(0, -1) }"
+            :class="{ active: String(route.name ?? '').startsWith(s.name.slice(0, -1)) }"
           >
             {{ s.label }}
           </RouterLink>

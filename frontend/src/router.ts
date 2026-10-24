@@ -24,6 +24,9 @@ import NetworksView from './views/NetworksView.vue';
 import NetworkView from './views/NetworkView.vue';
 import NotFoundView from './views/NotFoundView.vue';
 import RegistriesView from './views/RegistriesView.vue';
+import StackNewView from './views/StackNewView.vue';
+import StacksView from './views/StacksView.vue';
+import StackView from './views/StackView.vue';
 import SetupView from './views/SetupView.vue';
 import TokensView from './views/TokensView.vue';
 import VolumesView from './views/VolumesView.vue';
@@ -54,6 +57,10 @@ export function createAppRouter(history: RouterHistory) {
       { path: '/env/:env/volumes/:id', name: 'volume', component: VolumeView },
       { path: '/env/:env/networks', name: 'networks', component: NetworksView },
       { path: '/env/:env/networks/:id', name: 'network', component: NetworkView },
+      { path: '/env/:env/stacks', name: 'stacks', component: StacksView },
+      // Not under stacks/: "new" is a valid stack name.
+      { path: '/env/:env/new-stack', name: 'stack-new', component: StackNewView },
+      { path: '/env/:env/stacks/:id', name: 'stack', component: StackView },
       { path: '/env/:env/events', name: 'events', component: EventsView },
       { path: '/environments', name: 'environments', component: EnvironmentsView },
       { path: '/registries', name: 'registries', component: RegistriesView },

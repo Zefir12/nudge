@@ -48,3 +48,11 @@ export function parsePairs(text: string): Record<string, string> {
   }
   return out;
 }
+
+// timeKey makes Docker's RFC 3339 timestamps, whose fractions drop trailing zeros, sort
+// correctly as strings.
+export function timeKey(t: string | undefined): string {
+  if (!t) return '';
+  const m = /^(.*?)(?:\.(\d+))?Z$/.exec(t);
+  return m ? `${m[1]}.${(m[2] ?? '').padEnd(9, '0')}` : t;
+}
