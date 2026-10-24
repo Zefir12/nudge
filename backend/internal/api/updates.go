@@ -50,7 +50,7 @@ func (s *server) listUpdates(w http.ResponseWriter, r *http.Request) {
 }
 
 // checkUpdates checks the environment's images now and answers the results. The check
-// isn't cancelled when the client goes away, so its results are saved.
+// isn't cancelled when the client goes away, so its results are saved, only at shutdown.
 func (s *server) checkUpdates(w http.ResponseWriter, r *http.Request) {
 	if s.updates == nil {
 		s.writeError(w, http.StatusServiceUnavailable, "update checks aren't available")
@@ -62,9 +62,15 @@ func (s *server) checkUpdates(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), updateCheckTimeout)
 	defer cancel()
+	// Shutdown doesn't wait for the check.
+	defer context.AfterFunc(s.done, cancel)()
 	results, err := s.updates.Check(ctx, env)
 	if errors.Is(err, updates.ErrRunning) {
 		s.writeError(w, http.StatusConflict, "an update check is already running; try again when it's done")
+		return
+	}
+	if errors.Is(err, updates.ErrStore) {
+		s.internalError(w, "check updates", err)
 		return
 	}
 	if err != nil {

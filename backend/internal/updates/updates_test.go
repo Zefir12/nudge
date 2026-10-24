@@ -285,10 +285,11 @@ func TestCheckAll(t *testing.T) {
 	if err := s.CheckAll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	// One lookup per reference, shared by both environments.
-	calls := len(envs.clients[1].(*dockertest.Fake).DistributionCalls()) + len(envs.clients[2].(*dockertest.Fake).DistributionCalls())
-	if calls != 1 {
-		t.Errorf("registry lookups = %d, want 1", calls)
+	// Each environment's daemon looks the reference up itself.
+	for _, id := range []int64{1, 2} {
+		if calls := envs.clients[id].(*dockertest.Fake).DistributionCalls(); len(calls) != 1 {
+			t.Errorf("environment %d: registry lookups = %v, want 1", id, calls)
+		}
 	}
 	for _, id := range []int64{1, 2} {
 		got, err := s.List(context.Background(), id)
@@ -414,4 +415,40 @@ func TestByTag(t *testing.T) {
 			t.Errorf("byTag(%q) = %v, want %v", in, got, want)
 		}
 	}
+}
+
+func TestCheckFailures(t *testing.T) {
+	t.Parallel()
+	setup := func(t *testing.T) (*Service, environments.Environment) {
+		s, envs, _ := newTestService(t, nil)
+		f := envs.clients[1].(*dockertest.Fake)
+		f.Containers = []container.Summary{ctr("nginx", "sha256:n1")}
+		f.ImageDetails = map[string]image.InspectResponse{"sha256:n1": pulled("nginx@sha256:a")}
+		f.Distribution = map[string]digest.Digest{"nginx": "sha256:a"}
+		return s, envs.envs[0]
+	}
+
+	t.Run("store", func(t *testing.T) {
+		t.Parallel()
+		s, env := setup(t)
+		if err := s.db.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Check(context.Background(), env); !errors.Is(err, ErrStore) {
+			t.Errorf("Check with the database closed: err = %v, want ErrStore", err)
+		}
+	})
+
+	t.Run("cancelled", func(t *testing.T) {
+		t.Parallel()
+		s, env := setup(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := s.Check(ctx, env); !errors.Is(err, context.Canceled) {
+			t.Errorf("Check with a cancelled context: err = %v, want context.Canceled", err)
+		}
+		if got, _ := s.List(context.Background(), env.ID); len(got) != 0 {
+			t.Errorf("a cancelled check saved %+v", got)
+		}
+	})
 }

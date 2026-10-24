@@ -52,6 +52,9 @@ const (
 // ErrRunning is returned when a check is started while another one runs.
 var ErrRunning = errors.New("an update check is already running")
 
+// ErrStore wraps a failure to save the results, as opposed to one of the environment.
+var ErrStore = errors.New("save image updates")
+
 // Result is the last check of one image reference (as containers name it) and the image
 // ID the containers ran.
 type Result struct {
@@ -154,8 +157,8 @@ func (s *Service) Check(ctx context.Context, env environments.Environment) ([]Re
 	return s.check(ctx, env, newRun(s.clock))
 }
 
-// CheckAll checks every environment, one after the other, sharing lookups of the same
-// reference. An environment that fails is logged and skipped.
+// CheckAll checks every environment, one after the other. An environment that fails is
+// logged and skipped.
 func (s *Service) CheckAll(ctx context.Context) error {
 	if !s.lock() {
 		return ErrRunning
@@ -222,20 +225,31 @@ func (s *Service) check(ctx context.Context, env environments.Environment, r *ru
 	}
 
 	results := make([]Result, len(images))
+	// Digests by image ID and lookups by reference are per environment: daemons differ in
+	// mirrors, proxy and what they can reach.
+	repoDigests := map[string][]string{}
+	lookups := map[string]*lookup{}
+	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, Concurrency)
 	for i, img := range images {
 		results[i] = Result{Image: img.ref, ImageID: img.id}
-		local, err := s.localDigest(ctx, c, img, r)
+		local, err := s.localDigest(ctx, c, img, repoDigests)
 		if err != nil {
 			results[i].Status, results[i].Error = Unknown, err.Error()
 			continue
 		}
 		results[i].LocalDigest = local
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+		}
+		if ctx.Err() != nil {
+			break
+		}
 		wg.Go(func() {
-			sem <- struct{}{}
 			defer func() { <-sem }()
-			remote, err := r.remote(ctx, img.ref, func() (string, error) { return s.remoteDigest(ctx, c, img.ref, r) })
+			remote, err := shared(ctx, &mu, lookups, img.ref, func() (string, error) { return s.remoteDigest(ctx, c, img.ref, r) })
 			res := &results[i]
 			res.CheckedAt = s.clock.Now()
 			switch {
@@ -291,8 +305,8 @@ func (s *Service) images(ctx context.Context, c docker.Client) ([]use, error) {
 }
 
 // localDigest is the digest the image was pulled as from the reference's repository.
-func (s *Service) localDigest(ctx context.Context, c docker.Client, img use, r *run) (string, error) {
-	digests, ok := r.repoDigests[img.id]
+func (s *Service) localDigest(ctx context.Context, c docker.Client, img use, repoDigests map[string][]string) (string, error) {
+	digests, ok := repoDigests[img.id]
 	if !ok {
 		ictx, cancel := context.WithTimeout(ctx, lookupTimeout)
 		res, err := c.ImageInspect(ictx, img.id)
@@ -302,7 +316,7 @@ func (s *Service) localDigest(ctx context.Context, c docker.Client, img use, r *
 			return "", errors.New("the image couldn't be inspected")
 		}
 		digests = res.RepoDigests
-		r.repoDigests[img.id] = digests
+		repoDigests[img.id] = digests
 	}
 	repo := repoOf(img.ref)
 	for _, d := range digests {
@@ -365,7 +379,7 @@ func (s *Service) remoteDigest(ctx context.Context, c docker.Client, ref string,
 func (s *Service) save(ctx context.Context, envID int64, results []Result) (err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("save image updates: %w", err)
+		return fmt.Errorf("%w: %w", ErrStore, err)
 	}
 	defer func() {
 		if err != nil {
@@ -373,18 +387,18 @@ func (s *Service) save(ctx context.Context, envID int64, results []Result) (err 
 		}
 	}()
 	if _, err = tx.ExecContext(ctx, `DELETE FROM image_updates WHERE environment_id = ?`, envID); err != nil {
-		return fmt.Errorf("save image updates: %w", err)
+		return fmt.Errorf("%w: %w", ErrStore, err)
 	}
 	for _, r := range results {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO image_updates
 			(environment_id, image, image_id, status, local_digest, remote_digest, error, checked_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 			envID, r.Image, r.ImageID, string(r.Status), r.LocalDigest, r.RemoteDigest, r.Error, r.CheckedAt.UnixMilli()); err != nil {
-			return fmt.Errorf("save image updates: %w", err)
+			return fmt.Errorf("%w: %w", ErrStore, err)
 		}
 	}
 	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("save image updates: %w", err)
+		return fmt.Errorf("%w: %w", ErrStore, err)
 	}
 	return nil
 }
@@ -418,13 +432,13 @@ func repoOf(ref string) string {
 	return name
 }
 
-// run is the state one check shares across environments: registry lookups by reference,
-// image digests by ID and the per-registry rate limit.
+// run is the state one check shares across environments: the per-registry rate limit.
 type run struct {
-	mu          sync.Mutex
-	lookups     map[string]*lookup
-	repoDigests map[string][]string
-	limit       *limiter
+	limit *limiter
+}
+
+func newRun(clock Clock) *run {
+	return &run{limit: newLimiter(clock, RegistryGap)}
 }
 
 type lookup struct {
@@ -433,19 +447,16 @@ type lookup struct {
 	err    error
 }
 
-func newRun(clock Clock) *run {
-	return &run{lookups: map[string]*lookup{}, repoDigests: map[string][]string{}, limit: newLimiter(clock, RegistryGap)}
-}
-
-// remote returns the registry digest of ref, calling fetch only for the first caller.
-func (r *run) remote(ctx context.Context, ref string, fetch func() (string, error)) (string, error) {
-	r.mu.Lock()
-	l, ok := r.lookups[ref]
+// shared returns the registry digest of ref from lookups, calling fetch only for the
+// first caller; mu guards lookups.
+func shared(ctx context.Context, mu *sync.Mutex, lookups map[string]*lookup, ref string, fetch func() (string, error)) (string, error) {
+	mu.Lock()
+	l, ok := lookups[ref]
 	if !ok {
 		l = &lookup{done: make(chan struct{})}
-		r.lookups[ref] = l
+		lookups[ref] = l
 	}
-	r.mu.Unlock()
+	mu.Unlock()
 	if !ok {
 		l.digest, l.err = fetch()
 		close(l.done)

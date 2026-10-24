@@ -467,10 +467,11 @@ environment (see docs/config/server.md) and on request.
   the same list; it replaces the environment's results. One check runs at a time (`409`
   while another one, scheduled or not, runs); `503` when the environment is offline,
   `504` when its daemon doesn't answer. The check goes on when the client disconnects and
-  stops after five minutes.
+  stops after five minutes or at shutdown.
 - Lookups are bounded: four at a time, at most one request per registry every 500 ms,
-  one per image reference per check (shared by the environments in a scheduled check),
-  at most 500 images per environment.
+  one per image reference and environment per check, at most 500 images per
+  environment. Each environment's daemon does its own lookups, with its own mirrors and
+  proxy.
 
 ### Audit log
 Every `POST`, `PUT`, `PATCH` and `DELETE` that reaches a route is recorded after it is

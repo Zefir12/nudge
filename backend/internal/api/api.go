@@ -76,6 +76,10 @@ func New(opts Options) http.Handler {
 		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{},
 		checks: make(chan struct{}, maxStackChecks),
 		events: events.New(events.Options{Context: opts.Context, Log: opts.Log}),
+		done:   context.Background(),
+	}
+	if opts.Context != nil {
+		s.done = opts.Context
 	}
 	if s.stackRunner == nil {
 		s.stackRunner = func(environments.Environment) stacks.Runner { return nil }
@@ -160,6 +164,8 @@ type server struct {
 	registries *registries.Service
 	audit      *audit.Service
 	updates    *updates.Service
+	// done ends at shutdown (Options.Context).
+	done context.Context
 	// events fans each environment's Docker events out to the clients watching it.
 	events *events.Hub
 
