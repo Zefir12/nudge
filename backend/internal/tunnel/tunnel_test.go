@@ -327,11 +327,14 @@ func TestManyStreams(t *testing.T) {
 	for _, transport := range []string{"pipe", "websocket"} {
 		t.Run(transport, func(t *testing.T) {
 			checkLeaks(t)
+			// Production timeouts: with fast's 200 ms write timeout, writes queued behind 100
+			// streams on a slow runner under -race close the session.
+			cfg := Config{HandshakeTimeout: fast.HandshakeTimeout}
 			var server, agent *Session
 			if transport == "pipe" {
-				server, agent = newPipePair(t.Context(), t, fast)
+				server, agent = newPipePair(t.Context(), t, cfg)
 			} else {
-				p := newWSPair(t.Context(), t, fast)
+				p := newWSPair(t.Context(), t, cfg)
 				server, agent = p.server, p.agent
 			}
 			echo(t, agent)
