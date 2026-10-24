@@ -2,7 +2,7 @@
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router';
 
 import { logout } from './api/client';
-import { currentUser } from './session';
+import { apiError, currentUser } from './session';
 
 const route = useRoute();
 const router = useRouter();
@@ -18,7 +18,16 @@ async function onLogout() {
 </script>
 
 <template>
-  <RouterView v-if="route.meta.public" />
+  <div v-if="apiError" class="auth-page">
+    <section class="card auth-card" role="alert">
+      <h1>nudge is unreachable</h1>
+      <p class="error">{{ apiError }}</p>
+      <p class="muted">Check that the server is running, then reload the page.</p>
+    </section>
+  </div>
+  <!-- Nothing until the first navigation resolves, so the guard decides the layout. -->
+  <template v-else-if="route.matched.length === 0" />
+  <RouterView v-else-if="route.meta.public" />
   <div v-else class="layout">
     <aside class="sidebar">
       <RouterLink to="/" class="brand">nudge</RouterLink>

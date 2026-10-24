@@ -4,7 +4,7 @@ import { createMemoryHistory } from 'vue-router';
 
 import { listTokens, setUnauthorizedHandler } from './api/client';
 import { createAppRouter, redirectOnUnauthorized } from './router';
-import { currentUser } from './session';
+import { apiError, currentUser } from './session';
 import { admin, stubApi, type Routes } from './test-utils';
 
 beforeEach(() => {
@@ -69,6 +69,21 @@ describe('router guard', () => {
     const router = createAppRouter(createMemoryHistory());
     await router.push('/login');
     expect(router.currentRoute.value.name).toBe('dashboard');
+  });
+});
+
+describe('router guard without the API', () => {
+  it('stops and reports the error', async () => {
+    stubApi({ 'GET /auth/me': { status: 502, body: { error: 'Bad Gateway' } } });
+    const router = createAppRouter(createMemoryHistory());
+    await router.push('/tokens');
+    expect(router.currentRoute.value.matched).toHaveLength(0);
+    expect(apiError.value).toBe('Bad Gateway');
+
+    stubApi({ 'GET /auth/me': { body: admin } });
+    await router.push('/tokens');
+    expect(router.currentRoute.value.name).toBe('tokens');
+    expect(apiError.value).toBe('');
   });
 });
 

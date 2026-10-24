@@ -5,6 +5,9 @@ import { ApiError, getMe, type User } from './api/client';
 
 export const currentUser = ref<User | null>(null);
 
+// apiError is set when the router guard couldn't reach the API; App shows it.
+export const apiError = ref('');
+
 // loadUser asks the server who is logged in; null when nobody is.
 export async function loadUser(): Promise<User | null> {
   try {

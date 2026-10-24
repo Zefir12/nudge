@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
 
-import { ApiError, apiFetch, deleteToken, getHealth, getMe, setUnauthorizedHandler } from './client';
+import { ApiError, apiFetch, deleteToken, getHealth, getMe, logout, setUnauthorizedHandler } from './client';
 
 function mockFetch(status: number, body: string) {
   const fn = vi.fn(async () => new Response(status === 204 ? null : body, { status, statusText: 'Status' }));
@@ -60,6 +60,7 @@ describe('apiFetch', () => {
     setUnauthorizedHandler(handler);
     mockFetch(401, '{"error":"authentication required"}');
     await expect(getMe()).rejects.toMatchObject({ status: 401 });
+    await expect(logout()).rejects.toMatchObject({ status: 401 });
     expect(handler).not.toHaveBeenCalled();
   });
 });

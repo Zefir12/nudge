@@ -9,7 +9,7 @@ const name = ref('');
 const busy = ref(false);
 // created holds the new token's secret until the user dismisses it; it is never shown again.
 const created = ref<CreatedToken | null>(null);
-const copied = ref(false);
+const copyState = ref<'' | 'copied' | 'failed'>('');
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -26,7 +26,7 @@ async function onCreate() {
   error.value = '';
   try {
     created.value = await createToken(name.value.trim());
-    copied.value = false;
+    copyState.value = '';
     name.value = '';
     await load();
   } catch (e) {
@@ -52,9 +52,10 @@ async function onCopy() {
   if (!created.value) return;
   try {
     await navigator.clipboard.writeText(created.value.token);
-    copied.value = true;
+    copyState.value = 'copied';
   } catch {
-    // No clipboard (plain HTTP): the token stays selectable.
+    // No clipboard API (plain HTTP): the token stays selectable.
+    copyState.value = 'failed';
   }
 }
 
@@ -75,9 +76,12 @@ onMounted(load);
     <p>Copy it now: it is shown only once.</p>
     <code class="secret">{{ created.token }}</code>
     <div class="actions">
-      <button type="button" @click="onCopy">{{ copied ? 'Copied' : 'Copy' }}</button>
+      <button type="button" @click="onCopy">{{ copyState === 'copied' ? 'Copied' : 'Copy' }}</button>
       <button type="button" @click="created = null">Done</button>
     </div>
+    <p v-if="copyState === 'failed'" class="muted">
+      Copying is not available here: select the token and copy it.
+    </p>
   </section>
 
   <section class="card">

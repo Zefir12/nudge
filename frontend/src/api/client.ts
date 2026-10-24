@@ -73,7 +73,8 @@ export interface Credentials {
 export const getSetupStatus = () => apiFetch<{ needed: boolean }>('/setup');
 export const setup = (c: Credentials) => apiFetch<User>('/setup', post(c), { redirectOn401: false });
 export const login = (c: Credentials) => apiFetch<User>('/auth/login', post(c), { redirectOn401: false });
-export const logout = () => apiFetch<void>('/auth/logout', { method: 'POST' });
+// The caller navigates to login itself, so a 401 (session already gone) must not redirect too.
+export const logout = () => apiFetch<void>('/auth/logout', { method: 'POST' }, { redirectOn401: false });
 export const getMe = () => apiFetch<User>('/auth/me', undefined, { redirectOn401: false });
 
 export interface Token {

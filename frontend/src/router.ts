@@ -1,7 +1,14 @@
-import { createRouter, createWebHistory, type Router, type RouterHistory } from 'vue-router';
+import {
+  createRouter,
+  createWebHistory,
+  type RouteLocationNormalized,
+  type RouteLocationRaw,
+  type Router,
+  type RouterHistory,
+} from 'vue-router';
 
 import { getSetupStatus, setUnauthorizedHandler } from './api/client';
-import { currentUser, loadUser } from './session';
+import { apiError, currentUser, loadUser } from './session';
 import DashboardView from './views/DashboardView.vue';
 import LoginView from './views/LoginView.vue';
 import NotFoundView from './views/NotFoundView.vue';
@@ -29,21 +36,32 @@ export function createAppRouter(history: RouterHistory) {
   });
 
   // Every route but setup and login needs a user; a fresh install goes to setup first.
+  // When the API can't answer, the navigation stops and App shows apiError.
   router.beforeEach(async (to) => {
-    if (to.meta.public) {
-      if (currentUser.value) return { name: 'dashboard' };
-      const { needed } = await getSetupStatus();
-      if (needed && to.name !== 'setup') return { name: 'setup' };
-      if (!needed && to.name === 'setup') return { name: 'login' };
-      return true;
+    try {
+      apiError.value = '';
+      return await guard(to);
+    } catch (e) {
+      apiError.value = e instanceof Error ? e.message : String(e);
+      return false;
     }
-    if (currentUser.value || (await loadUser())) return true;
-    const { needed } = await getSetupStatus();
-    if (needed) return { name: 'setup' };
-    return { name: 'login', query: to.fullPath === '/' ? {} : { redirect: to.fullPath } };
   });
 
   return router;
+}
+
+async function guard(to: RouteLocationNormalized): Promise<RouteLocationRaw | true> {
+  if (to.meta.public) {
+    if (currentUser.value) return { name: 'dashboard' };
+    const { needed } = await getSetupStatus();
+    if (needed && to.name !== 'setup') return { name: 'setup' };
+    if (!needed && to.name === 'setup') return { name: 'login' };
+    return true;
+  }
+  if (currentUser.value || (await loadUser())) return true;
+  const { needed } = await getSetupStatus();
+  if (needed) return { name: 'setup' };
+  return { name: 'login', query: to.fullPath === '/' ? {} : { redirect: to.fullPath } };
 }
 
 // redirectOnUnauthorized sends the user to login, and back afterwards, when an API call
