@@ -15,6 +15,7 @@ image without setting anything. A flag wins over its variable.
 | `-tls-key` | `NUDGE_TLS_KEY` | unset | PEM private key of `-tls-cert` |
 | `-public-url` | `NUDGE_PUBLIC_URL` | unset | URL browsers and agents reach the server at, `https://host[:port]` |
 | `-audit-retention-days` | `NUDGE_AUDIT_RETENTION_DAYS` | `90` | days the audit log keeps entries (at least 1); older ones are deleted hourly |
+| `-update-check-interval` | `NUDGE_UPDATE_CHECK_INTERVAL` | `6h` | how often every environment's images are checked for updates (a Go duration, at least `5m`; `0` turns the scheduled check off, the UI's check still works); the first check runs two minutes after start |
 | — | `NUDGE_ADMIN_PASSWORD` | unset | create the user `admin` with this password at start if no user exists |
 
 ## Data directory

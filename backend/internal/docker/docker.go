@@ -42,6 +42,7 @@ type Client interface {
 	ImagePull(ctx context.Context, ref string, opts client.ImagePullOptions) (client.ImagePullResponse, error)
 	ImageRemove(ctx context.Context, id string, opts client.ImageRemoveOptions) (client.ImageRemoveResult, error)
 	ImagePrune(ctx context.Context, opts client.ImagePruneOptions) (client.ImagePruneResult, error)
+	DistributionInspect(ctx context.Context, ref string, opts client.DistributionInspectOptions) (client.DistributionInspectResult, error)
 	VolumeList(ctx context.Context, opts client.VolumeListOptions) (client.VolumeListResult, error)
 	VolumeInspect(ctx context.Context, id string, opts client.VolumeInspectOptions) (client.VolumeInspectResult, error)
 	VolumeCreate(ctx context.Context, opts client.VolumeCreateOptions) (client.VolumeCreateResult, error)

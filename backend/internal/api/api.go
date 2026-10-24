@@ -17,6 +17,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/events"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/registries"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/stacks"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/updates"
 )
 
 // Options are the API's dependencies.
@@ -40,6 +41,8 @@ type Options struct {
 	// StackChecker returns compose's complaints about stack files, none if they're valid;
 	// nil means stacks can't be checked.
 	StackChecker func(ctx context.Context, f stacks.Files) ([]string, error)
+	// Updates checks images for newer versions; nil means update checks aren't available.
+	Updates *updates.Service
 	// Web serves every path outside /api/.
 	Web http.Handler
 	// PublicURL is the URL agents reach the server at (scheme://host[:port]); empty means
@@ -68,11 +71,15 @@ var publicRoutes = map[string]bool{
 // New returns the server's root handler: the API plus the web UI.
 func New(opts Options) http.Handler {
 	s := &server{
-		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries, audit: opts.Audit,
+		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries, audit: opts.Audit, updates: opts.Updates,
 		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, recreating: map[string]bool{},
 		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{},
 		checks: make(chan struct{}, maxStackChecks),
 		events: events.New(events.Options{Context: opts.Context, Log: opts.Log}),
+		done:   context.Background(),
+	}
+	if opts.Context != nil {
+		s.done = opts.Context
 	}
 	if s.stackRunner == nil {
 		s.stackRunner = func(environments.Environment) stacks.Runner { return nil }
@@ -138,6 +145,8 @@ func New(opts Options) http.Handler {
 	api.HandleFunc("DELETE /api/v1/environments/{env}/stacks/{id}", s.removeStack)
 	api.HandleFunc("POST /api/v1/environments/{env}/stacks/{id}/up", s.upStack)
 	api.HandleFunc("POST /api/v1/environments/{env}/stacks/{id}/down", s.downStack)
+	api.HandleFunc("GET /api/v1/environments/{env}/updates", s.listUpdates)
+	api.HandleFunc("POST /api/v1/environments/{env}/updates/check", s.checkUpdates)
 	api.HandleFunc("/api/", s.notFound)
 
 	mux := http.NewServeMux()
@@ -154,6 +163,9 @@ type server struct {
 
 	registries *registries.Service
 	audit      *audit.Service
+	updates    *updates.Service
+	// done ends at shutdown (Options.Context).
+	done context.Context
 	// events fans each environment's Docker events out to the clients watching it.
 	events *events.Hub
 

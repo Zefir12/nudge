@@ -50,6 +50,54 @@ describe('StacksView', () => {
     expect(wrapper.findAll('tbody tr')).toHaveLength(1);
   });
 
+  it('marks stacks with a container that has an update', async () => {
+    const ctr = {
+      image: 'nginx:1.29',
+      image_id: 'sha256:n1',
+      labels: { 'com.docker.compose.project': 'web' },
+    };
+    stubApi({
+      'GET /environments/1/stacks': {
+        body: [
+          { name: 'db', containers: 1, running: 1 },
+          { name: 'web', containers: 1, running: 1 },
+        ],
+      },
+      'GET /environments/1/containers': {
+        body: [
+          ctr,
+          { image: 'postgres:18', image_id: 'sha256:p1', labels: { 'com.docker.compose.project': 'db' } },
+        ],
+      },
+      'GET /environments/1/updates': {
+        body: [
+          {
+            image: 'nginx:1.29',
+            image_id: 'sha256:n1',
+            status: 'available',
+            local_digest: 'sha256:a',
+            remote_digest: 'sha256:b',
+            error: '',
+            checked_at: '2026-10-24T12:00:00Z',
+          },
+          {
+            image: 'postgres:18',
+            image_id: 'sha256:p1',
+            status: 'unknown',
+            local_digest: '',
+            remote_digest: '',
+            error: 'x',
+            checked_at: '2026-10-24T12:00:00Z',
+          },
+        ],
+      },
+    });
+    const wrapper = await mountView();
+    const rows = wrapper.findAll('tbody tr');
+    expect(rows[0]!.find('.update').exists()).toBe(false);
+    expect(rows[1]!.find('.update').exists()).toBe(true);
+  });
+
   it('says when there are none', async () => {
     stubApi({ 'GET /environments/1/stacks': { body: [] } });
     const wrapper = await mountView();

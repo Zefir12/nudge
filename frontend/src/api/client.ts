@@ -886,3 +886,21 @@ async function runStack(
   });
   return code;
 }
+
+// ImageUpdate is the last update check of an image as containers name it (image) and
+// the image ID they ran: available means the registry has a newer version of the tag.
+export interface ImageUpdate {
+  image: string;
+  image_id: string;
+  status: 'available' | 'current' | 'unknown';
+  local_digest: string;
+  remote_digest: string;
+  // error says why the status is unknown.
+  error: string;
+  checked_at: string;
+}
+
+export const listUpdates = (env: string) => apiFetch<ImageUpdate[]>(envPath(env, '/updates'));
+// checkUpdates checks the environment's images now; it can take a while.
+export const checkUpdates = (env: string) =>
+  apiFetch<ImageUpdate[]>(envPath(env, '/updates/check'), post({}));

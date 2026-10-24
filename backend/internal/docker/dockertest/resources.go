@@ -19,6 +19,8 @@ import (
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/api/types/volume"
 	"github.com/moby/moby/client"
+	"github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // Resources is what a Fake lists and inspects. Inspect calls look the ID up in the
@@ -63,6 +65,10 @@ type Resources struct {
 	Execs        chan *Exec
 	ExecErr      error
 	ExecExitCode int
+	// Distribution is the registry digest DistributionInspect answers for each image
+	// reference; a missing one is not found. DistributionErr fails every call.
+	Distribution    map[string]digest.Digest
+	DistributionErr error
 	// PruneReport is what ImagePrune answers.
 	PruneReport image.PruneReport
 	// VolumePruneReport and NetworkPruneReport are what VolumePrune and NetworkPrune
@@ -307,6 +313,40 @@ func (f *Fake) ImagePull(ctx context.Context, ref string, opts client.ImagePullO
 		return nil, err
 	}
 	return &pullResponse{ReadCloser: io.NopCloser(strings.NewReader("")), msgs: f.PullMessages}, nil
+}
+
+// DistributionInspect records the call and answers with Distribution[ref].
+func (f *Fake) DistributionInspect(ctx context.Context, ref string, opts client.DistributionInspectOptions) (client.DistributionInspectResult, error) {
+	if err := f.resourceErr(ctx); err != nil {
+		return client.DistributionInspectResult{}, err
+	}
+	f.mu.Lock()
+	f.distribution = append(f.distribution, DistributionCall{Ref: ref, Auth: opts.EncodedRegistryAuth})
+	f.mu.Unlock()
+	if f.DistributionErr != nil {
+		return client.DistributionInspectResult{}, f.DistributionErr
+	}
+	d, ok := f.Distribution[ref]
+	if !ok {
+		return client.DistributionInspectResult{}, cerrdefs.ErrNotFound
+	}
+	var res client.DistributionInspectResult
+	res.Descriptor = ocispec.Descriptor{MediaType: ocispec.MediaTypeImageIndex, Digest: d}
+	return res, nil
+}
+
+// DistributionCall is one DistributionInspect call: the reference and the
+// X-Registry-Auth value passed.
+type DistributionCall struct {
+	Ref  string
+	Auth string
+}
+
+// DistributionCalls returns every DistributionInspect call so far.
+func (f *Fake) DistributionCalls() []DistributionCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.distribution)
 }
 
 type pullResponse struct {

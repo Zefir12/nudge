@@ -2,17 +2,31 @@
 import { computed, ref } from 'vue';
 import { RouterLink } from 'vue-router';
 
-import { listStacks } from '../api/client';
+import { listContainers, listStacks } from '../api/client';
 import LoadState from '../components/LoadState.vue';
+import UpdateBadge from '../components/UpdateBadge.vue';
 import { useLiveReload } from '../composables/useEvents';
 import { useLoad } from '../composables/useLoad';
 import { useParams } from '../composables/params';
+import { useUpdates } from '../composables/useUpdates';
 import { matches } from '../format';
 
 const { env } = useParams();
 const { data, error, reload } = useLoad(env, listStacks);
-// Container events change the counts.
-useLiveReload(env, ['container'], reload);
+// A stack shows an update when one of its containers runs an image with one.
+const containers = useLoad(env, listContainers);
+// Container events change the counts and the images.
+useLiveReload(env, ['container'], () => Promise.all([reload(), containers.reload()]));
+const { updateFor } = useUpdates(env);
+const stackUpdates = computed(() => {
+  const out = new Map<string, NonNullable<ReturnType<typeof updateFor>>>();
+  for (const c of containers.data.value ?? []) {
+    const project = c.labels['com.docker.compose.project'];
+    const u = updateFor(c);
+    if (project && u && !out.has(project)) out.set(project, u);
+  }
+  return out;
+});
 
 const query = ref('');
 const shown = computed(() => (data.value ?? []).filter((s) => matches(query.value, s.name)));
@@ -53,6 +67,7 @@ const status = (s: { containers: number; running: number }) => {
             <tr v-for="s in shown" :key="s.name">
               <td class="break">
                 <RouterLink :to="{ name: 'stack', params: { env, id: s.name } }">{{ s.name }}</RouterLink>
+                <UpdateBadge v-if="stackUpdates.get(s.name)" :update="stackUpdates.get(s.name)!" />
               </td>
               <td>
                 <span class="status" :class="status(s).tone">{{ status(s).text }}</span>
