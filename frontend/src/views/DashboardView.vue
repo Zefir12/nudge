@@ -2,6 +2,7 @@
 import { RouterLink } from 'vue-router';
 
 import { getEnvironment, listNetworks, listVolumes } from '../api/client';
+import EnvironmentUsage from '../components/EnvironmentUsage.vue';
 import KeyValues from '../components/KeyValues.vue';
 import LoadState from '../components/LoadState.vue';
 import { useLoad } from '../composables/useLoad';
@@ -50,6 +51,7 @@ const { data, error, reload } = useLoad(env, async (id) => {
           <span>networks</span>
         </RouterLink>
       </section>
+      <EnvironmentUsage :env="env" />
       <section class="card">
         <h2>Host</h2>
         <KeyValues
@@ -89,6 +91,10 @@ const { data, error, reload } = useLoad(env, async (id) => {
 
 .count:hover {
   border-color: var(--accent);
+}
+
+.card + .card {
+  margin-top: 1rem;
 }
 
 .number {

@@ -28,7 +28,8 @@ type Fake struct {
 	actions []Action
 	created []string
 
-	logOptions []client.ContainerLogsOptions
+	logOptions   []client.ContainerLogsOptions
+	statsOptions []client.ContainerStatsOptions
 }
 
 // Ping counts the call and answers with PingErr.

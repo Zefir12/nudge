@@ -3,6 +3,7 @@ package dockertest
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -49,6 +50,13 @@ type Resources struct {
 	// LogsCancelled, if set, receives the container ID when a followed stream ends
 	// because its context was cancelled (buffer it: the send doesn't wait).
 	LogsCancelled chan string
+	// Stats are the samples ContainerStats answers for each container ID, as a stream of
+	// JSON objects; a missing ID is not found. A streamed one then stays open until its
+	// context is done and reports that on StatsCancelled (buffer it). StatsErr fails every
+	// ContainerStats call.
+	Stats          map[string][]container.StatsResponse
+	StatsErr       error
+	StatsCancelled chan string
 	// PruneReport is what ImagePrune answers.
 	PruneReport image.PruneReport
 	// VolumePruneReport and NetworkPruneReport are what VolumePrune and NetworkPrune
@@ -142,7 +150,7 @@ func (f *Fake) LogOptions() []client.ContainerLogsOptions {
 	return slices.Clone(f.logOptions)
 }
 
-// logStream reads its data, then, when following, blocks like a daemon waiting for
+// logStream (also a stats stream) reads its data, then, when following, blocks like a daemon waiting for
 // more output until ctx is done.
 type logStream struct {
 	ctx       context.Context
@@ -174,6 +182,38 @@ func (l *logStream) Read(p []byte) (int, error) {
 }
 
 func (l *logStream) Close() error { return nil }
+
+// ContainerStats records the options and streams Stats[id].
+func (f *Fake) ContainerStats(ctx context.Context, id string, opts client.ContainerStatsOptions) (client.ContainerStatsResult, error) {
+	if err := f.resourceErr(ctx); err != nil {
+		return client.ContainerStatsResult{}, err
+	}
+	if f.StatsErr != nil {
+		return client.ContainerStatsResult{}, f.StatsErr
+	}
+	samples, ok := f.Stats[id]
+	if !ok {
+		return client.ContainerStatsResult{}, cerrdefs.ErrNotFound
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	for _, s := range samples {
+		if err := enc.Encode(s); err != nil {
+			return client.ContainerStatsResult{}, err
+		}
+	}
+	f.mu.Lock()
+	f.statsOptions = append(f.statsOptions, opts)
+	f.mu.Unlock()
+	return client.ContainerStatsResult{Body: &logStream{ctx: ctx, r: &buf, follow: opts.Stream, id: id, cancelled: f.StatsCancelled}}, nil
+}
+
+// StatsOptions returns the options of every ContainerStats call so far.
+func (f *Fake) StatsOptions() []client.ContainerStatsOptions {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.statsOptions)
+}
 
 // Actions returns the recorded container actions, oldest first.
 func (f *Fake) Actions() []Action {
