@@ -70,6 +70,9 @@ lets patterns in `publicRoutes` through without either credential) to the API mu
   Docker HTTP API on each stream; api/connect_test.go has `newAgentTest` (enrolled agent,
   httptest server, `connect`/`waitOnline`) and `fakeDockerAPI`; environments/sessions_test.go
   has `newSession` (server side of a tunnel) for `ServeAgent` tests.
+- **End-to-end test:** internal/e2e wires the server like `serve` (`newServer`, httptest)
+  and runs a real `agent.Agent` against a fake Docker API on a unix socket (`fakeDocker`);
+  `conns.drop` cuts the agent's connections, `instantClock` skips the backoff.
 - **Test helpers:** `api.newTestHandler(t)` (api_test.go: empty database, returns the
   `auth.Service`; create a user with `CreateFirstUser`, get a cookie from a login via
   `do`/`sessionCookieOf` in auth_test.go); `auth.newTestService(t)` with `fakeClock`; `fstest.MapFS` for web
