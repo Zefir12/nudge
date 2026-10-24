@@ -17,6 +17,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker/dockertest"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/notify"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/registries"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/secretbox"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/store"
@@ -66,12 +67,19 @@ func newTestHandlerOpts(t *testing.T, connect environments.ConnectFunc, mod func
 	regs := registries.New(registries.Options{DB: st.DB(), Box: box, Now: func() time.Time { return now }})
 	aud := audit.New(audit.Options{DB: st.DB(), Now: func() time.Time { return now }})
 	upd := updates.New(updates.Options{DB: st.DB(), Envs: envs, Auth: regs.AuthFor})
-	opts := Options{Log: slog.New(slog.DiscardHandler), Version: "v1.0.0", Auth: svc, Envs: envs, Registries: regs, Audit: aud, Updates: upd, Web: web}
+	hooks := notify.New(notify.Options{DB: st.DB(), Box: box, Version: "v1.0.0", Clock: fixedClock{now}})
+	opts := Options{Log: slog.New(slog.DiscardHandler), Version: "v1.0.0", Auth: svc, Envs: envs, Registries: regs, Audit: aud, Updates: upd, Webhooks: hooks, Web: web}
 	if mod != nil {
 		mod(&opts)
 	}
 	return New(opts), svc, st.DB()
 }
+
+// fixedClock stands still at now; its waits never end.
+type fixedClock struct{ now time.Time }
+
+func (c fixedClock) Now() time.Time                     { return c.now }
+func (fixedClock) After(time.Duration) <-chan time.Time { return nil }
 
 func TestRoutes(t *testing.T) {
 	t.Parallel()

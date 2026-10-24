@@ -95,22 +95,25 @@ type Options struct {
 	// Auth returns the stored credentials for the registry a reference names.
 	Auth  func(ctx context.Context, ref string) (registries.Auth, bool, error)
 	Clock Clock
+	// Checked, if set, gets the results of each environment's check once they're saved.
+	Checked func(ctx context.Context, env environments.Environment, results []Result)
 }
 
 // Service checks environments for image updates and keeps the last results.
 type Service struct {
-	db    *sql.DB
-	log   *slog.Logger
-	envs  Envs
-	auth  func(ctx context.Context, ref string) (registries.Auth, bool, error)
-	clock Clock
+	db      *sql.DB
+	log     *slog.Logger
+	envs    Envs
+	auth    func(ctx context.Context, ref string) (registries.Auth, bool, error)
+	clock   Clock
+	checked func(ctx context.Context, env environments.Environment, results []Result)
 	// running holds a token while a check runs; one check at a time.
 	running chan struct{}
 }
 
 // New returns a Service.
 func New(opts Options) *Service {
-	s := &Service{db: opts.DB, log: opts.Log, envs: opts.Envs, auth: opts.Auth, clock: opts.Clock, running: make(chan struct{}, 1)}
+	s := &Service{db: opts.DB, log: opts.Log, envs: opts.Envs, auth: opts.Auth, clock: opts.Clock, checked: opts.Checked, running: make(chan struct{}, 1)}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
 	}
@@ -274,6 +277,9 @@ func (s *Service) check(ctx context.Context, env environments.Environment, r *ru
 	}
 	if err := s.save(ctx, env.ID, results); err != nil {
 		return nil, err
+	}
+	if s.checked != nil {
+		s.checked(ctx, env, results)
 	}
 	return results, nil
 }

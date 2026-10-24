@@ -23,9 +23,9 @@ image without setting anything. A flag wins over its variable.
 error if it cannot write there. The database is `<data>/nudge.db` (SQLite in WAL mode, so
 `nudge.db-wal` and `nudge.db-shm` sit next to it); schema migrations run at start.
 `<data>/secret.key` (32 random bytes, mode 0600, created at the first start) encrypts the
-registry passwords in the database. Back
-up the whole directory while the server is stopped; without its `secret.key` a restored
-database's registry passwords must be entered again. A database migrated by a newer nudge
+registry passwords and the notification webhooks' URLs and header values in the database.
+Back up the whole directory while the server is stopped; without its `secret.key` a
+restored database's registry passwords and webhooks must be entered again. A database migrated by a newer nudge
 is refused by an older one.
 
 ## Stacks

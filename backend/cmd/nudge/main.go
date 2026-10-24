@@ -28,6 +28,8 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/config"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/events"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/notify"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/registries"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/secretbox"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/stacks"
@@ -175,7 +177,13 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 	}()
 	wg.Go(func() { authSvc.RunCleanup(cleanupCtx, 10*time.Minute) })
 	wg.Go(func() { auditSvc.RunCleanup(cleanupCtx, time.Hour) })
-	upd := updates.New(updates.Options{DB: st.DB(), Log: log, Envs: envs, Auth: regs.AuthFor})
+	hooks := notify.New(notify.Options{DB: st.DB(), Box: box, Log: log, Version: version.Version})
+	wg.Go(func() { hooks.Run(cleanupCtx) })
+	// One Docker event stream per environment serves the UI and the notifications.
+	hub := events.New(events.Options{Context: ctx, Log: log})
+	watcher := notify.NewWatcher(notify.WatchOptions{Envs: envs, Hub: hub, Send: hooks, Log: log})
+	wg.Go(func() { watcher.Run(cleanupCtx) })
+	upd := updates.New(updates.Options{DB: st.DB(), Log: log, Envs: envs, Auth: regs.AuthFor, Checked: hooks.UpdatesChecked})
 	if cfg.UpdateCheckInterval > 0 {
 		// The first check waits for agents to reconnect after a restart.
 		wg.Go(func() { upd.Run(cleanupCtx, 2*time.Minute, cfg.UpdateCheckInterval) })
@@ -202,6 +210,8 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 			Registries: regs,
 			Audit:      auditSvc,
 			Updates:    upd,
+			Webhooks:   hooks,
+			Events:     hub,
 			Web:        web.Handler(web.Dist()),
 
 			StacksDir:   cfg.StacksDir,

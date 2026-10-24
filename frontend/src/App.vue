@@ -70,6 +70,7 @@ async function onLogout() {
         <RouterLink v-else to="/">Dashboard</RouterLink>
         <RouterLink to="/environments">Environments</RouterLink>
         <RouterLink to="/registries">Registries</RouterLink>
+        <RouterLink to="/webhooks">Notifications</RouterLink>
         <RouterLink to="/tokens">API tokens</RouterLink>
         <RouterLink to="/audit">Audit log</RouterLink>
       </nav>
