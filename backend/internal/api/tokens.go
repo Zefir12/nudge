@@ -62,6 +62,7 @@ func (s *server) createToken(w http.ResponseWriter, r *http.Request) {
 	if !s.decodeJSON(w, r, &req) {
 		return
 	}
+	auditTarget(r, req.Name)
 	t, secret, err := s.auth.CreateToken(r.Context(), u.ID, req.Name)
 	var inputErr *auth.InputError
 	switch {

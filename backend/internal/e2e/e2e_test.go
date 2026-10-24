@@ -27,6 +27,7 @@ import (
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/agent"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/api"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/audit"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
@@ -100,7 +101,7 @@ func newServer(t *testing.T) *httptest.Server {
 	if _, err := envs.EnsureLocal(ctx); err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(api.New(api.Options{Log: slog.New(slog.DiscardHandler), Auth: authSvc, Envs: envs, Web: http.NotFoundHandler()}))
+	srv := httptest.NewServer(api.New(api.Options{Log: slog.New(slog.DiscardHandler), Auth: authSvc, Envs: envs, Audit: audit.New(audit.Options{DB: st.DB()}), Web: http.NotFoundHandler()}))
 	t.Cleanup(srv.Close)
 	return srv
 }

@@ -372,6 +372,7 @@ func (s *server) createContainer(w http.ResponseWriter, r *http.Request) {
 	if !s.decodeJSON(w, r, &req) || !s.decodeSpec(w, &req.containerSpec) {
 		return
 	}
+	auditTarget(r, req.Name)
 	resp, ok := s.runDocker(context.WithoutCancel(r.Context()), w, r, "container create", "", createTimeout, func(ctx context.Context, c docker.Client) (any, error) {
 		cfg, hc, nc := &container.Config{}, &container.HostConfig{}, &network.NetworkingConfig{}
 		req.apply(cfg, hc, nc, nil)

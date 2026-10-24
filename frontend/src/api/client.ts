@@ -104,6 +104,44 @@ export const listTokens = () => apiFetch<Token[]>('/tokens');
 export const createToken = (name: string) => apiFetch<CreatedToken>('/tokens', post({ name }));
 export const deleteToken = (id: number) => apiFetch<void>(`/tokens/${id}`, { method: 'DELETE' });
 
+// AuditEntry is one write through the API; environment is an environment ID.
+export interface AuditEntry {
+  id: number;
+  time: string;
+  user: string;
+  token: string;
+  environment: string;
+  action: string;
+  target: string;
+  status: number;
+}
+
+export interface AuditPage {
+  entries: AuditEntry[];
+  // next is the before= cursor of the next page, null on the last one.
+  next: number | null;
+}
+
+export interface AuditFilter {
+  user?: string;
+  environment?: string;
+  q?: string;
+  failed?: boolean;
+  before?: number;
+  limit?: number;
+}
+
+export function listAudit(f: AuditFilter = {}) {
+  const q = new URLSearchParams();
+  if (f.user) q.set('user', f.user);
+  if (f.environment) q.set('environment', f.environment);
+  if (f.q) q.set('q', f.q);
+  if (f.failed !== undefined) q.set('failed', String(f.failed));
+  if (f.before) q.set('before', String(f.before));
+  if (f.limit) q.set('limit', String(f.limit));
+  return apiFetch<AuditPage>(`/audit${q.size ? `?${q}` : ''}`);
+}
+
 // Registry credentials for image pulls; the API never returns the password.
 export interface Registry {
   id: number;

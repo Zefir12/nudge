@@ -65,6 +65,7 @@ func (s *server) createRegistry(w http.ResponseWriter, r *http.Request) {
 	if !s.decodeJSON(w, r, &req) {
 		return
 	}
+	auditTarget(r, req.Name)
 	reg, err := s.registries.Create(r.Context(), registries.Input(req))
 	if s.registryError(w, "create registry", err) {
 		return

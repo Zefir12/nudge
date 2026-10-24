@@ -176,6 +176,7 @@ func (s *server) pullImage(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "image must be a reference such as nginx:1.27 or ghcr.io/org/app:tag")
 		return
 	}
+	auditTarget(r, ref)
 	env, c, ok := s.environment(w, r)
 	if !ok {
 		return
@@ -210,6 +211,7 @@ func (s *server) pullImage(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			if r.Context().Err() == nil {
 				s.log.Warn("image pull", "env", env.ID, "image", ref, "err", err)
+				auditStatus(r, http.StatusBadGateway)
 				send(pullEvent{Error: pullStreamError(err)})
 			}
 			return
@@ -219,6 +221,7 @@ func (s *server) pullImage(w http.ResponseWriter, r *http.Request) {
 		}
 		if msg.Error != nil {
 			s.log.Warn("image pull failed", "env", env.ID, "image", ref, "err", msg.Error.Message)
+			auditStatus(r, http.StatusBadGateway)
 			return
 		}
 	}

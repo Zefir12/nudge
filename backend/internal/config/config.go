@@ -37,6 +37,8 @@ type Server struct {
 	// PublicURL is the URL browsers and agents reach the server at, scheme://host[:port]
 	// without a trailing slash; empty means guess it from each request.
 	PublicURL string
+	// AuditRetentionDays is how long audit log entries are kept.
+	AuditRetentionDays int
 }
 
 // TLS reports whether the server serves HTTPS itself.
@@ -54,6 +56,11 @@ func LoadServer(args []string, getenv func(string) string, out io.Writer) (Serve
 	fs.StringVar(&c.TLSCert, "tls-cert", getenv("NUDGE_TLS_CERT"), "PEM certificate (chain) file; serve HTTPS with -tls-key (NUDGE_TLS_CERT)")
 	fs.StringVar(&c.TLSKey, "tls-key", getenv("NUDGE_TLS_KEY"), "PEM private key file for -tls-cert (NUDGE_TLS_KEY)")
 	fs.StringVar(&c.PublicURL, "public-url", getenv("NUDGE_PUBLIC_URL"), "URL browsers and agents reach the server at, e.g. https://nudge.example.net (NUDGE_PUBLIC_URL)")
+	retention, err := strconv.Atoi(envOr(getenv, "NUDGE_AUDIT_RETENTION_DAYS", "90"))
+	if err != nil {
+		return Server{}, fmt.Errorf("NUDGE_AUDIT_RETENTION_DAYS %q: want a number of days", getenv("NUDGE_AUDIT_RETENTION_DAYS"))
+	}
+	fs.IntVar(&c.AuditRetentionDays, "audit-retention-days", retention, "days to keep audit log entries (NUDGE_AUDIT_RETENTION_DAYS)")
 	level := fs.String("log-level", envOr(getenv, "NUDGE_LOG_LEVEL", "info"), "debug, info, warn or error (NUDGE_LOG_LEVEL)")
 	if err := fs.Parse(args); err != nil {
 		return Server{}, err
@@ -73,6 +80,9 @@ func LoadServer(args []string, getenv func(string) string, out io.Writer) (Serve
 	}
 	if c.DataDir == "" {
 		return Server{}, errors.New("data directory must not be empty")
+	}
+	if c.AuditRetentionDays < 1 {
+		return Server{}, errors.New("audit retention must be at least 1 day")
 	}
 	if (c.TLSCert == "") != (c.TLSKey == "") {
 		return Server{}, errors.New("set both -tls-cert and -tls-key (NUDGE_TLS_CERT, NUDGE_TLS_KEY) or neither")

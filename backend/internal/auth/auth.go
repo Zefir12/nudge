@@ -67,6 +67,9 @@ type User struct {
 	ID        int64
 	Username  string
 	CreatedAt time.Time
+	// Token is the name of the API token that authenticated the request; empty for a
+	// session.
+	Token string
 }
 
 // Session is a new login. Token is the cookie value; only its hash is stored.

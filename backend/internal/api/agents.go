@@ -47,6 +47,7 @@ func (s *server) createEnvironment(w http.ResponseWriter, r *http.Request) {
 	if !s.decodeJSON(w, r, &req) {
 		return
 	}
+	auditTarget(r, req.Name)
 	if req.Kind != environments.KindAgent {
 		s.writeError(w, http.StatusBadRequest, `kind must be "agent"; the local environment is created automatically`)
 		return
@@ -116,6 +117,8 @@ func (s *server) enrollAgent(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, "enroll agent", err)
 		return
 	}
+	auditEnvironment(r, strconv.FormatInt(creds.EnvironmentID, 10))
+	auditTarget(r, creds.AgentID)
 	s.log.Info("agent enrolled", "env", creds.EnvironmentID, "agent", creds.AgentID, "replaced_credentials", creds.Replaced, "ip", clientIP(r))
 	w.Header().Set("Cache-Control", "no-store")
 	s.writeJSON(w, http.StatusCreated, enrollResponse{EnvironmentID: creds.EnvironmentID, AgentID: creds.AgentID, AgentSecret: creds.Secret})

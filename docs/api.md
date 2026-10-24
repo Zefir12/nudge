@@ -27,6 +27,7 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | GET | `/api/v1/tokens` | session | the user's API tokens, oldest first; see below |
 | POST | `/api/v1/tokens` | session | create an API token `{"name": "ci"}`; `201` |
 | DELETE | `/api/v1/tokens/{id}` | session | revoke one of the user's tokens; `204`, or `404` |
+| GET | `/api/v1/audit` | session | the audit log, newest first, paged and filtered; see Audit log |
 | GET | `/api/v1/registries` | session | registry credentials for pulls, by name; see below |
 | POST | `/api/v1/registries` | session | add registry credentials; `201` |
 | GET | `/api/v1/registries/{id}` | session | one registry, without its password |
@@ -315,6 +316,31 @@ with `null`) the stored one is kept.
   daemon, on agent environments through the agent's tunnel to the remote host.
 - A pull reference may contain `@` only before a digest (`app@sha256:…`), so the
   credentials always match the host the daemon pulls from.
+
+### Audit log
+Every `POST`, `PUT`, `PATCH` and `DELETE` that reaches a route is recorded after it is
+answered, by one middleware: time, user, the API token's name (empty for a session), the
+environment ID from the path, the route pattern as `action`
+(`POST /api/v1/environments/{env}/containers/{id}/start`), the target (the path's `{id}`,
+or for creates the name from the body) and the HTTP status. Logins and logouts, reads,
+unknown routes and requests refused for lack of a session are not recorded; unauthenticated
+writes (setup, agent enrollment) only when they succeed.
+
+`GET /api/v1/audit` answers `{"entries": [{"id": 7, "time": "2026-10-24T12:00:00Z",
+"user": "admin", "token": "ci", "environment": "1", "action": "POST /api/v1/...",
+"target": "web", "status": 204}], "next": 6}`. Query parameters, all optional:
+
+- `limit`: page size, default 50, at most 200. `next` is `null` on the last page; pass it
+  as `before` to get the next one.
+- `user` (case-insensitive), `environment` (ID): exact matches.
+- `q`: substring of the action or target, case-insensitive.
+- `failed=true` only failed writes (status 400 and up), `failed=false` only the others.
+- `since`, `until`: RFC 3339 times, inclusive and exclusive.
+
+Entries are deleted after `NUDGE_AUDIT_RETENTION_DAYS` (default 90); see
+docs/config/server.md, and beyond the newest million. A pull that fails after its stream
+started (answered `200`) is recorded as `502`. Entries carry the time the request
+started.
 
 Docker errors (every environment route):
 - `404` unknown environment.

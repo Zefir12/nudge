@@ -145,6 +145,7 @@ func (s *server) createNetwork(w http.ResponseWriter, r *http.Request) {
 	if !s.decodeJSON(w, r, &req) {
 		return
 	}
+	auditTarget(r, req.Name)
 	if req.Name == "" {
 		s.writeError(w, http.StatusBadRequest, "name is required")
 		return

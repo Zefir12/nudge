@@ -136,10 +136,10 @@ func (s *Service) TokenUser(ctx context.Context, secret string) (User, error) {
 	var id, created int64
 	var lastUsed, expires sql.NullInt64
 	err := s.db.QueryRowContext(ctx, `
-		SELECT t.id, t.last_used_at, t.expires_at, u.id, u.username, u.created_at
+		SELECT t.id, t.name, t.last_used_at, t.expires_at, u.id, u.username, u.created_at
 		FROM api_tokens t JOIN users u ON u.id = t.user_id
 		WHERE t.token_hash = ?`, tokenHash(secret)).
-		Scan(&id, &lastUsed, &expires, &u.ID, &u.Username, &created)
+		Scan(&id, &u.Token, &lastUsed, &expires, &u.ID, &u.Username, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrNoSession
 	}

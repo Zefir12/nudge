@@ -63,6 +63,7 @@ func (s *server) setup(w http.ResponseWriter, r *http.Request) {
 	if !s.decodeJSON(w, r, &c) {
 		return
 	}
+	auditTarget(r, c.Username)
 	_, err := s.auth.CreateFirstUser(r.Context(), c.Username, c.Password)
 	var inputErr *auth.InputError
 	switch {
