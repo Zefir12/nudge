@@ -5,7 +5,7 @@ import { createMemoryHistory } from 'vue-router';
 import type { ContainerDetail } from '../api/client';
 import { createAppRouter } from '../router';
 import { currentUser } from '../session';
-import { admin, stubApi } from '../test-utils';
+import { admin, stubApi, stubSockets } from '../test-utils';
 import ContainerView from './ContainerView.vue';
 
 const detail: ContainerDetail = {
@@ -78,6 +78,7 @@ async function mountAt(path: string) {
 
 beforeEach(() => {
   currentUser.value = admin;
+  stubSockets();
 });
 
 afterEach(() => {

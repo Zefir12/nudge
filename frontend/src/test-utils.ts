@@ -25,3 +25,32 @@ export function stubApi(routes: Routes) {
 }
 
 export const admin = { id: 1, username: 'admin', created_at: '2026-10-24T12:00:00Z' };
+
+// FakeWebSocket stands in for the browser's WebSocket: stubSockets() installs it and
+// returns the sockets opened so far; a test sends frames with message().
+export class FakeWebSocket {
+  onmessage: ((ev: { data: string }) => void) | null = null;
+  onclose: (() => void) | null = null;
+  closed = false;
+  constructor(readonly url: string) {}
+  message(frame: unknown) {
+    this.onmessage?.({ data: JSON.stringify(frame) });
+  }
+  close() {
+    this.closed = true;
+  }
+}
+
+export function stubSockets(): FakeWebSocket[] {
+  const sockets: FakeWebSocket[] = [];
+  vi.stubGlobal(
+    'WebSocket',
+    class extends FakeWebSocket {
+      constructor(url: string) {
+        super(url);
+        sockets.push(this);
+      }
+    },
+  );
+  return sockets;
+}

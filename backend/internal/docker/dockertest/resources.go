@@ -1,12 +1,15 @@
 package dockertest
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"iter"
 	"slices"
 	"strings"
+	"sync"
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
@@ -38,6 +41,14 @@ type Resources struct {
 	// any.
 	PullMessages []jsonstream.Message
 	PullErr      error
+	// Logs is the raw stream ContainerLogs answers for each container ID (multiplexed,
+	// unless the container has a TTY); a missing ID is not found. A followed stream then
+	// stays open until its context is done. LogsErr fails every ContainerLogs call.
+	Logs    map[string][]byte
+	LogsErr error
+	// LogsCancelled, if set, receives the container ID when a followed stream ends
+	// because its context was cancelled (buffer it: the send doesn't wait).
+	LogsCancelled chan string
 	// PruneReport is what ImagePrune answers.
 	PruneReport image.PruneReport
 	// VolumePruneReport and NetworkPruneReport are what VolumePrune and NetworkPrune
@@ -105,6 +116,64 @@ func (f *Fake) ContainerKill(ctx context.Context, id string, opts client.Contain
 func (f *Fake) ContainerRemove(ctx context.Context, id string, opts client.ContainerRemoveOptions) (client.ContainerRemoveResult, error) {
 	return client.ContainerRemoveResult{}, f.action(ctx, "remove", id, opts)
 }
+
+// ContainerLogs records the options and streams Logs[id].
+func (f *Fake) ContainerLogs(ctx context.Context, id string, opts client.ContainerLogsOptions) (client.ContainerLogsResult, error) {
+	if err := f.resourceErr(ctx); err != nil {
+		return nil, err
+	}
+	if f.LogsErr != nil {
+		return nil, f.LogsErr
+	}
+	data, ok := f.Logs[id]
+	if !ok {
+		return nil, cerrdefs.ErrNotFound
+	}
+	f.mu.Lock()
+	f.logOptions = append(f.logOptions, opts)
+	f.mu.Unlock()
+	return &logStream{ctx: ctx, r: bytes.NewReader(data), follow: opts.Follow, id: id, cancelled: f.LogsCancelled}, nil
+}
+
+// LogOptions returns the options of every ContainerLogs call so far.
+func (f *Fake) LogOptions() []client.ContainerLogsOptions {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.logOptions)
+}
+
+// logStream reads its data, then, when following, blocks like a daemon waiting for
+// more output until ctx is done.
+type logStream struct {
+	ctx       context.Context
+	r         io.Reader
+	follow    bool
+	id        string
+	cancelled chan string
+	once      sync.Once
+}
+
+func (l *logStream) Read(p []byte) (int, error) {
+	if err := l.ctx.Err(); err != nil {
+		return 0, err
+	}
+	n, err := l.r.Read(p)
+	if n > 0 || !errors.Is(err, io.EOF) || !l.follow {
+		return n, err
+	}
+	<-l.ctx.Done()
+	l.once.Do(func() {
+		if l.cancelled != nil {
+			select {
+			case l.cancelled <- l.id:
+			default:
+			}
+		}
+	})
+	return 0, l.ctx.Err()
+}
+
+func (l *logStream) Close() error { return nil }
 
 // Actions returns the recorded container actions, oldest first.
 func (f *Fake) Actions() []Action {

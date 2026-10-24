@@ -424,6 +424,63 @@ export function removeContainer(env: string, id: string, opts: { force?: boolean
   return apiFetch<void>(envPath(env, `/containers/${enc(id)}${query}`), { method: 'DELETE' });
 }
 
+export interface LogLine {
+  stream: 'stdout' | 'stderr';
+  // time is the daemon's timestamp, when asked for.
+  time?: string;
+  line: string;
+}
+
+export interface LogOptions {
+  follow?: boolean;
+  tail?: number | 'all';
+  timestamps?: boolean;
+}
+
+export interface LogHandlers {
+  onLine: (l: LogLine) => void;
+  // onEnd runs once when the stream ends: without an error when the container stopped
+  // or every line asked for was sent.
+  onEnd: (error?: string) => void;
+}
+
+// streamLogs opens the container's log WebSocket (the browser sends the session cookie)
+// and returns a function that closes it, which also stops the stream on the Docker host.
+export function streamLogs(env: string, id: string, opts: LogOptions, h: LogHandlers): () => void {
+  const q = new URLSearchParams();
+  if (opts.follow) q.set('follow', 'true');
+  if (opts.timestamps) q.set('timestamps', 'true');
+  if (opts.tail !== undefined) q.set('tail', String(opts.tail));
+  const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const path = envPath(env, `/containers/${enc(id)}/logs`);
+  const ws = new WebSocket(`${scheme}//${location.host}/api/v1${path}?${q}`);
+  let ended = false;
+  const end = (error?: string) => {
+    if (ended) return;
+    ended = true;
+    h.onEnd(error);
+  };
+  ws.onmessage = (ev: MessageEvent<string>) => {
+    let m: Partial<LogLine> & { done?: boolean; error?: string };
+    try {
+      m = JSON.parse(ev.data) as typeof m;
+    } catch {
+      end('The log stream sent a malformed frame.');
+      ws.close();
+      return;
+    }
+    if (m.line !== undefined) h.onLine(m as LogLine);
+    else if (m.error) end(m.error);
+    else if (m.done) end();
+  };
+  // A refused upgrade (session expired, container gone) only shows as a close.
+  ws.onclose = () => end('The log stream closed unexpectedly.');
+  return () => {
+    ended = true;
+    ws.close();
+  };
+}
+
 // force also removes an image with several tags or used by stopped containers.
 export const removeImage = (env: string, id: string, force = false) =>
   apiFetch<void>(envPath(env, `/images/${enc(id)}${force ? '?force=true' : ''}`), { method: 'DELETE' });
