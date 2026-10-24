@@ -35,6 +35,9 @@ describe('EnvSwitcher', () => {
     await flushPromises();
     const options = wrapper.findAll('option:not([disabled])').map((o) => o.text());
     expect(options).toEqual(['local', 'nas (offline)']);
+    // The open environment's status; none outside an environment.
+    const badge = wrapper.find('.badge');
+    expect(badge.exists() && badge.text()).toBe(from.startsWith('/env/') ? 'online' : false);
     await wrapper.find('select').setValue('4');
     await flushPromises();
     expect(router.currentRoute.value.fullPath).toBe(want);
