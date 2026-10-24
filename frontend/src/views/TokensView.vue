@@ -158,22 +158,4 @@ onMounted(load);
   gap: 0.25rem;
   font-weight: 500;
 }
-
-table {
-  width: 100%;
-  margin-top: 1rem;
-  border-collapse: collapse;
-}
-
-th,
-td {
-  padding: 0.5rem;
-  text-align: left;
-  border-bottom: 1px solid var(--border);
-}
-
-th {
-  color: var(--muted);
-  font-weight: 500;
-}
 </style>

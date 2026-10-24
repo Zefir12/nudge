@@ -35,21 +35,24 @@ lets patterns in `publicRoutes` through without either credential) to the API mu
 ## Frontend (frontend/src)
 | Path | What |
 |---|---|
-| `main.ts`, `App.vue` | app setup, layout (sidebar with user + logout, `RouterView`; public routes render without it) |
+| `main.ts`, `App.vue` | app setup, layout (sidebar with `EnvSwitcher`, per-environment nav, user + logout, `RouterView`; public routes render without it) |
 | `router.ts` | routes (add one per view; `meta.public` for no-login pages), `createAppRouter` with the auth guard, `redirectOnUnauthorized` |
 | `session.ts` | `currentUser`, `loadUser`, `safeRedirect` |
+| `environments.ts` | `environments`, `loadEnvironments`, last used environment (localStorage), `defaultEnvironment` |
+| `composables/` | `useLoad(source, fetch)` (data/error/loading/reload, refetch on route change), `useParams()` (`:env`, `:id`) |
+| `format.ts` | `formatDate`, `formatBytes`, `shortId`, `formatPort`, `matches` (search) |
 | `api/client.ts` | `apiFetch<T>` (cookies, 401 → `setUnauthorizedHandler`), `ApiError`, one typed function per endpoint |
 | `test-utils.ts` | `stubApi({'GET /path': {status, body}})` fetch stub, `admin` user |
 | `views/` | one component per route |
-| `components/` | reusable pieces |
+| `components/` | reusable pieces: `LoadState` (loading/empty/error + retry), `KeyValues`, `StateBadge`, `EnvSwitcher` |
 | `style.css` | design tokens (CSS variables, light/dark) and base styles |
 
 ## Recipes
 - **New API endpoint:** handler method on `api.server` in a file per area
   (`internal/api/containers.go`), route in `api.New`, table test next to it with
   `httptest`, row in docs/api.md, typed function in `frontend/src/api/client.ts`.
-- **New view:** `frontend/src/views/FooView.vue`, route in `router.ts`, nav link in
-  `App.vue`, `FooView.test.ts` stubbing the API with `stubApi`; views that use the
+- **New view:** `frontend/src/views/FooView.vue`, route in `router.ts` (environment pages
+  under `/env/:env/...`, loading with `useLoad` + `LoadState`), nav link in `App.vue`, `FooView.test.ts` stubbing the API with `stubApi`; views that use the
   router mount with `createAppRouter(createMemoryHistory())` as a plugin.
 - **New config option:** field + flag in `internal/config`, test row in
   `config_test.go`, README table, docs/config/<topic>.md.
