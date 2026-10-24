@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"unicode"
 )
 
 // The control service is how the server deploys stacks on an agent: HTTP/1.1 over the
@@ -95,8 +96,10 @@ func (c *control) begin(w http.ResponseWriter, r *http.Request, v any) (string, 
 		return "", false
 	}
 	if v != nil {
-		body := http.MaxBytesReader(w, r.Body, maxControlBody)
-		if err := json.NewDecoder(body).Decode(v); err != nil && !errors.Is(err, io.EOF) {
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxControlBody))
+		// Server and agent are built together; an unknown field is a version mismatch.
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(v); err != nil && !errors.Is(err, io.EOF) {
 			controlError(w, http.StatusBadRequest, "invalid JSON body")
 			return "", false
 		}
@@ -344,7 +347,16 @@ func (rm *Remote) do(ctx context.Context, method, name, suffix string, body any)
 	case http.StatusServiceUnavailable:
 		return nil, ErrNoCompose
 	}
-	msg := strings.TrimSpace(ev.Error)
+	// The text ends up in the server's log: printable and short.
+	msg := strings.Map(func(r rune) rune {
+		if unicode.IsPrint(r) {
+			return r
+		}
+		return -1
+	}, strings.TrimSpace(ev.Error))
+	if len(msg) > 256 {
+		msg = strings.ToValidUTF8(msg[:256], "")
+	}
 	if msg == "" {
 		msg = resp.Status
 	}

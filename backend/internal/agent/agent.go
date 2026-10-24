@@ -25,6 +25,10 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/tunnel"
 )
 
+// maxControlStreams bounds the control requests the agent serves at once; each can run
+// a compose.
+const maxControlStreams = 16
+
 // Backoff bounds between connection attempts.
 const (
 	minBackoff = time.Second
@@ -77,7 +81,9 @@ type Agent struct {
 	log  *slog.Logger
 	// control hands control streams to the control handler's http.Server while Run runs.
 	control *streamListener
-	creds   *Credentials
+	// controlSlots holds a token per control stream being served.
+	controlSlots chan struct{}
+	creds        *Credentials
 	// enrolled is set once the join token was used in this process, so a refused
 	// credential doesn't spend it twice.
 	enrolled bool
@@ -116,6 +122,7 @@ var errUnauthorized = errors.New("unauthorized")
 func (a *Agent) Run(ctx context.Context) error {
 	if a.opts.Control != nil {
 		a.control = newStreamListener()
+		a.controlSlots = make(chan struct{}, maxControlStreams)
 		srv := &http.Server{
 			Handler: a.opts.Control, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: time.Minute,
 			ErrorLog: slog.NewLogLogger(a.log.Handler(), slog.LevelWarn),
@@ -123,7 +130,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		var wg sync.WaitGroup
 		wg.Go(func() { _ = srv.Serve(a.control) })
 		defer func() {
-			// Run's sessions are closed by now, which ends their control requests.
+			// runOnce returned, so serve waited for its sessions' control streams.
 			_ = srv.Close()
 			wg.Wait()
 		}()
@@ -336,6 +343,14 @@ func (a *Agent) handle(sess *tunnel.Session, stream net.Conn) {
 func (a *Agent) serveControl(sess *tunnel.Session, stream net.Conn) {
 	if a.control == nil {
 		a.log.Warn("agent: refusing a control stream: no control service")
+		_ = stream.Close()
+		return
+	}
+	select {
+	case a.controlSlots <- struct{}{}:
+		defer func() { <-a.controlSlots }()
+	default:
+		a.log.Warn("agent: refusing a control stream: too many at once", "max", maxControlStreams)
 		_ = stream.Close()
 		return
 	}

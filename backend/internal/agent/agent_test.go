@@ -609,3 +609,36 @@ func TestDockerUnreachableClosesStream(t *testing.T) {
 	default:
 	}
 }
+
+func TestControlStreamsBounded(t *testing.T) {
+	t.Parallel()
+	fs := newFakeServer(t)
+	entered, release := make(chan struct{}, maxControlStreams), make(chan struct{})
+	control := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		entered <- struct{}{}
+		<-release
+		_, _ = io.WriteString(w, "done")
+	})
+	start(t, fs, Options{JoinToken: joinToken, Control: control})
+	sess := fs.session(t)
+	var wg sync.WaitGroup
+	for range maxControlStreams {
+		wg.Go(func() { _ = getOn(t, sess.OpenControl, "/v1/stacks/web") })
+	}
+	for range maxControlStreams {
+		<-entered
+	}
+	// One more is refused while all slots are taken.
+	conn, err := sess.OpenControl(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	_, _ = io.WriteString(conn, "GET /v1/stacks HTTP/1.1\r\nHost: agent\r\n\r\n")
+	if n, err := conn.Read(make([]byte, 1)); n != 0 || !errors.Is(err, io.EOF) {
+		t.Errorf("read = %d, %v; want the extra stream closed", n, err)
+	}
+	_ = conn.Close()
+	close(release)
+	wg.Wait()
+}

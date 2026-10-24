@@ -430,7 +430,8 @@ is in the audit log with the stack's name as its target.
   the agent, and compose runs there, next to that host's daemon.
   The run is killed when the client disconnects and after one hour.
 - `DELETE .../stacks/{name}` deletes the files; `409` while the project has containers
-  (take it down first).
+  (take it down first). On an agent environment the agent's copy is deleted too, so the
+  agent must be online (`503` otherwise); an agent too old for stacks never had one.
 
 ### Registries
 `POST /api/v1/registries` with `{"name": "GitHub", "address": "ghcr.io", "username":
