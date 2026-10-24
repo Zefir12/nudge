@@ -71,6 +71,7 @@ func New(opts Options) http.Handler {
 		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries, audit: opts.Audit,
 		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, recreating: map[string]bool{},
 		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{},
+		checks: make(chan struct{}, maxStackChecks),
 		events: events.New(events.Options{Context: opts.Context, Log: opts.Log}),
 	}
 	if s.stackRunner == nil {
@@ -162,6 +163,8 @@ type server struct {
 	stacksDir    string
 	stackRunner  func(env environments.Environment) stacks.Runner
 	stackChecker func(ctx context.Context, f stacks.Files) ([]string, error)
+	// checks holds a slot per running stack check.
+	checks chan struct{}
 
 	mu sync.Mutex
 	// recreating holds "<env>/<container ID>" of the recreates running now.

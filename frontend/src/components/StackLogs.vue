@@ -78,6 +78,11 @@ function open() {
           onLine: (l) => {
             if (gen !== generation) return;
             pending.push({ ...l, n: next++, key: timeKey(l.time), service: c.service, tone });
+            // Frames don't run in a background tab; keep pending bounded meanwhile.
+            if (pending.length > maxLines) {
+              pending.splice(0, pending.length - maxLines);
+              dropped.value = true;
+            }
             if (!frame) frame = requestAnimationFrame(flush);
           },
           onEnd: (err) => {

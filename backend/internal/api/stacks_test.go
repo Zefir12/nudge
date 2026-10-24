@@ -511,3 +511,38 @@ func TestCheckStackUnavailable(t *testing.T) {
 		t.Errorf("check without a checker = %d %s, want 503", rec.Code, rec.Body)
 	}
 }
+
+func TestCheckStackBusy(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	started := make(chan struct{}, maxStackChecks)
+	et := newEnvTestOpts(t, map[string]*dockertest.Fake{"local": {}}, func(o *Options) {
+		o.StackChecker = func(context.Context, stacks.Files) ([]string, error) {
+			started <- struct{}{}
+			<-release
+			return []string{}, nil
+		}
+	})
+	check := func() int {
+		return do(t, et.h, request{method: "POST", path: "/api/v1/stacks/check", body: `{"compose":"services: {}"}`, cookie: et.cookie}).Code
+	}
+	codes := make(chan int, maxStackChecks)
+	for range maxStackChecks {
+		go func() { codes <- check() }()
+	}
+	for range maxStackChecks {
+		<-started
+	}
+	if code := check(); code != http.StatusTooManyRequests {
+		t.Errorf("check beyond the limit = %d, want 429", code)
+	}
+	close(release)
+	for range maxStackChecks {
+		if code := <-codes; code != http.StatusOK {
+			t.Errorf("check within the limit = %d, want 200", code)
+		}
+	}
+	if code := check(); code != http.StatusOK {
+		t.Errorf("check after the others finished = %d, want 200", code)
+	}
+}

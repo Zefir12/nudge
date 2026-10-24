@@ -206,6 +206,9 @@ func (s *server) getStack(w http.ResponseWriter, r *http.Request) {
 // checkStackTimeout bounds one compose config run.
 const checkStackTimeout = 30 * time.Second
 
+// maxStackChecks bounds the compose processes checks run at once.
+const maxStackChecks = 4
+
 // checkStack answers compose's complaints about stack files {"compose", "env"}:
 // {"errors": [...]}, empty if compose accepts them. It writes nothing.
 func (s *server) checkStack(w http.ResponseWriter, r *http.Request) {
@@ -215,6 +218,13 @@ func (s *server) checkStack(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.stackChecker == nil {
 		s.writeError(w, http.StatusServiceUnavailable, "stack checks are not available")
+		return
+	}
+	select {
+	case s.checks <- struct{}{}:
+		defer func() { <-s.checks }()
+	default:
+		s.writeError(w, http.StatusTooManyRequests, "too many stack checks at once, try again")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), checkStackTimeout)

@@ -23,6 +23,7 @@ func TestCheck(t *testing.T) {
 		{"valid", "", 0, nil, []string{}},
 		{"invalid", "DRAFT/compose.yaml: yaml: line 2: did not find expected key\n\n", 15, nil,
 			[]string{"compose.yaml: yaml: line 2: did not find expected key"}},
+		{"project directory", "env file DRAFT/x.env not found in DRAFT\n", 1, nil, []string{"env file x.env not found in ."}},
 		{"silent failure", "", 1, nil, []string{"compose rejected the file (exit code 1)"}},
 		{"many errors", strings.Repeat("bad\n", 50), 1, nil, slices.Repeat([]string{"bad"}, maxCheckErrors)},
 	}
@@ -37,7 +38,7 @@ func TestCheck(t *testing.T) {
 				compose, _ := os.ReadFile(c.Dir + "/" + ComposeFile)
 				env, _ := os.ReadFile(c.Dir + "/" + EnvFile)
 				files = Files{Compose: string(compose), Env: string(env)}
-				_, _ = c.Stderr.Write([]byte(strings.ReplaceAll(tt.stderr, "DRAFT/", c.Dir+"/")))
+				_, _ = c.Stderr.Write([]byte(strings.ReplaceAll(tt.stderr, "DRAFT", c.Dir)))
 				return tt.code, tt.err
 			}
 			c := NewChecker(CheckerOptions{TempDir: tmp, Compose: "/bin/compose", Exec: exec})

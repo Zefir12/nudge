@@ -412,8 +412,8 @@ is in the audit log with the stack's name as its target.
   without saving them or reaching a daemon and answers `{"errors": []}` if compose accepts
   them, else compose's messages (at most 20), such as `"yaml: line 3: mapping values are
   not allowed in this context"`. Files the compose file names relative to the stack
-  (`env_file`, bind sources) aren't checked. `400` empty compose, `503` the image has no
-  `docker-compose`. Not in the audit log.
+  (`env_file`, bind sources) aren't checked. `400` empty compose, `429` four checks are
+  already running, `503` the image has no `docker-compose`. Not in the audit log.
 - `POST .../stacks/{name}/up` runs `docker-compose up --detach --remove-orphans`, with
   `{"pull": true}` also `--pull always` (an update); the body may be left out.
   `POST .../stacks/{name}/down` runs `docker-compose down --remove-orphans`, with

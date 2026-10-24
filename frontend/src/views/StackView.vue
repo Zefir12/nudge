@@ -1,8 +1,16 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
-import { RouterLink, useRouter } from 'vue-router';
+import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
+import { onBeforeRouteLeave, RouterLink, useRouter } from 'vue-router';
 
-import { downStack, getStack, removeStack, updateStack, upStack, type StackLine } from '../api/client';
+import {
+  downStack,
+  getStack,
+  removeStack,
+  updateStack,
+  upStack,
+  type Stack,
+  type StackLine,
+} from '../api/client';
 import LoadState from '../components/LoadState.vue';
 import StackEditor from '../components/StackEditor.vue';
 import StackLogs from '../components/StackLogs.vue';
@@ -15,7 +23,7 @@ import { useParams } from '../composables/params';
 const { env, id } = useParams();
 const router = useRouter();
 const {
-  data: stack,
+  data: loaded,
   error,
   reload,
 } = useLoad(
@@ -24,6 +32,14 @@ const {
 );
 // Container events (a deploy, a crash, changes made elsewhere) refresh the services.
 useLiveReload(env, ['container'], reload);
+
+// stack is the last stack loaded: a live reload that fails shows an error but keeps the
+// page (and its log streams) instead of unmounting it.
+const stack = shallowRef<Stack | null>(null);
+watch(loaded, (s) => {
+  if (s) stack.value = s;
+});
+watch([env, id], () => (stack.value = null));
 
 // The editor's drafts follow the saved files until the user changes them.
 const compose = ref('');
@@ -39,6 +55,7 @@ watch(stack, (s) => {
   saved.value = { compose: s.compose, env: s.env };
 });
 watch([env, id], () => (saved.value = null));
+onBeforeRouteLeave(() => !dirty.value || window.confirm('Leave without saving your changes to the files?'));
 
 // rows lists every service: the ones the saved file declares, then any others that have
 // containers (removed from the file but still running), each with its containers.
@@ -75,10 +92,11 @@ async function run(
   const controller = new AbortController();
   abort = controller;
   try {
-    const code = await start(async (l) => {
+    const code = await start((l) => {
       output.value.push(l);
-      await nextTick();
-      if (outputBox.value) outputBox.value.scrollTop = outputBox.value.scrollHeight;
+      void nextTick(() => {
+        if (outputBox.value) outputBox.value.scrollTop = outputBox.value.scrollHeight;
+      });
     }, controller.signal);
     outcome.value = code === 0 ? `${label} finished.` : `${label} failed: compose exited with code ${code}.`;
   } catch (e) {
@@ -130,6 +148,9 @@ async function save(): Promise<boolean> {
     const files = { compose: compose.value, env: envFile.value };
     await updateStack(env.value, id.value, files);
     saved.value = files;
+    // A reload that started before the save would bring back the old files; a new one
+    // supersedes it.
+    void reload();
     saveResult.value = 'Saved. The running stack changes at its next deploy.';
     return true;
   } catch (e) {
@@ -156,8 +177,9 @@ function onRevert() {
 
 <template>
   <p><RouterLink :to="{ name: 'stacks', params: { env } }">← Stacks</RouterLink></p>
-  <LoadState :loading="!stack" :error="error" :ready="stack !== null" @retry="reload">
+  <LoadState :loading="!stack" :error="stack ? '' : error" :ready="stack !== null" @retry="reload">
     <template v-if="stack">
+      <p v-if="error" class="error" role="alert">Couldn't refresh the stack: {{ error }}</p>
       <h1>{{ stack.name }}</h1>
       <p class="muted">{{ stack.running }} of {{ stack.containers }} containers running</p>
       <div class="actions">

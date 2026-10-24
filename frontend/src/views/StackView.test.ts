@@ -117,6 +117,22 @@ describe('StackView', () => {
     expect(wrapper.text()).toContain('Deploy failed: compose exited with code 1.');
   });
 
+  it('keeps the page and its log streams when a refresh fails', async () => {
+    let gets = 0;
+    stubApi({
+      'GET /environments/1/stacks/web': () =>
+        ++gets === 1 ? { body: web() } : { status: 502, body: { error: 'environment unreachable' } },
+      'POST /environments/1/stacks/web/up': { raw: '{"exit_code":0}\n' },
+    });
+    const { wrapper } = await mountView();
+    await button(wrapper, 'Deploy').trigger('click');
+    await flushPromises();
+    expect(gets).toBe(2);
+    expect(wrapper.text()).toContain("Couldn't refresh the stack: environment unreachable");
+    expect(wrapper.findAll('tbody tr')).toHaveLength(4);
+    expect(sockets.filter((s) => s.url.includes('/logs')).every((s) => !s.closed)).toBe(true);
+  });
+
   it('takes the stack down after a confirm', async () => {
     let body: unknown;
     stubApi({

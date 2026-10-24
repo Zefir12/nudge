@@ -68,7 +68,7 @@ func (c *Checker) Check(ctx context.Context, f Files) ([]string, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		// Compose names the draft's path; it means nothing to the user.
-		text := strings.TrimSpace(strings.ReplaceAll(l.Text, dir+"/", ""))
+		text := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(l.Text, dir+"/", ""), dir, "."))
 		if text != "" && len(errs) < maxCheckErrors {
 			errs = append(errs, text)
 		}
