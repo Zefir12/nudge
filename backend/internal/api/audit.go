@@ -10,10 +10,12 @@ import (
 )
 
 // unaudited are writes the audit log leaves out: logins and logouts change no state
-// worth recording, and failed logins are logged and rate limited already.
+// worth recording, and failed logins are logged and rate limited already; a stack check
+// changes nothing.
 var unaudited = map[string]bool{
-	"POST /api/v1/auth/login":  true,
-	"POST /api/v1/auth/logout": true,
+	"POST /api/v1/auth/login":   true,
+	"POST /api/v1/auth/logout":  true,
+	"POST /api/v1/stacks/check": true,
 }
 
 // auditTimeout bounds recording an entry after the response.

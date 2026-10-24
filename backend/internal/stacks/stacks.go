@@ -26,6 +26,9 @@ const MaxNameLength = 63
 // ProjectLabel is the label compose puts on every container of a project.
 const ProjectLabel = "com.docker.compose.project"
 
+// ServiceLabel is the label compose puts on a container with its service's name.
+const ServiceLabel = "com.docker.compose.service"
+
 var (
 	// ErrNotFound means the stack has no directory.
 	ErrNotFound = errors.New("stack not found")

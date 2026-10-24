@@ -50,9 +50,10 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | POST | `/api/v1/environments/{env}/networks` | session | create a network; `201` |
 | POST | `/api/v1/environments/{env}/networks/prune` | session | remove custom networks no container uses |
 | DELETE | `/api/v1/environments/{env}/networks/{id}` | session | remove a network by ID or name; `204` |
+| POST | `/api/v1/stacks/check` | session | compose's errors for stack files `{"compose", "env"}` (writes nothing); see Stacks |
 | GET | `/api/v1/environments/{env}/stacks` | session | the environment's compose stacks with container counts; see Stacks |
 | POST | `/api/v1/environments/{env}/stacks` | session | create a stack `{"name", "compose", "env"}` (not deployed); `201` |
-| GET | `/api/v1/environments/{env}/stacks/{name}` | session | a stack's files and container counts |
+| GET | `/api/v1/environments/{env}/stacks/{name}` | session | a stack's files, container counts and containers by service |
 | PUT | `/api/v1/environments/{env}/stacks/{name}` | session | replace a stack's files `{"compose", "env"}`; `204` |
 | DELETE | `/api/v1/environments/{env}/stacks/{name}` | session | delete a stack that is down; `204` |
 | POST | `/api/v1/environments/{env}/stacks/{name}/up` | session | deploy `{"pull": bool}`, compose output as JSON lines |
@@ -398,12 +399,21 @@ is in the audit log with the stack's name as its target.
 - `GET .../stacks` answers `[{"name": "web", "containers": 2, "running": 1}]`, sorted by
   name; `containers` counts the project's containers in any state (by the
   `com.docker.compose.project` label), `running` those running. `GET .../stacks/{name}`
-  adds `"compose"` and `"env"`; `env` often holds secrets and is answered as stored.
+  adds `"compose"` and `"env"` (`env` often holds secrets and is answered as stored) and
+  `"services": [{"name": "app", "containers": [...]}]`, the project's containers grouped
+  by the `com.docker.compose.service` label, sorted by service and container name, each as
+  in the container list. A service shows up once it has a container.
 - `POST .../stacks` `{"name": "web", "compose": "services: ...", "env": "TAG=1\n"}` writes
   the files and answers `201` with the stack; `400` invalid name or empty compose, `409` a
   stack of that name exists. `PUT .../stacks/{name}` `{"compose", "env"}` replaces them
   (an empty `env` deletes `.env`); the running stack changes at its next `up`. The YAML
   isn't checked until a deploy.
+- `POST /api/v1/stacks/check` `{"compose", "env"}` runs `docker-compose config` on the files
+  without saving them or reaching a daemon and answers `{"errors": []}` if compose accepts
+  them, else compose's messages (at most 20), such as `"yaml: line 3: mapping values are
+  not allowed in this context"`. Files the compose file names relative to the stack
+  (`env_file`, bind sources) aren't checked. `400` empty compose, `503` the image has no
+  `docker-compose`. Not in the audit log.
 - `POST .../stacks/{name}/up` runs `docker-compose up --detach --remove-orphans`, with
   `{"pull": true}` also `--pull always` (an update); the body may be left out.
   `POST .../stacks/{name}/down` runs `docker-compose down --remove-orphans`, with

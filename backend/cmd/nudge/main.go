@@ -199,6 +199,8 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 
 			StacksDir:   cfg.StacksDir,
 			StackRunner: stackRunner(cfg),
+			// Drafts are checked next to the stacks, on the data volume.
+			StackChecker: stacks.NewChecker(stacks.CheckerOptions{TempDir: cfg.StacksDir, Compose: cfg.Compose}).Check,
 
 			PublicURL:     cfg.PublicURL,
 			SecureCookies: cfg.TLS() || strings.HasPrefix(cfg.PublicURL, "https://"),
