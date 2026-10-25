@@ -80,7 +80,8 @@ Add a row (and a section below, for anything non-trivial) with every new endpoin
 `{"id": 1, "username": "admin", "created_at": "2026-10-24T12:00:00Z"}` (`201` for setup,
 `200` for login) plus the session cookie: `HttpOnly`, `SameSite=Strict`, `Path=/`,
 `Secure` when nudge serves TLS or `NUDGE_PUBLIC_URL` is `https://`, else when the request
-came over HTTPS (with `X-Forwarded-Proto: https`),
+came over HTTPS (or with `X-Forwarded-Proto: https` from a trusted proxy,
+`NUDGE_TRUSTED_PROXIES`),
 valid for 7 days. `GET /api/v1/auth/me` returns the same user object.
 
 - Setup works only while no user exists, else `409`. The username is 1 to 64 bytes
@@ -91,8 +92,10 @@ valid for 7 days. `GET /api/v1/auth/me` returns the same user object.
 - Failed logins are limited to 20 per client IP (per /64 for IPv6) and 10 per existing
   username in 15 minutes; then login answers `429` with `Retry-After` (seconds), even
   with the right password. So ten wrong guesses lock that user out for up to 15 minutes;
-  sessions already open keep working. Behind a reverse proxy all clients share the
-  proxy's IP.
+  sessions already open keep working. The client IP is the TCP peer, or behind a
+  proxy listed in `NUDGE_TRUSTED_PROXIES` the client it names in `X-Forwarded-For`
+  (docs/config/server.md, Trusted proxies); behind an unlisted proxy all clients share
+  the proxy's IP.
 - When too many logins wait for a password check, login answers `503` with
   `Retry-After: 1`.
 
@@ -136,7 +139,7 @@ settings are not.
   `"join_token": {"token": "nudge_join_…", "expires_at": "...", "docker_run": "docker run -d … nudge:latest agent"}`.
   `docker_run` starts the agent on the remote host; its `NUDGE_SERVER_URL` is
   `NUDGE_PUBLIC_URL`, or when that is unset the request's host (`https://` over TLS or
-  with `X-Forwarded-Proto: https`). Names follow the token
+  with `X-Forwarded-Proto: https` from a trusted proxy). Names follow the token
   rules (1 to 64 bytes, no control characters or surrounding spaces); `409` if taken.
 - `POST /api/v1/environments/{env}/join-tokens` replaces the environment's join token
   (`201`, same object as `join_token`), for an agent that never enrolled or lost its

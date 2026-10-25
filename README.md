@@ -36,6 +36,7 @@ Flags with `NUDGE_*` environment variable fallbacks; the defaults work in the im
 | `DOCKER_HOST` | `unix:///var/run/docker.sock` | Docker API of the local environment |
 | `NUDGE_TLS_CERT`, `NUDGE_TLS_KEY` | unset | serve HTTPS with these PEM files (reloaded on change or SIGHUP) |
 | `NUDGE_PUBLIC_URL` | unset | URL browsers and agents reach the server at; used in the agent command |
+| `NUDGE_TRUSTED_PROXIES` | unset | reverse proxies (CIDRs or IPs) whose `X-Forwarded-For`/`-Proto` are trusted |
 | `NUDGE_AUDIT_RETENTION_DAYS` | `90` | days the audit log keeps entries |
 | `NUDGE_UPDATE_CHECK_INTERVAL` | `6h` | how often images are checked for updates, `0` for never |
 
