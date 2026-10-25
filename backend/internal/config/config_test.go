@@ -6,6 +6,8 @@ import (
 	"flag"
 	"io"
 	"log/slog"
+	"net/netip"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -87,6 +89,33 @@ func TestLoadServer(t *testing.T) {
 		{name: "update check interval negative", args: []string{"-update-check-interval", "-1h"}, wantErr: true},
 		{name: "update check interval not a duration", env: map[string]string{"NUDGE_UPDATE_CHECK_INTERVAL": "daily"}, wantErr: true},
 		{name: "audit retention not a number", env: map[string]string{"NUDGE_AUDIT_RETENTION_DAYS": "forever"}, wantErr: true},
+		{
+			name: "trusted proxies",
+			env:  map[string]string{"NUDGE_TRUSTED_PROXIES": " 172.16.0.0/12, 10.1.2.3 ,fd00::/8,::1,10.9.9.9/8,::ffff:192.0.2.1"},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour,
+				TrustedProxies: []netip.Prefix{
+					netip.MustParsePrefix("172.16.0.0/12"), netip.MustParsePrefix("10.1.2.3/32"), netip.MustParsePrefix("fd00::/8"),
+					netip.MustParsePrefix("::1/128"), netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("192.0.2.1/32"),
+				}},
+		},
+		{
+			name: "trusted proxies flag wins over env",
+			args: []string{"-trusted-proxies", "127.0.0.1"},
+			env:  map[string]string{"NUDGE_TRUSTED_PROXIES": "10.0.0.0/8"},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour,
+				TrustedProxies: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}},
+		},
+		{name: "trusted proxies not an address", env: map[string]string{"NUDGE_TRUSTED_PROXIES": "proxy.local"}, wantErr: true},
+		{name: "trusted proxies bad prefix length", args: []string{"-trusted-proxies", "10.0.0.0/33"}, wantErr: true},
+		{name: "trusted proxies empty entry", args: []string{"-trusted-proxies", "10.0.0.1,,10.0.0.2"}, wantErr: true},
+		{name: "trusted proxies with zone", args: []string{"-trusted-proxies", "fe80::1%eth0"}, wantErr: true},
+		{name: "trusted proxies IPv4-mapped prefix shorter than /96", args: []string{"-trusted-proxies", "::ffff:0.0.0.0/80"}, wantErr: true},
+		{
+			name: "trusted proxies IPv4-mapped /96 is all of IPv4",
+			args: []string{"-trusted-proxies", "::ffff:0.0.0.0/96"},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour,
+				TrustedProxies: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -96,7 +125,7 @@ func TestLoadServer(t *testing.T) {
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
 			}
-			if err == nil && got != tt.want {
+			if err == nil && !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("got %+v, want %+v", got, tt.want)
 			}
 		})

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
+	"os"
 	"strings"
 	"testing"
 
@@ -65,6 +67,11 @@ func TestCreateAgentEnvironment(t *testing.T) {
 			t.Errorf("docker run %q lacks %q", jt.DockerRun, want)
 		}
 	}
+	for _, want := range []string{"\n      NUDGE_SERVER_URL: \"http://example.com\"\n", "\n      NUDGE_JOIN_TOKEN: \"" + jt.Token + "\"\n", "image: " + agentImage + "\n    command: agent\n"} {
+		if !strings.Contains(jt.Compose, want) {
+			t.Errorf("compose %q lacks %q", jt.Compose, want)
+		}
+	}
 	if a := agentOf(t, et, got.ID); a == nil || a.Enrolled {
 		t.Errorf("listed agent = %+v, want not enrolled", a)
 	}
@@ -103,12 +110,13 @@ func TestDockerRunHost(t *testing.T) {
 	t.Parallel()
 	et := newEnvTest(t, map[string]*dockertest.Fake{"local": {}})
 	tests := []struct {
-		host string
-		want string
+		host        string
+		want        string
+		wantCompose string
 	}{
-		{host: "nudge.example.net:8443", want: "NUDGE_SERVER_URL=http://nudge.example.net:8443 "},
-		{host: "[::1]:8080", want: "NUDGE_SERVER_URL=http://[::1]:8080 "},
-		{host: "x;curl evil|sh", want: "NUDGE_SERVER_URL=https://<server> "},
+		{host: "nudge.example.net:8443", want: "NUDGE_SERVER_URL=http://nudge.example.net:8443 ", wantCompose: `NUDGE_SERVER_URL: "http://nudge.example.net:8443"` + "\n"},
+		{host: "[::1]:8080", want: "NUDGE_SERVER_URL=http://[::1]:8080 ", wantCompose: `NUDGE_SERVER_URL: "http://[::1]:8080"` + "\n"},
+		{host: "x;curl evil|sh", want: "NUDGE_SERVER_URL=https://<server> ", wantCompose: `NUDGE_SERVER_URL: "https://<server>"` + "\n"},
 	}
 	for _, tt := range tests {
 		r := httptest.NewRequest(http.MethodPost, "/api/v1/environments", strings.NewReader(fmt.Sprintf(`{"name":%q,"kind":"agent"}`, "env-"+tt.host)))
@@ -123,6 +131,46 @@ func TestDockerRunHost(t *testing.T) {
 		if !strings.Contains(got.JoinToken.DockerRun, tt.want) {
 			t.Errorf("%s: docker run %q, want %q", tt.host, got.JoinToken.DockerRun, tt.want)
 		}
+		if !strings.Contains(got.JoinToken.Compose, tt.wantCompose) {
+			t.Errorf("%s: compose %q, want %q", tt.host, got.JoinToken.Compose, tt.wantCompose)
+		}
+	}
+}
+
+func TestComposeValue(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		in, want string
+	}{
+		{in: "https://nudge.example.net", want: `"https://nudge.example.net"`},
+		{in: "nudge_join_abc", want: `"nudge_join_abc"`},
+		{in: "a$b${X}", want: `"a$$b$${X}"`},
+		{in: "a\"b\\c\nd: e # f", want: `"a\"b\\c\nd: e # f"`},
+		{in: "", want: `""`},
+	}
+	for _, tt := range tests {
+		if got := composeValue(tt.in); got != tt.want {
+			t.Errorf("composeValue(%q) = %s, want %s", tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestAgentComposeFile keeps deploy/agent.compose.yml and the generated compose file
+// the same, comments aside.
+func TestAgentComposeFile(t *testing.T) {
+	t.Parallel()
+	b, err := os.ReadFile("../../../deploy/agent.compose.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for line := range strings.Lines(string(b)) {
+		if !strings.HasPrefix(strings.TrimSpace(line), "#") {
+			lines = append(lines, line)
+		}
+	}
+	if got, want := strings.Join(lines, ""), agentCompose("https://nudge.example.net", "<from the UI>"); got != want {
+		t.Errorf("deploy/agent.compose.yml without comments =\n%s\nwant\n%s", got, want)
 	}
 }
 
@@ -184,7 +232,7 @@ func TestJoinTokenAndRevoke(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &jt); err != nil {
 		t.Fatal(err)
 	}
-	if jt.Token == created.JoinToken.Token || !strings.Contains(jt.DockerRun, jt.Token) {
+	if jt.Token == created.JoinToken.Token || !strings.Contains(jt.DockerRun, jt.Token) || !strings.Contains(jt.Compose, jt.Token) {
 		t.Errorf("join token = %+v, want a new one", jt)
 	}
 	if rec := enroll(t, et, created.JoinToken.Token); rec.Code != http.StatusUnauthorized {
@@ -235,6 +283,7 @@ func TestServerURL(t *testing.T) {
 		name      string
 		publicURL string
 		tls       bool
+		trusted   bool
 		proto     string
 		host      string
 		want      string
@@ -242,7 +291,8 @@ func TestServerURL(t *testing.T) {
 		{name: "public url wins", publicURL: "https://nudge.example.net", host: "10.0.0.5:8080", want: "https://nudge.example.net"},
 		{name: "plain http", host: "10.0.0.5:8080", want: "http://10.0.0.5:8080"},
 		{name: "own TLS", tls: true, host: "nudge.example.net", want: "https://nudge.example.net"},
-		{name: "TLS-terminating proxy", proto: "https", host: "nudge.example.net", want: "https://nudge.example.net"},
+		{name: "TLS-terminating proxy", trusted: true, proto: "https", host: "nudge.example.net", want: "https://nudge.example.net"},
+		{name: "X-Forwarded-Proto from an untrusted peer", proto: "https", host: "nudge.example.net", want: "http://nudge.example.net"},
 		{name: "unsafe host", host: "x;curl evil|sh", want: "https://<server>"},
 	}
 	for _, tt := range tests {
@@ -257,7 +307,11 @@ func TestServerURL(t *testing.T) {
 			if tt.proto != "" {
 				r.Header.Set("X-Forwarded-Proto", tt.proto)
 			}
-			if got := s.serverURL(r); got != tt.want {
+			var p proxies
+			if tt.trusted {
+				p = proxies{netip.MustParsePrefix("192.0.2.0/24")}
+			}
+			if got := s.serverURL(p.resolve(r)); got != tt.want {
 				t.Errorf("serverURL = %q, want %q", got, tt.want)
 			}
 		})

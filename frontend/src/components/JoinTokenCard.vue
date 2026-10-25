@@ -4,21 +4,26 @@ import { ref } from 'vue';
 import type { JoinToken } from '../api/client';
 import { formatDate } from '../format';
 
-// JoinTokenCard shows the command that starts an agent with a fresh join token. The token
-// is shown only once, so the card stays until the user dismisses it.
+// JoinTokenCard shows the command, and the same agent as a compose file, that start an
+// agent with a fresh join token. The token is shown only once, so the card stays until
+// the user dismisses it.
 defineProps<{ name: string; joinToken: JoinToken }>();
 const emit = defineEmits<{ done: [] }>();
 
-const copyState = ref<'' | 'copied' | 'failed'>('');
+type Snippet = 'command' | 'compose';
 
-async function onCopy(text: string) {
-  copyState.value = '';
+const copied = ref<Snippet | ''>('');
+const copyFailed = ref(false);
+
+async function onCopy(which: Snippet, text: string) {
+  copied.value = '';
+  copyFailed.value = false;
   try {
     await navigator.clipboard.writeText(text);
-    copyState.value = 'copied';
+    copied.value = which;
   } catch {
-    // No clipboard API (plain HTTP): the command stays selectable.
-    copyState.value = 'failed';
+    // No clipboard API (plain HTTP): the snippets stay selectable.
+    copyFailed.value = true;
   }
 }
 </script>
@@ -32,14 +37,24 @@ async function onCopy(text: string) {
     </p>
     <code class="command">{{ joinToken.docker_run }}</code>
     <div class="actions">
-      <button type="button" @click="onCopy(joinToken.docker_run)">
-        {{ copyState === 'copied' ? 'Copied' : 'Copy command' }}
+      <button type="button" @click="onCopy('command', joinToken.docker_run)">
+        {{ copied === 'command' ? 'Copied' : 'Copy command' }}
       </button>
+    </div>
+
+    <h3>Or with Docker Compose</h3>
+    <p>Save this as <code>compose.yaml</code> and run <code>docker compose up -d</code> next to it.</p>
+    <pre class="compose">{{ joinToken.compose }}</pre>
+    <div class="actions">
+      <button type="button" @click="onCopy('compose', joinToken.compose)">
+        {{ copied === 'compose' ? 'Copied' : 'Copy compose file' }}
+      </button>
+    </div>
+
+    <p v-if="copyFailed" class="muted">Copying is not available here: select the text and copy it.</p>
+    <div class="actions">
       <button type="button" @click="emit('done')">Done</button>
     </div>
-    <p v-if="copyState === 'failed'" class="muted">
-      Copying is not available here: select the command and copy it.
-    </p>
   </section>
 </template>
 
@@ -48,13 +63,22 @@ async function onCopy(text: string) {
   border-color: var(--accent);
 }
 
-.command {
+.command,
+.compose {
   display: block;
+  margin: 0;
   padding: 0.5rem 0.75rem;
   background: var(--bg);
   border-radius: var(--radius);
-  word-break: break-all;
   user-select: all;
+}
+
+.command {
+  word-break: break-all;
+}
+
+.compose {
+  overflow-x: auto;
 }
 
 .actions {

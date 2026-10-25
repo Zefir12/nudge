@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -105,7 +106,18 @@ func realMain(ctx context.Context, args []string, getenv func(string) string, st
 	}
 }
 
+// warnTrustedProxies warns about a trusted proxy prefix that covers every address: then
+// anyone can forge X-Forwarded-For and X-Forwarded-Proto.
+func warnTrustedProxies(log *slog.Logger, proxies []netip.Prefix) {
+	for _, p := range proxies {
+		if p.Bits() == 0 {
+			log.Warn("trusted proxies include every address: any client can forge X-Forwarded-For and X-Forwarded-Proto", "prefix", p.String())
+		}
+	}
+}
+
 func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error) {
+	warnTrustedProxies(log, cfg.TrustedProxies)
 	if err := prepareDataDir(cfg.DataDir); err != nil {
 		return err
 	}
@@ -224,12 +236,13 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 			Web:         web.Handler(web.Dist()),
 
 			StacksDir:   cfg.StacksDir,
-			StackRunner: stackRunner(cfg, envs),
+			StackRunner: stackRunner(cfg, envs, log),
 			// Drafts are checked next to the stacks, on the data volume.
 			StackChecker: stacks.NewChecker(stacks.CheckerOptions{TempDir: cfg.StacksDir, Compose: cfg.Compose}).Check,
 
-			PublicURL:     cfg.PublicURL,
-			SecureCookies: cfg.TLS() || strings.HasPrefix(cfg.PublicURL, "https://"),
+			PublicURL:      cfg.PublicURL,
+			SecureCookies:  cfg.TLS() || strings.HasPrefix(cfg.PublicURL, "https://"),
+			TrustedProxies: cfg.TrustedProxies,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
@@ -242,7 +255,7 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 
 	errc := make(chan error, 1)
 	go func() {
-		log.Info("listening", "addr", cfg.Addr, "tls", cfg.TLS(), "public_url", cfg.PublicURL, "version", version.Version)
+		log.Info("listening", "addr", cfg.Addr, "tls", cfg.TLS(), "public_url", cfg.PublicURL, "trusted_proxies", cfg.TrustedProxies, "version", version.Version)
 		if certLoader != nil {
 			errc <- srv.ListenAndServeTLS("", "")
 			return
@@ -305,7 +318,9 @@ func runAgent(ctx context.Context, cfg config.Agent, log *slog.Logger) error {
 
 // stackRunner deploys the local environment's stacks with compose here, and an agent
 // environment's through its agent's control service.
-func stackRunner(cfg config.Server, envs *environments.Service) func(environments.Environment) stacks.Runner {
+func stackRunner(cfg config.Server, envs *environments.Service, log *slog.Logger) func(environments.Environment) stacks.Runner {
+	// Up checks a local stack's binds against the mounts of nudge's own container.
+	self := stacks.SelfID(os.ReadFile, os.Hostname)
 	return func(env environments.Environment) stacks.Runner {
 		if env.Kind == environments.KindAgent {
 			return stacks.NewRemote(envs.ControlDialer(env.ID))
@@ -313,6 +328,8 @@ func stackRunner(cfg config.Server, envs *environments.Service) func(environment
 		return stacks.NewLocal(stacks.LocalOptions{
 			Dir:     stacks.NewDir(filepath.Join(cfg.StacksDir, strconv.FormatInt(env.ID, 10))),
 			Compose: cfg.Compose, DockerHost: cfg.DockerHost,
+			Mounts: stacks.ContainerMounts(self, func() (stacks.Inspector, error) { return envs.Client(env) }),
+			Log:    log.With("env", env.ID),
 		})
 	}
 }

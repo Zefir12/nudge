@@ -181,7 +181,7 @@ func TestDeployHookOwnership(t *testing.T) {
 	ctx := context.Background()
 	fake := &dockertest.Fake{Resources: dockertest.Resources{ContainerDetails: map[string]container.InspectResponse{"web": oldWeb()}}}
 	h, svc, db := newTestHandlerOpts(t, func(environments.Environment) (docker.Client, error) { return fake, nil }, func(o *Options) {
-		o.IsAdmin = func(u auth.User) bool { return u.Username == "admin" }
+		o.Admin = func(u auth.User) bool { return u.Username == "admin" }
 	})
 	admin, err := svc.CreateFirstUser(ctx, "admin", "longenough")
 	if err != nil {

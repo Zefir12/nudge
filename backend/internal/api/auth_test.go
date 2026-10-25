@@ -18,6 +18,8 @@ type request struct {
 	body    string
 	cookie  *http.Cookie
 	headers map[string]string
+	// remote is the TCP peer; empty means httptest's 192.0.2.1:1234.
+	remote string
 }
 
 func do(t *testing.T, h http.Handler, req request) *httptest.ResponseRecorder {
@@ -28,6 +30,9 @@ func do(t *testing.T, h http.Handler, req request) *httptest.ResponseRecorder {
 	}
 	for k, v := range req.headers {
 		r.Header.Set(k, v)
+	}
+	if req.remote != "" {
+		r.RemoteAddr = req.remote
 	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
@@ -105,15 +110,11 @@ func TestSetupAndLogin(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized || rec.Header().Get("Set-Cookie") != "" {
 		t.Errorf("bad login: %d %s", rec.Code, rec.Body)
 	}
-	rec = do(t, h, request{method: "POST", path: "/api/v1/auth/login", body: adminCreds,
-		headers: map[string]string{"X-Forwarded-Proto": "https"}})
+	rec = do(t, h, request{method: "POST", path: "/api/v1/auth/login", body: adminCreds})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("login: %d %s", rec.Code, rec.Body)
 	}
 	second := sessionCookieOf(t, rec)
-	if !second.Secure {
-		t.Error("cookie not Secure behind a TLS proxy")
-	}
 
 	// Logout ends only its own session and clears the cookie.
 	rec = do(t, h, request{method: "POST", path: "/api/v1/auth/logout", cookie: second})

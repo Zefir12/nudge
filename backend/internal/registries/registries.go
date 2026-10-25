@@ -1,6 +1,7 @@
 // Package registries stores the credentials nudge pulls images with. Passwords are
 // encrypted with a secretbox.Box (they must be sent to the daemon, so they can't be
-// hashed) and never leave the package except to authenticate a pull.
+// hashed) and never leave the package except to authenticate a pull or a browse of the
+// registry (Credentials).
 package registries
 
 import (
@@ -31,6 +32,18 @@ const (
 	maxName     = 64
 	maxUsername = 255
 	maxPassword = 4096
+	// MaxOwners bounds the Forgejo owners whose packages a registry lists.
+	MaxOwners = 20
+)
+
+// Kind is how nudge browses a registry: the Docker Registry v2 API alone, or Forgejo's
+// packages API on top of it.
+type Kind string
+
+// The registry kinds.
+const (
+	Generic Kind = "generic"
+	Forgejo Kind = "forgejo"
 )
 
 var (
@@ -40,6 +53,10 @@ var (
 	ErrTaken = errors.New("a registry with that name or address already exists")
 )
 
+// ErrPasswordRequired means an update changes where the credentials go without giving
+// a password, which would send the stored one to the new target.
+var ErrPasswordRequired error = &InputError{Msg: "password required when address, username or plain_http changes"}
+
 // InputError is a validation error whose message can be shown to the user.
 type InputError struct{ Msg string }
 
@@ -47,20 +64,29 @@ func (e *InputError) Error() string { return e.Msg }
 
 // Registry is a registry's stored credentials, without the password.
 type Registry struct {
-	ID        int64
-	Name      string
-	Address   string
-	Username  string
+	ID       int64
+	Name     string
+	Address  string
+	Username string
+	Kind     Kind
+	// Owners are the Forgejo users/orgs whose packages are listed; empty means Username.
+	Owners []string
+	// PlainHTTP allows talking to the registry without TLS.
+	PlainHTTP bool
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
 
-// Input creates or updates a registry. A nil Password keeps the current one on update.
+// Input creates or updates a registry. A nil Password keeps the current one on update;
+// an empty Kind is Generic.
 type Input struct {
-	Name     string
-	Address  string
-	Username string
-	Password *string
+	Name      string
+	Address   string
+	Username  string
+	Password  *string
+	Kind      Kind
+	Owners    []string
+	PlainHTTP bool
 }
 
 // Auth is what a pull from Address authenticates with.
@@ -102,7 +128,7 @@ func New(opts Options) *Service {
 	return &Service{db: opts.DB, box: opts.Box, now: now}
 }
 
-const selectRegistry = `SELECT id, name, address, username, created_at, updated_at FROM registries`
+const selectRegistry = `SELECT id, name, address, username, kind, owners, plain_http, created_at, updated_at FROM registries`
 
 // List returns every registry by name.
 func (s *Service) List(ctx context.Context) ([]Registry, error) {
@@ -144,9 +170,10 @@ func (s *Service) Create(ctx context.Context, in Input) (Registry, error) {
 		return Registry{}, err
 	}
 	now := s.now().Unix()
-	res, err := s.db.ExecContext(ctx, `INSERT INTO registries (name, address, username, password_enc, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
-		in.Name, address, in.Username, s.box.Seal([]byte(*in.Password), passwordPurpose), now, now)
+	res, err := s.db.ExecContext(ctx, `INSERT INTO registries (name, address, username, password_enc, kind, owners, plain_http, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
+		in.Name, address, in.Username, s.box.Seal([]byte(*in.Password), passwordPurpose),
+		in.Kind, strings.Join(in.Owners, ","), in.PlainHTTP, now, now)
 	if err != nil {
 		return Registry{}, fmt.Errorf("create registry: %w", err)
 	}
@@ -174,12 +201,20 @@ func (s *Service) Update(ctx context.Context, id int64, in Input) (Registry, err
 		return Registry{}, fmt.Errorf("update registry: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	var exists bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM registries WHERE id = ?)`, id).Scan(&exists); err != nil {
+	var oldAddress, oldUsername string
+	var oldPlainHTTP bool
+	err = tx.QueryRowContext(ctx, `SELECT address, username, plain_http FROM registries WHERE id = ?`, id).
+		Scan(&oldAddress, &oldUsername, &oldPlainHTTP)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Registry{}, ErrNotFound
+	}
+	if err != nil {
 		return Registry{}, fmt.Errorf("update registry: %w", err)
 	}
-	if !exists {
-		return Registry{}, ErrNotFound
+	// The stored password only goes where it went before: pointing the registry
+	// elsewhere (or over plain HTTP) without a new one would hand it to that host.
+	if in.Password == nil && (address != oldAddress || in.Username != oldUsername || in.PlainHTTP != oldPlainHTTP) {
+		return Registry{}, ErrPasswordRequired
 	}
 	var taken bool
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM registries WHERE id != ? AND (name = ? OR address = ?))`,
@@ -191,11 +226,14 @@ func (s *Service) Update(ctx context.Context, id int64, in Input) (Registry, err
 	}
 	now := s.now().Unix()
 	if in.Password != nil {
-		_, err = tx.ExecContext(ctx, `UPDATE registries SET name = ?, address = ?, username = ?, password_enc = ?, updated_at = ? WHERE id = ?`,
-			in.Name, address, in.Username, s.box.Seal([]byte(*in.Password), passwordPurpose), now, id)
+		_, err = tx.ExecContext(ctx, `UPDATE registries SET name = ?, address = ?, username = ?, kind = ?, owners = ?,
+			plain_http = ?, password_enc = ?, updated_at = ? WHERE id = ?`,
+			in.Name, address, in.Username, in.Kind, strings.Join(in.Owners, ","), in.PlainHTTP,
+			s.box.Seal([]byte(*in.Password), passwordPurpose), now, id)
 	} else {
-		_, err = tx.ExecContext(ctx, `UPDATE registries SET name = ?, address = ?, username = ?, updated_at = ? WHERE id = ?`,
-			in.Name, address, in.Username, now, id)
+		_, err = tx.ExecContext(ctx, `UPDATE registries SET name = ?, address = ?, username = ?, kind = ?, owners = ?,
+			plain_http = ?, updated_at = ? WHERE id = ?`,
+			in.Name, address, in.Username, in.Kind, strings.Join(in.Owners, ","), in.PlainHTTP, now, id)
 	}
 	if err != nil {
 		return Registry{}, fmt.Errorf("update registry: %w", err)
@@ -220,6 +258,27 @@ func (s *Service) Delete(ctx context.Context, id int64) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// Credentials returns the registry with id and its password, for browsing it.
+func (s *Service) Credentials(ctx context.Context, id int64) (Registry, string, error) {
+	r, err := s.Get(ctx, id)
+	if err != nil {
+		return Registry{}, "", err
+	}
+	var sealed []byte
+	err = s.db.QueryRowContext(ctx, `SELECT password_enc FROM registries WHERE id = ?`, id).Scan(&sealed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Registry{}, "", ErrNotFound
+	}
+	if err != nil {
+		return Registry{}, "", fmt.Errorf("registry credentials %d: %w", id, err)
+	}
+	password, err := s.box.Open(sealed, passwordPurpose)
+	if err != nil {
+		return Registry{}, "", fmt.Errorf("registry credentials %d: %w", id, err)
+	}
+	return r, string(password), nil
 }
 
 // AuthFor returns the credentials for the registry an image reference names, and false
@@ -291,7 +350,49 @@ func validate(in *Input, create bool) (string, error) {
 	if in.Password != nil && (*in.Password == "" || len(*in.Password) > maxPassword) {
 		return "", &InputError{Msg: fmt.Sprintf("password must be 1 to %d bytes", maxPassword)}
 	}
+	if err := validKind(in); err != nil {
+		return "", err
+	}
 	return NormalizeAddress(in.Address)
+}
+
+// forgejoName matches a Forgejo user or organization name.
+var forgejoName = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9_.-]{0,38}[A-Za-z0-9])?$`)
+
+// ValidOwner reports whether name is a Forgejo user or organization name, safe to put
+// into a URL path.
+func ValidOwner(name string) bool {
+	return forgejoName.MatchString(name) && !strings.Contains(name, "..")
+}
+
+// validKind checks in's Kind and Owners, defaulting the kind and dropping duplicate owners.
+func validKind(in *Input) error {
+	switch in.Kind {
+	case "":
+		in.Kind = Generic
+	case Generic, Forgejo:
+	default:
+		return &InputError{Msg: "kind must be generic or forgejo"}
+	}
+	if len(in.Owners) > 0 && in.Kind != Forgejo {
+		return &InputError{Msg: "owners only apply to forgejo registries"}
+	}
+	if len(in.Owners) > MaxOwners {
+		return &InputError{Msg: fmt.Sprintf("at most %d owners", MaxOwners)}
+	}
+	seen := map[string]bool{}
+	owners := make([]string, 0, len(in.Owners))
+	for _, o := range in.Owners {
+		if !ValidOwner(o) {
+			return &InputError{Msg: "owners must be Forgejo user or organization names"}
+		}
+		if key := strings.ToLower(o); !seen[key] {
+			seen[key] = true
+			owners = append(owners, o)
+		}
+	}
+	in.Owners = owners
+	return nil
 }
 
 func validText(field, s string, maxLen int) error {
@@ -309,8 +410,13 @@ type scanner interface{ Scan(dest ...any) error }
 func scan(row scanner) (Registry, error) {
 	var r Registry
 	var created, updated int64
-	if err := row.Scan(&r.ID, &r.Name, &r.Address, &r.Username, &created, &updated); err != nil {
+	var owners string
+	if err := row.Scan(&r.ID, &r.Name, &r.Address, &r.Username, &r.Kind, &owners, &r.PlainHTTP, &created, &updated); err != nil {
 		return Registry{}, err
+	}
+	r.Owners = []string{}
+	if owners != "" {
+		r.Owners = strings.Split(owners, ",")
 	}
 	r.CreatedAt = time.Unix(created, 0).UTC()
 	r.UpdatedAt = time.Unix(updated, 0).UTC()

@@ -223,6 +223,8 @@ func TestStackUpDown(t *testing.T) {
 		call       string
 		want       []stackEvent
 		auditCode  int
+		// errContains is part of the JSON error, if set.
+		errContains string
 	}{
 		{
 			name: "up", path: "/web/up",
@@ -256,6 +258,15 @@ func TestStackUpDown(t *testing.T) {
 			name: "no compose", path: "/web/up", result: runResult{err: fmt.Errorf("compose up web: %w", stacks.ErrNoCompose)},
 			code: http.StatusServiceUnavailable, call: "up web pull=false", auditCode: http.StatusServiceUnavailable,
 		},
+		{
+			name: "binds can't be mounted", path: "/web/up",
+			result: runResult{err: &stacks.BindError{Source: "./data", Path: "/data/stacks/1/web/data",
+				Mount: &stacks.Mount{Type: "volume", Name: "nudge-data", Destination: "/data"}}},
+			code: http.StatusConflict, call: "up web pull=false", auditCode: http.StatusConflict,
+			errContains: `./data can't be deployed: the daemon takes /data/stacks/1/web/data from the host, ` +
+				`but nudge has it from the volume nudge-data mounted at /data; ` +
+				`mount the stacks directory at the same path on the host and set NUDGE_STACKS_DIR to it`,
+		},
 		{name: "missing stack", path: "/nope/up", code: http.StatusNotFound, auditCode: http.StatusNotFound},
 		{name: "bad body", path: "/web/up", body: `{"pull":"yes"}`, code: http.StatusBadRequest, auditCode: http.StatusBadRequest},
 	}
@@ -270,6 +281,9 @@ func TestStackUpDown(t *testing.T) {
 			code, body := st.do(t, "POST", "local", tt.path, tt.body)
 			if code != tt.code {
 				t.Fatalf("POST %s = %d %s, want %d", tt.path, code, body, tt.code)
+			}
+			if tt.errContains != "" && !strings.Contains(body, tt.errContains) {
+				t.Errorf("body = %s, want an error with %q", body, tt.errContains)
 			}
 			if tt.want != nil {
 				if got := stackEvents(t, body); !reflect.DeepEqual(got, tt.want) {
