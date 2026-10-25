@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
-	"net"
 	"net/http"
-	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -168,30 +166,4 @@ func bearerToken(r *http.Request) (string, bool) {
 		return "", false
 	}
 	return token, true
-}
-
-// isTLS reports whether the browser reached us over HTTPS, directly or through a
-// TLS-terminating proxy. A forged X-Forwarded-Proto only sets Secure on a cookie the
-// sender gets back, so it is safe to trust here.
-func isTLS(r *http.Request) bool {
-	return r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
-}
-
-// clientIP is the peer address, as its /64 for IPv6 (one client usually holds a whole
-// /64). Forwarded headers are ignored: they are forgeable, so behind a reverse proxy
-// every client shares the proxy's rate limit.
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	addr, err := netip.ParseAddr(host)
-	if err != nil {
-		return host
-	}
-	addr = addr.Unmap()
-	if addr.Is4() {
-		return addr.String()
-	}
-	return netip.PrefixFrom(addr.WithZone(""), 64).Masked().String()
 }

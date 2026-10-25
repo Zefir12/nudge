@@ -14,6 +14,7 @@ image without setting anything. A flag wins over its variable.
 | `-tls-cert` | `NUDGE_TLS_CERT` | unset | PEM certificate (chain); with `-tls-key` the server speaks HTTPS only |
 | `-tls-key` | `NUDGE_TLS_KEY` | unset | PEM private key of `-tls-cert` |
 | `-public-url` | `NUDGE_PUBLIC_URL` | unset | URL browsers and agents reach the server at, `https://host[:port]` |
+| `-trusted-proxies` | `NUDGE_TRUSTED_PROXIES` | unset | comma-separated CIDRs or IPs of reverse proxies whose `X-Forwarded-For` and `X-Forwarded-Proto` are trusted (see Reverse proxy) |
 | `-audit-retention-days` | `NUDGE_AUDIT_RETENTION_DAYS` | `90` | days the audit log keeps entries (at least 1); older ones are deleted hourly |
 | `-update-check-interval` | `NUDGE_UPDATE_CHECK_INTERVAL` | `6h` | how often every environment's images are checked for updates (a Go duration, at least `5m`; `0` turns the scheduled check off, the UI's check still works); the first check runs two minutes after start |
 | — | `NUDGE_ADMIN_PASSWORD` | unset | create the user `admin` with this password at start if no user exists |
@@ -83,7 +84,7 @@ docker run -d --name nudge -p 443:8080 \
 the root). It goes into the `docker run` command "Add environment" shows, so agents dial
 the right address even when you opened the UI through another one (an IP, an SSH
 tunnel). Unset, nudge uses the host of each request, with `https://` when the request
-came over TLS or with `X-Forwarded-Proto: https`.
+came over TLS or with `X-Forwarded-Proto: https` from a trusted proxy.
 
 An `https://` public URL, like serving TLS, also marks the session cookie `Secure` on
 every response, so the UI must then be opened over HTTPS: a browser on plain HTTP (the
@@ -93,7 +94,8 @@ proxy bypassed, straight to port 8080) drops the cookie and login fails.
 Run nudge on plain HTTP on a private network and let the proxy terminate TLS. The proxy
 must:
 - pass the `Host` header through unchanged (cross-origin writes are checked against it),
-- set `X-Forwarded-Proto: https` (for `Secure` cookies when no public URL is set),
+- set `X-Forwarded-For` and `X-Forwarded-Proto` (both only count from a trusted proxy,
+  see below),
 - forward WebSocket upgrades on `/api/v1/agents/connect` (and the log, exec and event
   streams), with no read timeout shorter than a few minutes: the agent tunnel is one
   long-lived request kept alive by pings every 15 s.
@@ -114,6 +116,7 @@ location / {
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection $connection_upgrade;  # map $http_upgrade, see nginx docs
     proxy_read_timeout 1h;
@@ -121,14 +124,35 @@ location / {
 }
 ```
 
-Set `NUDGE_PUBLIC_URL=https://nudge.example.net` as well. Behind a proxy all clients
-share its IP for the login rate limit (see docs/api.md).
+Set `NUDGE_PUBLIC_URL=https://nudge.example.net` as well.
+
+### Trusted proxies
+`X-Forwarded-For` and `X-Forwarded-Proto` are only believed when the TCP peer is in
+`NUDGE_TRUSTED_PROXIES`, a comma-separated list of CIDRs or single IPs (IPv4 or IPv6),
+e.g. `NUDGE_TRUSTED_PROXIES=172.16.0.0/12` for a proxy on a Docker network, or the
+proxy container's fixed IP. From any other peer both headers are ignored, as anyone can
+send them. Unset (the default), nudge trusts no proxy:
+
+- the client IP (login rate limit, logs) is the TCP peer, so behind a proxy all clients
+  share the proxy's IP and its failed-login budget (see docs/api.md);
+- `X-Forwarded-Proto` is ignored, so set `NUDGE_PUBLIC_URL=https://…` for `Secure`
+  cookies and `https://` agent commands.
+
+From a trusted peer, the client is the right-most `X-Forwarded-For` entry that is not a
+trusted proxy (entries further left were sent by the client and can be forged), so list
+every proxy in a chain (CDN, load balancer, Traefik) that adds an entry. If every entry
+is a trusted proxy, the left-most is the client; a malformed entry ends the search at the
+last trusted hop. `X-Forwarded-Proto: https` (its first value in a list) then counts as
+HTTPS. IPv6 clients are still keyed by their /64. The proxy must append the peer it saw
+to `X-Forwarded-For` (Caddy and Traefik do by default, nginx with the line in the example
+above). Don't trust a range that untrusted clients can connect from (`0.0.0.0/0` makes
+every forged header count; nudge logs a warning at start for `0.0.0.0/0` and `::/0`). IPv4-mapped prefixes (`::ffff:a.b.c.d/n`) need at least /96. The PROXY protocol is not supported.
 
 ## Sessions
 Logins last 7 days (a cookie `nudge_session`; the database keeps only its SHA-256).
 Expired sessions are deleted on use and every 10 minutes. The cookie is `Secure` when nudge
 serves TLS or `NUDGE_PUBLIC_URL` is `https://`, else only when the browser uses HTTPS
-through a proxy that sets `X-Forwarded-Proto: https`. Writes from other origins are refused. Failed logins are
+through a trusted proxy that sets `X-Forwarded-Proto: https`. Writes from other origins are refused. Failed logins are
 rate-limited per client IP and per username (see docs/api.md).
 
 ## Docker access
