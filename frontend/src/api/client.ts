@@ -167,6 +167,43 @@ export const updateRegistry = (id: number, r: RegistryInput) =>
   apiFetch<Registry>(`/registries/${id}`, { method: 'PUT', body: JSON.stringify(r) });
 export const deleteRegistry = (id: number) => apiFetch<void>(`/registries/${id}`, { method: 'DELETE' });
 
+// A notification webhook; the API never returns the URL's path or the header value.
+export interface Webhook {
+  id: number;
+  name: string;
+  // endpoint is the URL's scheme and host.
+  endpoint: string;
+  header_name: string;
+  enabled: boolean;
+  last_sent_at: string | null;
+  last_error: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// WebhookInput creates or updates a webhook; on update a missing url or header_value
+// keeps the stored one, and an empty header_name sends no header.
+export interface WebhookInput {
+  name: string;
+  url?: string;
+  header_name: string;
+  header_value?: string;
+  enabled: boolean;
+}
+
+// WebhookTest is the outcome of a test notification.
+export interface WebhookTest {
+  ok: boolean;
+  error?: string;
+}
+
+export const listWebhooks = () => apiFetch<Webhook[]>('/webhooks');
+export const createWebhook = (w: WebhookInput) => apiFetch<Webhook>('/webhooks', post(w));
+export const updateWebhook = (id: number, w: WebhookInput) =>
+  apiFetch<Webhook>(`/webhooks/${id}`, { method: 'PUT', body: JSON.stringify(w) });
+export const deleteWebhook = (id: number) => apiFetch<void>(`/webhooks/${id}`, { method: 'DELETE' });
+export const testWebhook = (id: number) => apiFetch<WebhookTest>(`/webhooks/${id}/test`, { method: 'POST' });
+
 export interface Environment {
   id: number;
   name: string;

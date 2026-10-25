@@ -15,6 +15,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/events"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/notify"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/registries"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/stacks"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/updates"
@@ -43,6 +44,11 @@ type Options struct {
 	StackChecker func(ctx context.Context, f stacks.Files) ([]string, error)
 	// Updates checks images for newer versions; nil means update checks aren't available.
 	Updates *updates.Service
+	// Webhooks are the notification targets; nil means notifications aren't available.
+	Webhooks *notify.Service
+	// Events is the Docker events hub, shared with the notification watcher; nil means
+	// the API makes its own.
+	Events *events.Hub
 	// Web serves every path outside /api/.
 	Web http.Handler
 	// PublicURL is the URL agents reach the server at (scheme://host[:port]); empty means
@@ -72,11 +78,14 @@ var publicRoutes = map[string]bool{
 func New(opts Options) http.Handler {
 	s := &server{
 		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries, audit: opts.Audit, updates: opts.Updates,
+		webhooks: opts.Webhooks, events: opts.Events,
 		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, recreating: map[string]bool{},
 		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{},
 		checks: make(chan struct{}, maxStackChecks),
-		events: events.New(events.Options{Context: opts.Context, Log: opts.Log}),
 		done:   context.Background(),
+	}
+	if s.events == nil {
+		s.events = events.New(events.Options{Context: opts.Context, Log: opts.Log})
 	}
 	if opts.Context != nil {
 		s.done = opts.Context
@@ -100,6 +109,12 @@ func New(opts Options) http.Handler {
 	api.HandleFunc("GET /api/v1/registries/{id}", s.getRegistry)
 	api.HandleFunc("PUT /api/v1/registries/{id}", s.updateRegistry)
 	api.HandleFunc("DELETE /api/v1/registries/{id}", s.deleteRegistry)
+	api.HandleFunc("GET /api/v1/webhooks", s.listWebhooks)
+	api.HandleFunc("POST /api/v1/webhooks", s.createWebhook)
+	api.HandleFunc("GET /api/v1/webhooks/{id}", s.getWebhook)
+	api.HandleFunc("PUT /api/v1/webhooks/{id}", s.updateWebhook)
+	api.HandleFunc("DELETE /api/v1/webhooks/{id}", s.deleteWebhook)
+	api.HandleFunc("POST /api/v1/webhooks/{id}/test", s.testWebhook)
 	api.HandleFunc("GET /api/v1/environments", s.listEnvironments)
 	api.HandleFunc("POST /api/v1/environments", s.createEnvironment)
 	api.HandleFunc("GET /api/v1/environments/{env}", s.getEnvironment)
@@ -167,6 +182,7 @@ type server struct {
 	registries *registries.Service
 	audit      *audit.Service
 	updates    *updates.Service
+	webhooks   *notify.Service
 	// done ends at shutdown (Options.Context).
 	done context.Context
 	// events fans each environment's Docker events out to the clients watching it.

@@ -463,3 +463,23 @@ func TestCheckFailures(t *testing.T) {
 		}
 	})
 }
+
+func TestCheckedHook(t *testing.T) {
+	t.Parallel()
+	s, envs, _ := newTestService(t, nil)
+	var gotEnv int64
+	var got []Result
+	s.checked = func(_ context.Context, env environments.Environment, results []Result) {
+		gotEnv, got = env.ID, results
+	}
+	fake := envs.clients[1].(*dockertest.Fake)
+	fake.Containers = []container.Summary{ctr("redis", "sha256:r1")}
+	fake.ImageDetails = map[string]image.InspectResponse{"sha256:r1": pulled("redis@sha256:old")}
+	fake.Distribution = map[string]digest.Digest{"redis": "sha256:new"}
+	if _, err := s.Check(context.Background(), envs.envs[0]); err != nil {
+		t.Fatal(err)
+	}
+	if gotEnv != envs.envs[0].ID || len(got) != 1 || got[0].Status != Available || got[0].RemoteDigest != "sha256:new" {
+		t.Errorf("checked(%d, %+v)", gotEnv, got)
+	}
+}

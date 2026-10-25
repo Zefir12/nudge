@@ -31,6 +31,7 @@ import SetupView from './views/SetupView.vue';
 import TokensView from './views/TokensView.vue';
 import VolumesView from './views/VolumesView.vue';
 import VolumeView from './views/VolumeView.vue';
+import WebhooksView from './views/WebhooksView.vue';
 
 declare module 'vue-router' {
   interface RouteMeta {
@@ -64,6 +65,7 @@ export function createAppRouter(history: RouterHistory) {
       { path: '/env/:env/events', name: 'events', component: EventsView },
       { path: '/environments', name: 'environments', component: EnvironmentsView },
       { path: '/registries', name: 'registries', component: RegistriesView },
+      { path: '/webhooks', name: 'webhooks', component: WebhooksView },
       { path: '/tokens', name: 'tokens', component: TokensView },
       { path: '/audit', name: 'audit', component: AuditView },
       { path: '/setup', name: 'setup', component: SetupView, meta: { public: true } },
