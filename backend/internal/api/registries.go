@@ -11,26 +11,33 @@ import (
 
 // registryResponse never includes the password.
 type registryResponse struct {
-	ID        int64     `json:"id"`
-	Name      string    `json:"name"`
-	Address   string    `json:"address"`
-	Username  string    `json:"username"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID        int64           `json:"id"`
+	Name      string          `json:"name"`
+	Address   string          `json:"address"`
+	Username  string          `json:"username"`
+	Kind      registries.Kind `json:"kind"`
+	Owners    []string        `json:"owners"`
+	PlainHTTP bool            `json:"plain_http"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
 }
 
 // registryRequest creates or updates a registry; on update a missing or null password
-// keeps the stored one.
+// keeps the stored one. A missing kind is generic.
 type registryRequest struct {
-	Name     string  `json:"name"`
-	Address  string  `json:"address"`
-	Username string  `json:"username"`
-	Password *string `json:"password"`
+	Name      string          `json:"name"`
+	Address   string          `json:"address"`
+	Username  string          `json:"username"`
+	Password  *string         `json:"password"`
+	Kind      registries.Kind `json:"kind"`
+	Owners    []string        `json:"owners"`
+	PlainHTTP bool            `json:"plain_http"`
 }
 
 func toRegistryResponse(r registries.Registry) registryResponse {
 	return registryResponse{
 		ID: r.ID, Name: r.Name, Address: r.Address, Username: r.Username,
+		Kind: r.Kind, Owners: r.Owners, PlainHTTP: r.PlainHTTP,
 		CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -102,6 +103,13 @@ func TestCreateValidation(t *testing.T) {
 		{name: "no password", in: Input{Name: "x", Address: "ghcr.io", Username: "u"}},
 		{name: "empty password", in: Input{Name: "x", Address: "ghcr.io", Username: "u", Password: ptr("")}},
 		{name: "bad address", in: Input{Name: "x", Address: "not a host", Username: "u", Password: ptr("p")}},
+		{name: "bad kind", in: Input{Name: "x", Address: "ghcr.io", Username: "u", Password: ptr("p"), Kind: "zot"}},
+		{name: "owners on generic", in: Input{Name: "x", Address: "ghcr.io", Username: "u", Password: ptr("p"), Owners: []string{"a"}}},
+		{name: "owner with slash", in: Input{Name: "x", Address: "ghcr.io", Username: "u", Password: ptr("p"), Kind: Forgejo, Owners: []string{"a/b"}}},
+		{name: "owner with dots", in: Input{Name: "x", Address: "ghcr.io", Username: "u", Password: ptr("p"), Kind: Forgejo, Owners: []string{"a..b"}}},
+		{name: "owner with comma", in: Input{Name: "x", Address: "ghcr.io", Username: "u", Password: ptr("p"), Kind: Forgejo, Owners: []string{"a,b"}}},
+		{name: "too many owners", in: Input{Name: "x", Address: "ghcr.io", Username: "u", Password: ptr("p"), Kind: Forgejo,
+			Owners: []string{"a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "a10", "a11", "a12", "a13", "a14", "a15", "a16", "a17", "a18", "a19", "a20", "a21"}}},
 		{name: "name taken", in: Input{Name: "hub", Address: "ghcr.io", Username: "u", Password: ptr("p")}, want: ErrTaken},
 		{name: "address taken", in: Input{Name: "x", Address: "https://index.docker.io/v1/", Username: "u", Password: ptr("p")}, want: ErrTaken},
 	}
@@ -117,6 +125,35 @@ func TestCreateValidation(t *testing.T) {
 		if !errors.As(err, &inputErr) {
 			t.Errorf("%s: err = %v, want InputError", tt.name, err)
 		}
+	}
+}
+
+func TestKindAndCredentials(t *testing.T) {
+	t.Parallel()
+	s := newTestService(t)
+	ctx := context.Background()
+	r, err := s.Create(ctx, Input{Name: "Forge", Address: "git.example.com", Username: "bot", Password: ptr("tok"),
+		Kind: Forgejo, Owners: []string{"zefir", "Team", "team", "zefir"}, PlainHTTP: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Kind != Forgejo || !r.PlainHTTP || !slices.Equal(r.Owners, []string{"zefir", "Team"}) {
+		t.Errorf("created %+v", r)
+	}
+	got, password, err := s.Credentials(ctx, r.ID)
+	if err != nil || password != "tok" || got.Address != "git.example.com" || got.Kind != Forgejo {
+		t.Errorf("Credentials = %+v, %q, %v", got, password, err)
+	}
+	if _, _, err := s.Credentials(ctx, 999); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Credentials(missing) err = %v", err)
+	}
+	// A PUT without a kind makes the registry generic again.
+	r, err = s.Update(ctx, r.ID, Input{Name: "Forge", Address: "git.example.com", Username: "bot"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Kind != Generic || r.PlainHTTP || r.Owners == nil || len(r.Owners) != 0 {
+		t.Errorf("updated %+v", r)
 	}
 }
 
