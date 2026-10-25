@@ -448,7 +448,11 @@ is in the audit log with the stack's name as its target.
   or `{"error": "..."}` if the run was cut short; a stream without either was cut off.
   Errors before compose starts are ordinary JSON errors: `404` no such stack, `409` the
   stack is being changed or deployed (one change per stack at a time) or the agent is too
-  old for stacks ("update the agent to use stacks", tunnel protocol 1), `503` no
+  old for stacks ("update the agent to use stacks", tunnel protocol 1), or (`up` and
+  `update` on the local environment) the stack binds a path under the stacks directory that the
+  daemon would take from another place on the host, as nudge has the stacks directory from
+  a volume or another host path (the message names the bind, the mount and
+  `NUDGE_STACKS_DIR`; docs/config/server.md, Stacks), `503` no
   `docker-compose` (in the server's image, or the agent's for agent environments) or the
   agent is offline. On an agent environment the server first sends the stack's files to
   the agent, and compose runs there, next to that host's daemon.

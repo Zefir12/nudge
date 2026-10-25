@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -258,7 +259,7 @@ func TestServeCreatesLocalEnvironment(t *testing.T) {
 
 func TestStackRunner(t *testing.T) {
 	t.Parallel()
-	runner := stackRunner(config.Server{StacksDir: t.TempDir(), Compose: "/bin/compose", DockerHost: "unix:///docker.sock"}, nil)
+	runner := stackRunner(config.Server{StacksDir: t.TempDir(), Compose: "/bin/compose", DockerHost: "unix:///docker.sock"}, nil, slog.New(slog.DiscardHandler))
 	if _, ok := runner(environments.Environment{ID: 1, Kind: environments.KindLocal}).(*stacks.Local); !ok {
 		t.Error("the local environment's runner isn't a stacks.Local")
 	}

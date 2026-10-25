@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"sync"
@@ -50,6 +51,12 @@ type LocalOptions struct {
 	DockerHost string
 	// Exec runs compose; nil means as a subprocess.
 	Exec ExecFunc
+	// Mounts, if set, lists the mounts of nudge's container, and Up refuses a stack
+	// whose binds in its directory the daemon would take from a different host path
+	// (a *BindError).
+	Mounts MountsFunc
+	// Log gets the bind check's warnings; nil discards them.
+	Log *slog.Logger
 }
 
 // Local runs compose here, on stacks in a directory of this machine.
@@ -58,11 +65,16 @@ type Local struct {
 	compose    string
 	dockerHost string
 	exec       ExecFunc
+	mounts     MountsFunc
+	log        *slog.Logger
 }
 
 // NewLocal returns a runner for the stacks in opts.Dir.
 func NewLocal(opts LocalOptions) *Local {
-	l := &Local{dir: opts.Dir, compose: opts.Compose, dockerHost: opts.DockerHost, exec: opts.Exec}
+	l := &Local{dir: opts.Dir, compose: opts.Compose, dockerHost: opts.DockerHost, exec: opts.Exec, mounts: opts.Mounts, log: opts.Log}
+	if l.log == nil {
+		l.log = slog.New(slog.DiscardHandler)
+	}
 	if l.compose == "" {
 		l.compose = DefaultCompose
 	}
@@ -79,8 +91,15 @@ func (l *Local) Sync(_ context.Context, name string, f Files) error {
 	return l.dir.Write(name, f)
 }
 
-// Up runs `up -d --remove-orphans`, with `--pull always` when pull is set.
+// Up runs `up -d --remove-orphans`, with `--pull always` when pull is set. With
+// LocalOptions.Mounts it first checks the stack's binds (checkBinds).
 func (l *Local) Up(ctx context.Context, name string, pull bool, out func(Line)) (int, error) {
+	if _, err := l.dir.Read(name); err != nil {
+		return 0, err
+	}
+	if err := l.checkBinds(ctx, name); err != nil {
+		return 0, err
+	}
 	args := []string{"up", "--detach", "--remove-orphans"}
 	if pull {
 		args = append(args, "--pull", "always")
@@ -107,11 +126,6 @@ func (l *Local) run(ctx context.Context, name string, args []string, out func(Li
 	if _, err := l.dir.Read(name); err != nil {
 		return 0, err
 	}
-	dir := l.dir.Path(name)
-	global := []string{
-		"--project-name", name, "--project-directory", dir, "--file", dir + "/" + ComposeFile,
-		"--ansi", "never", "--progress", "plain",
-	}
 	var mu sync.Mutex
 	emit := func(l Line) {
 		mu.Lock()
@@ -119,17 +133,27 @@ func (l *Local) run(ctx context.Context, name string, args []string, out func(Li
 		out(l)
 	}
 	stdout, stderr := &lineWriter{stream: "stdout", emit: emit}, &lineWriter{stream: "stderr", emit: emit}
-	code, err := l.exec(ctx, Command{
-		Path: l.compose, Args: append(global, args...), Dir: dir,
-		Env:    []string{"DOCKER_HOST=" + l.dockerHost, "HOME=" + os.TempDir(), "PATH=/usr/local/bin:/usr/bin:/bin"},
-		Stdout: stdout, Stderr: stderr,
-	})
+	code, err := l.exec(ctx, l.command(name, args, stdout, stderr))
 	stdout.flush()
 	stderr.flush()
 	if err != nil {
 		return 0, fmt.Errorf("compose %s %s: %w", args[0], name, err)
 	}
 	return code, nil
+}
+
+// command is compose on stack name with fixed global arguments and then args.
+func (l *Local) command(name string, args []string, stdout, stderr io.Writer) Command {
+	dir := l.dir.Path(name)
+	global := []string{
+		"--project-name", name, "--project-directory", dir, "--file", dir + "/" + ComposeFile,
+		"--ansi", "never", "--progress", "plain",
+	}
+	return Command{
+		Path: l.compose, Args: append(global, args...), Dir: dir,
+		Env:    []string{"DOCKER_HOST=" + l.dockerHost, "HOME=" + os.TempDir(), "PATH=/usr/local/bin:/usr/bin:/bin"},
+		Stdout: stdout, Stderr: stderr,
+	}
 }
 
 // runCommand runs cmd as a subprocess, killed when ctx ends.
