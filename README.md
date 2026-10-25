@@ -41,7 +41,8 @@ Flags with `NUDGE_*` environment variable fallbacks; the defaults work in the im
 | `NUDGE_UPDATE_CHECK_INTERVAL` | `6h` | how often images are checked for updates, `0` for never |
 
 Remote hosts run the same image as `nudge agent` with `NUDGE_SERVER_URL` and
-`NUDGE_JOIN_TOKEN` (the UI's "Add environment" prints the `docker run` command).
+`NUDGE_JOIN_TOKEN` (the UI's "Add environment" prints the `docker run` command and a
+compose file, as in [deploy/agent.compose.yml](deploy/agent.compose.yml)).
 
 Details: [docs/config/server.md](docs/config/server.md), agents:
 [docs/config/agent.md](docs/config/agent.md). API: [docs/api.md](docs/api.md).

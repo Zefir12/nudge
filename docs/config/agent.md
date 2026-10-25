@@ -12,6 +12,9 @@ docker run -d --name nudge-agent --restart unless-stopped \
   registrydedic.zefirlabs.net/nudge:latest agent
 ```
 
+It also shows the same agent as a compose file:
+[deploy/agent.compose.yml](../../deploy/agent.compose.yml) with the values filled in.
+
 | Flag | Env | Default | Description |
 |---|---|---|---|
 | `-server` | `NUDGE_SERVER_URL` | (required) | the server's public URL |
