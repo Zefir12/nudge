@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"sync"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/audit"
@@ -63,6 +64,9 @@ type Options struct {
 	// SecureCookies marks the session cookie Secure on every response, not only on
 	// requests that came over HTTPS (set when nudge serves TLS or PublicURL is https).
 	SecureCookies bool
+	// TrustedProxies are the reverse proxies whose X-Forwarded-For (client IP for the
+	// login limiter and logs) and X-Forwarded-Proto are believed; empty means none.
+	TrustedProxies []netip.Prefix
 }
 
 // publicRoutes need no session; every other pattern, including the /api/ catch-all,
@@ -200,7 +204,7 @@ func New(opts Options) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/api/", s.protect(api))
 	mux.Handle("/", opts.Web)
-	return mux
+	return proxies(opts.TrustedProxies).handler(mux)
 }
 
 type server struct {

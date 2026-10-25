@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -56,6 +57,36 @@ func TestRealMain(t *testing.T) {
 			}
 			if !strings.Contains(stderr.String(), tt.wantStderr) {
 				t.Errorf("stderr = %q, want it to contain %q", stderr.String(), tt.wantStderr)
+			}
+		})
+	}
+}
+
+func TestWarnTrustedProxies(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		proxies string
+		warn    bool
+	}{
+		{name: "none", proxies: ""},
+		{name: "narrow", proxies: "172.16.0.0/12,fd00::/8,10.0.0.1/32"},
+		{name: "every IPv4 address", proxies: "10.0.0.0/8,0.0.0.0/0", warn: true},
+		{name: "every IPv6 address", proxies: "::/0", warn: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var p []netip.Prefix
+			for s := range strings.SplitSeq(tt.proxies, ",") {
+				if s != "" {
+					p = append(p, netip.MustParsePrefix(s))
+				}
+			}
+			var buf bytes.Buffer
+			warnTrustedProxies(slog.New(slog.NewTextHandler(&buf, nil)), p)
+			if got := strings.Contains(buf.String(), "level=WARN"); got != tt.warn {
+				t.Errorf("warned = %v, want %v (%s)", got, tt.warn, buf.String())
 			}
 		})
 	}
