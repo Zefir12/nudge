@@ -76,6 +76,14 @@ refuses `ws://` unless `NUDGE_INSECURE=1`.
   in SQLite with expiry; writes additionally require a matching `Origin`.
 - Scripts: API tokens (`Authorization: Bearer nudge_...`), stored hashed, shown once.
 - Login attempts are rate-limited per IP and username, with bounded memory.
+- Deploy webhooks (`POST /api/v1/hooks/{id}`, internal/deployhooks): a public route whose
+  credential is the webhook's own secret, as a bearer token or as the key of an
+  HMAC-SHA256 body signature (Forgejo, Gitea, GitHub headers), compared in constant time.
+  The secret is sealed with the secretbox key (not hashed: a signature check needs its
+  value). A webhook can do one thing, update its one target, and runs as its creator;
+  failed checks count against the login limit per IP, and each webhook takes 10 triggers
+  a minute. This is the credential to put in CI instead of an API token, which is its user
+  on every route.
 
 ## Stacks (phase 5)
 Decision (approved by zefir for #25): **compose runs next to the daemon it deploys to**: in
