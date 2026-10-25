@@ -9,8 +9,9 @@ Auth: the `nudge_session` cookie set by login or setup, or `Authorization: Beare
 with an API token (see Tokens). When an `Authorization` header is present it alone
 decides; the cookie is ignored. Routes marked *public* need neither; every other route
 answers `401 {"error":"authentication required"}` without a valid session or token.
-Routes marked *admin* also answer `403 {"error":"admins only"}` to other users (nudge
-has one user, the admin, until roles exist).
+Routes marked *admin* are meant to answer `403 {"error":"admins only"}` to other users,
+but nudge has no roles yet: for now "admins only" means every logged-in user (and every
+API token).
 
 Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must carry
 `Sec-Fetch-Site: same-origin`, or an `Origin` whose host matches `Host`, or neither header
@@ -456,8 +457,11 @@ is in the audit log with the stack's name as its target.
 "ghcr.io", "username": "bot", "kind": "generic", "owners": [], "plain_http": false,
 "created_at": "...", "updated_at": "..."}`; the password is never returned.
 `PUT /api/v1/registries/{id}` takes the same body; without `password` (or with `null`) the
-stored one is kept. The other fields are replaced: a PUT without `kind` makes the
-registry `generic`.
+stored one is kept, unless the PUT changes `address`, `username` or `plain_http`: then
+`password` is required (`400 {"error": "password required when address, username or
+plain_http changes"}`), so the stored password never goes to a host or user it wasn't
+saved for. The other fields are replaced: a PUT without `kind` makes the registry
+`generic`.
 
 - `kind` is how nudge browses the registry (Registry browsing below): `generic` (the
   default) for any Docker Registry v2 server (distribution/registry, Zot, Harbor, Docker
@@ -469,6 +473,11 @@ registry `generic`.
 - `plain_http` lets nudge browse the registry over HTTP without TLS (a LAN registry). It
   only applies to browsing; pulls go through the Docker daemon, which needs the registry
   in its `insecure-registries`.
+- When browsing, the registry names its token server (the `realm` of its `WWW-Authenticate:
+  Bearer` challenge), and nudge sends the username and password there, as Docker does.
+  The realm may be **any HTTPS host** (Docker Hub uses `auth.docker.io`), so a registry
+  receives the credentials only if you trust it with them; a plain HTTP realm is only
+  accepted on the registry's own host when `plain_http` is set.
 
 - `address` is the registry host as image references name it, with an optional port. A
   pasted URL is reduced to its host (`https://ghcr.io/` → `ghcr.io`), and Docker Hub's
@@ -511,8 +520,8 @@ grammar (`team/app`, lowercase; tags such as `v1.2`); anything else is `400`.
   other tags on the same digest (at most 100 tags are checked; `shared_tags_complete` is
   false when not all were).
 - `DELETE /api/v1/registries/{id}/tags?repository=…&tag=…&digest=sha256:…` deletes the
-  tag; admins only (`403` otherwise; while nudge has a single user, that user is the
-  admin). `digest` must be the tag's current digest (from the manifest call), else `409
+  tag; admins only (`403` otherwise; with no roles yet, that is every logged-in user).
+  `digest` must be the tag's current digest (from the manifest call), else `409
   {"error": "the tag points to another digest now"}`, so a re-push in between is never
   deleted. Audited with target `<address>/<repository>:<tag>`.
   - `generic`: deletes the manifest by digest (`DELETE /v2/<repo>/manifests/<digest>`),
