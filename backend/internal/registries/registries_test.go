@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -185,5 +186,55 @@ func TestCRUDAndAuth(t *testing.T) {
 	}
 	if _, err := s.Get(ctx, r.ID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("get deleted: %v", err)
+	}
+}
+
+func TestAuthsFor(t *testing.T) {
+	t.Parallel()
+	s := newTestService(t)
+	ctx := context.Background()
+	if got, err := s.AuthsFor(ctx, "image: ghcr.io/org/app"); err != nil || len(got) != 0 {
+		t.Fatalf("AuthsFor with no registries = %+v, %v", got, err)
+	}
+	for _, in := range []Input{
+		{Name: "GitHub", Address: "ghcr.io", Username: "bot", Password: ptr("gh-pass")},
+		{Name: "Hub", Address: "docker.io", Username: "hub", Password: ptr("hub-pass")},
+		{Name: "Own", Address: "registry.example.com:5000", Username: "me", Password: ptr("own-pass")},
+		{Name: "Local", Address: "localhost", Username: "lo", Password: ptr("lo-pass")},
+	} {
+		if _, err := s.Create(ctx, in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hub := Auth{Address: "docker.io", Username: "hub", Password: "hub-pass"}
+	gh := Auth{Address: "ghcr.io", Username: "bot", Password: "gh-pass"}
+	own := Auth{Address: "registry.example.com:5000", Username: "me", Password: "own-pass"}
+	lo := Auth{Address: "localhost", Username: "lo", Password: "lo-pass"}
+	tests := []struct {
+		name  string
+		texts []string
+		want  []Auth
+	}{
+		{"nothing named", []string{"services: {}\n"}, []Auth{hub}},
+		{"in compose", []string{"services:\n  app:\n    image: ghcr.io/org/app:1\n"}, []Auth{hub, gh}},
+		{"case and env", []string{"image: ${IMAGE}\n", "IMAGE=GHCR.IO/org/app\n"}, []Auth{hub, gh}},
+		{"host with port", []string{"image: registry.example.com:5000/app"}, []Auth{hub, own}},
+		{"other port", []string{"image: registry.example.com:5001/app"}, []Auth{hub}},
+		{"no port named", []string{"image: registry.example.com/app"}, []Auth{hub}},
+		{"longer host", []string{"image: notghcr.io/app\nimage: ghcr.io.example.com/app\nimage: localhost:5000/x"}, []Auth{hub}},
+		{"quoted", []string{`image: "localhost/app"`}, []Auth{hub, lo}},
+		{"several", []string{"image: ghcr.io/a\n", "B=registry.example.com:5000/b"}, []Auth{hub, gh, own}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := s.AuthsFor(ctx, tt.texts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("AuthsFor(%q) = %+v, want %+v", tt.texts, got, tt.want)
+			}
+		})
 	}
 }

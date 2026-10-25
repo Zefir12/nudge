@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -242,6 +243,66 @@ func (s *Service) AuthFor(ctx context.Context, ref string) (Auth, bool, error) {
 	}
 	a.Password = string(password)
 	return a, true, nil
+}
+
+// AuthsFor returns, by address, the credentials a compose project may pull with: those
+// of every registry whose address texts (compose.yaml, .env) name as a host, and Docker
+// Hub's, which images without a host use.
+func (s *Service) AuthsFor(ctx context.Context, texts ...string) ([]Auth, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT address, username, password_enc FROM registries ORDER BY address`)
+	if err != nil {
+		return nil, fmt.Errorf("registry credentials: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	type stored struct {
+		Auth
+		sealed []byte
+	}
+	var matched []stored
+	for rows.Next() {
+		var r stored
+		if err := rows.Scan(&r.Address, &r.Username, &r.sealed); err != nil {
+			return nil, fmt.Errorf("registry credentials: %w", err)
+		}
+		if r.Address == DockerHub || slices.ContainsFunc(texts, func(t string) bool { return namesHost(t, r.Address) }) {
+			matched = append(matched, r)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("registry credentials: %w", err)
+	}
+	auths := make([]Auth, 0, len(matched))
+	for _, r := range matched {
+		password, err := s.box.Open(r.sealed, passwordPurpose)
+		if err != nil {
+			return nil, fmt.Errorf("registry credentials for %s: %w", r.Address, err)
+		}
+		r.Password = string(password)
+		auths = append(auths, r.Auth)
+	}
+	return auths, nil
+}
+
+// namesHost reports whether text has host as a whole host name (not part of a longer
+// one, nor with another port), ignoring case.
+func namesHost(text, host string) bool {
+	text = strings.ToLower(text)
+	for i := 0; ; {
+		j := strings.Index(text[i:], host)
+		if j < 0 {
+			return false
+		}
+		start, end := i+j, i+j+len(host)
+		if (start == 0 || !hostByte(text[start-1])) && (end == len(text) || (!hostByte(text[end]) && text[end] != ':')) {
+			return true
+		}
+		i = start + 1
+	}
+}
+
+// hostByte reports whether b can be part of a host name.
+func hostByte(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= '0' && b <= '9' || b == '.' || b == '-'
 }
 
 // HostOf returns the registry address of an image reference: its first path component
