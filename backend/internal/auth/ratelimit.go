@@ -107,3 +107,15 @@ func (l *limiter) len() int {
 	defer l.mu.Unlock()
 	return len(l.entries)
 }
+
+// Attempt counts a check of another credential from ip (a deploy webhook's secret)
+// against ip's failed-login limit, so guessing secrets is as slow as guessing passwords.
+// It fails with a *RateLimitedError while ip is blocked; otherwise the caller calls
+// succeeded once the credential turned out valid, which hands the attempt back.
+func (s *Service) Attempt(ip string) (succeeded func(), err error) {
+	now := s.now()
+	if d, ok := s.ipLimit.reserve(ip, now); !ok {
+		return nil, &RateLimitedError{RetryAfter: d}
+	}
+	return func() { s.ipLimit.release(ip, now) }, nil
+}

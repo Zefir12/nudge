@@ -484,3 +484,43 @@ func TestLoginCounting(t *testing.T) {
 		t.Errorf("limiter keys: user %d, ip %d; want 0, 1", s.userLimit.len(), s.ipLimit.len())
 	}
 }
+
+func TestAttemptSharesTheLoginLimit(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, clock := newTestService(t)
+	if _, err := s.CreateFirstUser(ctx, "admin", "longenough"); err != nil {
+		t.Fatal(err)
+	}
+	// Valid credentials hand their attempt back.
+	for range ipFailureLimit * 2 {
+		ok, err := s.Attempt("10.0.0.1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ok()
+	}
+	// Failed webhook checks and failed logins fill the same window.
+	for i := range ipFailureLimit - 1 {
+		if _, err := s.Attempt("10.0.0.1"); err != nil {
+			t.Fatalf("attempt %d: %v", i, err)
+		}
+	}
+	if _, err := s.Login(ctx, "10.0.0.1", "admin", "wrong-password"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("login = %v", err)
+	}
+	var rl *RateLimitedError
+	if _, err := s.Attempt("10.0.0.1"); !errors.As(err, &rl) {
+		t.Fatalf("attempt over the limit = %v, want RateLimitedError", err)
+	}
+	if _, err := s.Login(ctx, "10.0.0.1", "admin", "longenough"); !errors.As(err, &rl) {
+		t.Fatalf("login over the limit = %v, want RateLimitedError", err)
+	}
+	if _, err := s.Attempt("10.0.0.2"); err != nil {
+		t.Errorf("another IP = %v", err)
+	}
+	clock.Advance(failureWindow)
+	if _, err := s.Attempt("10.0.0.1"); err != nil {
+		t.Errorf("after the window = %v", err)
+	}
+}

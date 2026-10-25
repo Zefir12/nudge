@@ -76,6 +76,12 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | GET | `/api/v1/environments/{env}/updates` | session | the last image update check; see Image updates |
 | POST | `/api/v1/environments/{env}/updates/check` | session | check the environment's images now |
 | GET | `/api/v1/environments/{env}/updates/history` | session | updates made through nudge, with the image each replaced |
+| GET | `/api/v1/environments/{env}/webhooks` | session | the deploy webhooks the user may see (`?container=` / `?stack=` name); see Webhooks |
+| POST | `/api/v1/environments/{env}/webhooks` | session | create a deploy webhook `{"name", "container" or "stack", "tag_filter"}`; `201` with its secret |
+| DELETE | `/api/v1/environments/{env}/webhooks/{id}` | session | delete a deploy webhook and its runs; `204` |
+| POST | `/api/v1/environments/{env}/webhooks/{id}/secret` | session | new secret for a deploy webhook; the old one stops working at once |
+| GET | `/api/v1/environments/{env}/webhooks/{id}/runs` | session | a deploy webhook's runs, newest first |
+| POST | `/api/v1/hooks/{id}` | public (webhook secret) | trigger a deploy webhook: pull and redeploy its target; see Webhooks |
 
 "session" means a session cookie or an API token.
 
@@ -657,6 +663,99 @@ stream is reconnecting are missed. What was sent is kept in the database, so a r
 doesn't repeat it; a notification that no webhook got (none enabled, all failed, or more
 than 100 waiting) counts as not sent, so it goes out the next time it happens. An agent
 that stays offline is notified once, not again until it was back online.
+
+### Webhooks
+Deploy webhooks (not to be confused with the notification webhooks above) let a CI job or
+a Forgejo/Gitea/GitHub webhook make one container or stack pull its image and redeploy,
+with a secret that can do nothing else: unlike an API token, which is its user on every
+route (root on the host), a leaked webhook secret can only redeploy one target.
+
+`POST /api/v1/environments/{env}/webhooks` with `{"name": "ci", "container": "web",
+"tag_filter": "1.*"}` (or `"stack": "app"` instead of `"container"`) answers `201` with
+`{"id": "K3…", "name": "ci", "kind": "container", "target": "web", "tag_filter": "1.*",
+"created_by": "admin", "created_at": "...", "last_triggered_at": null, "url":
+"https://nudge.example.com/api/v1/hooks/K3…", "secret": "nudge_hook_…"}`. The secret is
+shown only here and by `POST .../webhooks/{id}/secret` (rotate: same answer, new secret,
+the old one is refused at once); it is stored encrypted, like registry passwords, since
+signature checks need its value. `url` is built from `NUDGE_PUBLIC_URL` (else from the
+request, like the agent join command).
+
+- A container can be named by ID or name; it is stored by name, so the webhook still
+  works after a recreate (whose new container has a new ID). It must exist (`404`); a
+  stack must exist in nudge (`404`).
+- Names are 1 to 64 bytes, unique per user (`409`); at most 100 webhooks per user (`409`).
+  `tag_filter` is optional, a pattern with `*`, `?` and `[...]` (Go's `path.Match`).
+- Every user manages their own webhooks; others' answer `404`. Admins see and manage
+  all. nudge has no roles yet, so today every user is an admin: any user can list,
+  rotate and delete any user's webhooks (and, with the new secret, trigger them), and the
+  runs still go as the creator, so the audit log and update history name the creator,
+  not the user who rotated the secret. Deleting a user deletes their webhooks. API tokens
+  can manage webhooks like sessions (scoped tokens are #33).
+- `GET .../webhooks/{id}/runs` lists the runs, newest first, at most 50 per webhook:
+  `{"id": 7, "trigger": "signature", "status": "updated", "queued_at": "...",
+  "started_at": "...", "finished_at": "...", "image_before": "sha256:…",
+  "image_after": "sha256:…", "error": ""}`. `status` is `queued`, `running`, `updated`,
+  `unchanged`, `skipped` or `failed`; `error` is nudge's own words, never the daemon's
+  (the server log has those). For a stack the images are the changed services' as
+  `service=ID` lists.
+
+**Trigger:** `POST /api/v1/hooks/{id}` is public: the webhook's secret is the credential,
+as either
+
+- `Authorization: Bearer nudge_hook_…`, or
+- an HMAC-SHA256 of the raw body keyed with the secret, in `X-Forgejo-Signature` or
+  `X-Gitea-Signature` (hex) or `X-Hub-Signature-256` (`sha256=` and hex). A
+  `Bearer nudge_hook_…` header decides alone; any other `Authorization` header (a
+  proxy's Basic auth, say) is ignored and the signature counts.
+
+Both are compared in constant time. The client IP's failed-login limit is checked first
+(20 in 15 minutes, shared with logins; then `429` with `Retry-After`, before the body is
+read). The body is then read, at most 1 MiB (`413`, refused up front when
+`Content-Length` says more) within 30 seconds (`400` if it can't be read), and never
+echoed. An unknown webhook, a missing and a wrong credential all answer
+`401 {"error":"authentication required"}` and count as failed attempts, as do refused
+bodies. A webhook accepts 10 triggers a minute (`429` beyond).
+
+- The update is the one `POST .../containers/{id}/update` or `.../stacks/{name}/update`
+  makes, run as the webhook's creator: it goes into the update history under their name,
+  and the audit log records `POST /api/v1/hooks/{id}` with their user and the token
+  `hook:<name>`. Refused triggers aren't recorded.
+- It runs in the background: `202 {"run_id": 7, "status": "queued"}`. With `?wait=1` the
+  answer waits for the run (up to 5 minutes, then `202` with the run still going): `200`
+  with the run, or `502` with it when it failed, so `curl -f` fails the CI step.
+- One run per webhook at a time. A trigger during a run queues one follow-up; later
+  triggers merge into it (and a waiting caller gets that run). A shutdown stops the
+  running deploy (a container's replace steps finish, so it is never left half-done) and
+  fails the queued one.
+- Tag filter: if the webhook has one and the call is a signed Forgejo/Gitea package event
+  (`X-Forgejo-Event` or `X-Gitea-Event: package`) whose `package.version` doesn't match
+  it, the answer is `200 {"run_id": 8, "status": "skipped"}` and nothing is deployed.
+  Other events and bearer calls always run.
+
+Use HTTPS: a bearer secret over plain HTTP can be read by anyone on the path. A signed
+request can't be changed, but it can be replayed: the signature covers only the body, with
+no timestamp or nonce, so whoever sees one signed request can send it again as often as
+they like. Each replay is just another trigger of the same update, and the 10 triggers a
+minute per webhook bound them.
+
+Behind a reverse proxy every client has the proxy's IP, so failed webhook checks and
+failed logins share one limit: a misconfigured CI job that keeps sending a wrong secret
+can lock everyone out of logging in for 15 minutes (see docs/config/server.md).
+
+A Forgejo (or GitHub) Actions step after the image is pushed, with the secret in the
+repository's secrets as `NUDGE_HOOK_SECRET` and the URL in its variables:
+
+```yaml
+- name: Deploy
+  run: curl -fsS -X POST -H "Authorization: Bearer ${{ secrets.NUDGE_HOOK_SECRET }}" "${{ vars.NUDGE_HOOK_URL }}?wait=1"
+```
+
+A native Forgejo webhook instead (repository or organisation settings, Webhooks, Add
+webhook, Forgejo): target URL = the webhook's `url`, HTTP method `POST`, content type
+`application/json`, secret = the webhook's secret (Forgejo signs the body with it), and
+trigger on "Custom events" with "Package" to redeploy when a new image version is
+published; set `tag_filter` (say `latest` or `1.*`) so other tags of the package are
+skipped. A native webhook can't wait, so it gets `202`; the runs show the outcome.
 
 ### Audit log
 Every `POST`, `PUT`, `PATCH` and `DELETE` that reaches a route is recorded after it is

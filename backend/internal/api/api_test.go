@@ -14,6 +14,7 @@ import (
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/audit"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/deployhooks"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker/dockertest"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
@@ -68,7 +69,13 @@ func newTestHandlerOpts(t *testing.T, connect environments.ConnectFunc, mod func
 	aud := audit.New(audit.Options{DB: st.DB(), Now: func() time.Time { return now }})
 	upd := updates.New(updates.Options{DB: st.DB(), Envs: envs, Auth: regs.AuthFor})
 	hooks := notify.New(notify.Options{DB: st.DB(), Box: box, Version: "v1.0.0", Clock: fixedClock{now}})
-	opts := Options{Log: slog.New(slog.DiscardHandler), Version: "v1.0.0", Auth: svc, Envs: envs, Registries: regs, Audit: aud, Updates: upd, Webhooks: hooks, Web: web}
+	deploys := deployhooks.New(deployhooks.Options{DB: st.DB(), Box: box, Clock: fixedClock{now}})
+	// Before the store closes (cleanups run last in, first out).
+	t.Cleanup(deploys.Close)
+	opts := Options{
+		Log: slog.New(slog.DiscardHandler), Version: "v1.0.0", Auth: svc, Envs: envs, Registries: regs, Audit: aud, Updates: upd,
+		Webhooks: hooks, DeployHooks: deploys, Web: web,
+	}
 	if mod != nil {
 		mod(&opts)
 	}

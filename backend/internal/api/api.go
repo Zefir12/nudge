@@ -14,6 +14,7 @@ import (
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/audit"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/deployhooks"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/events"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/notify"
@@ -36,8 +37,9 @@ type Options struct {
 	Registries *registries.Service
 	// RegistryClient browses registries over HTTP; nil means a registryclient.Client.
 	RegistryClient RegistryBrowser
-	// Admin says whether a user may do admin-only actions (deleting registry tags); nil
-	// means every user is an admin, as nudge has one user until roles exist.
+	// Admin says whether a user may do admin-only actions (deleting registry tags,
+	// managing every user's deploy webhooks); nil means every user is an admin, as nudge
+	// has one user until roles exist.
 	Admin func(auth.User) bool
 	// Audit records every write.
 	Audit *audit.Service
@@ -53,6 +55,8 @@ type Options struct {
 	Updates *updates.Service
 	// Webhooks are the notification targets; nil means notifications aren't available.
 	Webhooks *notify.Service
+	// DeployHooks are the deploy webhooks; nil means they aren't available.
+	DeployHooks *deployhooks.Service
 	// Events is the Docker events hub, shared with the notification watcher; nil means
 	// the API makes its own.
 	Events *events.Hub
@@ -82,6 +86,9 @@ var publicRoutes = map[string]bool{
 	// session.
 	"POST /api/v1/agents/enroll": true,
 	"GET /api/v1/agents/connect": true,
+	// A deploy webhook's secret is the credential (a bearer token or the key of the
+	// body's signature), checked by the handler.
+	"POST /api/v1/hooks/{id}": true,
 }
 
 // sessionOnlyRoutes refuse API tokens (403) and need a session: they mint credentials
@@ -95,7 +102,7 @@ var sessionOnlyRoutes = map[string]bool{
 func New(opts Options) http.Handler {
 	s := &server{
 		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries, audit: opts.Audit, updates: opts.Updates,
-		webhooks: opts.Webhooks, events: opts.Events, registryClient: opts.RegistryClient, isAdmin: opts.Admin,
+		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, registryClient: opts.RegistryClient, isAdmin: opts.Admin,
 		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, recreating: map[string]bool{},
 		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{},
 		checks: make(chan struct{}, maxStackChecks),
@@ -192,6 +199,12 @@ func New(opts Options) http.Handler {
 	api.HandleFunc("GET /api/v1/environments/{env}/updates", s.listUpdates)
 	api.HandleFunc("POST /api/v1/environments/{env}/updates/check", s.checkUpdates)
 	api.HandleFunc("GET /api/v1/environments/{env}/updates/history", s.listUpdateHistory)
+	api.HandleFunc("GET /api/v1/environments/{env}/webhooks", s.listDeployHooks)
+	api.HandleFunc("POST /api/v1/environments/{env}/webhooks", s.createDeployHook)
+	api.HandleFunc("DELETE /api/v1/environments/{env}/webhooks/{id}", s.deleteDeployHook)
+	api.HandleFunc("POST /api/v1/environments/{env}/webhooks/{id}/secret", s.rotateDeployHookSecret)
+	api.HandleFunc("GET /api/v1/environments/{env}/webhooks/{id}/runs", s.listDeployHookRuns)
+	api.HandleFunc("POST /api/v1/hooks/{id}", s.triggerDeployHook)
 	api.HandleFunc("/api/", s.notFound)
 
 	// tokenRefused answers the session-only routes for token requests, through a mux so
@@ -215,11 +228,14 @@ type server struct {
 
 	registries     *registries.Service
 	registryClient RegistryBrowser
-	// isAdmin gates admin-only actions (Options.Admin).
+	// isAdmin gates admin-only actions (Options.Admin), such as managing every user's
+	// deploy webhooks.
 	isAdmin  func(auth.User) bool
 	audit    *audit.Service
 	updates  *updates.Service
 	webhooks *notify.Service
+	// deployHooks are the deploy webhooks.
+	deployHooks *deployhooks.Service
 	// done ends at shutdown (Options.Context).
 	done context.Context
 	// events fans each environment's Docker events out to the clients watching it.

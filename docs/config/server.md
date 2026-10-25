@@ -134,7 +134,11 @@ proxy container's fixed IP. From any other peer both headers are ignored, as any
 send them. Unset (the default), nudge trusts no proxy:
 
 - the client IP (login rate limit, logs) is the TCP peer, so behind a proxy all clients
-  share the proxy's IP and its failed-login budget (see docs/api.md);
+  share the proxy's IP and its failed-login budget (see docs/api.md). Failed deploy
+  webhook checks (`POST /api/v1/hooks/{id}` with a wrong or missing secret) count
+  against the same budget, so a CI job with a stale secret can use it up: after 20
+  failures in 15 minutes, logins and webhook triggers through the proxy get `429` until
+  the window ends. Fix or rotate the secret in CI promptly, or trust the proxy;
 - `X-Forwarded-Proto` is ignored, so set `NUDGE_PUBLIC_URL=https://…` for `Secure`
   cookies and `https://` agent commands.
 

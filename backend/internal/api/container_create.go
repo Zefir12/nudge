@@ -468,6 +468,38 @@ type replacement struct {
 	done     func()
 }
 
+// errRecreating refuses a second recreate or update of a container while one runs.
+var errRecreating = &statusError{code: http.StatusConflict, msg: "this container is already being recreated"}
+
+// pullFailure is a pull the daemon refused or that broke off, with the registry
+// password to mask in its message.
+type pullFailure struct {
+	err      error
+	password string
+}
+
+func (e *pullFailure) Error() string { return "pull: " + e.err.Error() }
+func (e *pullFailure) Unwrap() error { return e.err }
+
+// internalFailure is nudge's own failure (the database, the key), answered 500.
+type internalFailure struct {
+	msg string
+	err error
+}
+
+func (e *internalFailure) Error() string { return e.msg + ": " + e.err.Error() }
+func (e *internalFailure) Unwrap() error { return e.err }
+
+// dockerFailure is a failed Docker call that names no container: answered like any
+// Docker error, not as a missing container.
+type dockerFailure struct {
+	msg string
+	err error
+}
+
+func (e *dockerFailure) Error() string { return e.msg + ": " + e.err.Error() }
+func (e *dockerFailure) Unwrap() error { return e.err }
+
 // beginReplace inspects container id and its image and claims it for one recreate at a
 // time; on false it has answered. The caller defers done.
 func (s *server) beginReplace(w http.ResponseWriter, r *http.Request, id string) (*replacement, bool) {
@@ -475,17 +507,26 @@ func (s *server) beginReplace(w http.ResponseWriter, r *http.Request, id string)
 	if !ok {
 		return nil, false
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), dockerTimeout)
+	rp, err := s.startReplace(r.Context(), env, c, id)
+	if err != nil {
+		s.replaceError(w, r, env, err)
+		return nil, false
+	}
+	return rp, true
+}
+
+// startReplace inspects container id (an ID or a name) and its image and claims it for
+// one recreate at a time. The caller defers done.
+func (s *server) startReplace(ctx context.Context, env environments.Environment, c docker.Client, id string) (*replacement, error) {
+	ctx, cancel := context.WithTimeout(ctx, dockerTimeout)
 	defer cancel()
 	res, err := c.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
 	if err != nil {
-		s.recreateError(w, r, env, err)
-		return nil, false
+		return nil, err
 	}
 	old := res.Container
 	if old.Config == nil || old.HostConfig == nil || old.State == nil {
-		s.recreateError(w, r, env, errors.New("inspect: incomplete container settings"))
-		return nil, false
+		return nil, errors.New("inspect: incomplete container settings")
 	}
 	// Before a pull, while the old image is surely still there.
 	var oldImage image.InspectResponse
@@ -493,47 +534,83 @@ func (s *server) beginReplace(w http.ResponseWriter, r *http.Request, id string)
 	switch {
 	case docker.NotFound(err):
 	case err != nil:
-		s.recreateError(w, r, env, fmt.Errorf("inspect image: %w", err))
-		return nil, false
+		return nil, fmt.Errorf("inspect image: %w", err)
 	default:
 		oldImage = ires.InspectResponse
 	}
 	done, ok := s.beginRecreate(env.ID, old.ID)
 	if !ok {
-		s.writeError(w, http.StatusConflict, "this container is already being recreated")
-		return nil, false
+		return nil, errRecreating
 	}
-	return &replacement{env: env, c: c, old: old, oldImage: oldImage, done: done}, true
+	return &replacement{env: env, c: c, old: old, oldImage: oldImage, done: done}, nil
 }
 
 // pullForReplace pulls ref with its registry's credentials; on false it has answered.
 func (s *server) pullForReplace(w http.ResponseWriter, r *http.Request, rp *replacement, ref string) bool {
-	opts, password, ok := s.pullOptions(w, r, ref)
-	if !ok {
-		return false
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), pullTimeout)
-	defer cancel()
-	if err := pullAndWait(ctx, rp.c, ref, opts); err != nil {
-		s.pullError(w, r, rp.env, err, password)
+	if err := s.pullWithAuth(r.Context(), rp.c, ref); err != nil {
+		s.replaceError(w, r, rp.env, err)
 		return false
 	}
 	return true
 }
 
-// finishReplace replaces the container (with spec's settings, if not nil) and returns
-// the new one's ID; on false it has answered. The pull has its own timeout; the steps
-// that change containers start now and don't stop when the client goes away.
-func (s *server) finishReplace(w http.ResponseWriter, r *http.Request, rp *replacement, spec *containerSpec) (string, bool) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), recreateTimeout)
-	defer cancel()
-	newID, err := s.replace(ctx, rp.c, rp.old, rp.oldImage.Config, spec)
+// pullWithAuth pulls ref with its registry's credentials and waits for the pull.
+func (s *server) pullWithAuth(ctx context.Context, c docker.Client, ref string) error {
+	opts, password, err := s.registryAuth(ctx, ref)
 	if err != nil {
-		s.recreateError(w, r, rp.env, err)
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, pullTimeout)
+	defer cancel()
+	if err := pullAndWait(ctx, c, ref, opts); err != nil {
+		return &pullFailure{err: err, password: password}
+	}
+	return nil
+}
+
+// finishReplace replaces the container (with spec's settings, if not nil) and returns
+// the new one's ID; on false it has answered.
+func (s *server) finishReplace(w http.ResponseWriter, r *http.Request, rp *replacement, spec *containerSpec) (string, bool) {
+	newID, err := s.completeReplace(r.Context(), rp, spec)
+	if err != nil {
+		s.replaceError(w, r, rp.env, err)
 		return "", false
 	}
-	s.envs.Seen(r.Context(), &rp.env)
 	return newID, true
+}
+
+// completeReplace replaces the container (with spec's settings, if not nil) and returns
+// the new one's ID. The pull has its own timeout; the steps that change containers start
+// now and don't stop when ctx ends (a client going away, a shutdown).
+func (s *server) completeReplace(ctx context.Context, rp *replacement, spec *containerSpec) (string, error) {
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recreateTimeout)
+	defer cancel()
+	newID, err := s.replace(rctx, rp.c, rp.old, rp.oldImage.Config, spec)
+	if err != nil {
+		return "", err
+	}
+	s.envs.Seen(rctx, &rp.env)
+	return newID, nil
+}
+
+// replaceError answers a failed step of a recreate or update.
+func (s *server) replaceError(w http.ResponseWriter, r *http.Request, env environments.Environment, err error) {
+	var pf *pullFailure
+	var inf *internalFailure
+	var df *dockerFailure
+	switch {
+	case errors.Is(err, errRegistryDecrypt):
+		s.log.Error("registry credentials", "err", err)
+		s.writeError(w, http.StatusInternalServerError, "the stored registry password can't be decrypted (was secret.key replaced?): enter it again under Registries")
+	case errors.As(err, &inf):
+		s.internalError(w, inf.msg, inf.err)
+	case errors.As(err, &pf):
+		s.pullError(w, r, env, pf.err, pf.password)
+	case errors.As(err, &df):
+		s.dockerError(w, r, env, df.msg, df.err)
+	default:
+		s.recreateError(w, r, env, err)
+	}
 }
 
 // pullAndWait pulls ref and waits for the pull to finish.

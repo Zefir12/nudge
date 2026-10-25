@@ -27,6 +27,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/certs"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/config"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/deployhooks"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/events"
@@ -198,6 +199,13 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 	hub := events.New(events.Options{Context: ctx, Log: log})
 	watcher := notify.NewWatcher(notify.WatchOptions{Envs: envs, Hub: hub, Send: hooks, Log: log})
 	wg.Go(func() { watcher.Run(cleanupCtx) })
+	// The runs end with ctx, so ?wait=1 triggers don't hold up the shutdown; Close waits
+	// for them before the database closes.
+	deployHooks := deployhooks.New(deployhooks.Options{Context: ctx, DB: st.DB(), Box: box, Log: log})
+	defer deployHooks.Close()
+	if err := deployHooks.FailStale(context.WithoutCancel(ctx)); err != nil {
+		return err
+	}
 	upd := updates.New(updates.Options{DB: st.DB(), Log: log, Envs: envs, Auth: regs.AuthFor, Checked: hooks.UpdatesChecked})
 	if cfg.UpdateCheckInterval > 0 {
 		// The first check waits for agents to reconnect after a restart.
@@ -222,12 +230,13 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 			Auth:    authSvc,
 			Envs:    envs,
 
-			Registries: regs,
-			Audit:      auditSvc,
-			Updates:    upd,
-			Webhooks:   hooks,
-			Events:     hub,
-			Web:        web.Handler(web.Dist()),
+			Registries:  regs,
+			Audit:       auditSvc,
+			Updates:     upd,
+			Webhooks:    hooks,
+			DeployHooks: deployHooks,
+			Events:      hub,
+			Web:         web.Handler(web.Dist()),
 
 			StacksDir:   cfg.StacksDir,
 			StackRunner: stackRunner(cfg, envs, regs, log),

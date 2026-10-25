@@ -1,8 +1,8 @@
 // Package store is nudge's SQLite database: it opens <data>/nudge.db and applies the
 // numbered migrations embedded from migrations/.
 //
-// Each migration runs in one transaction, so PRAGMA foreign_keys=OFF has no effect in
-// one: a table rebuild must keep the rows its references point to valid.
+// Pending migrations run together in one transaction, so PRAGMA foreign_keys=OFF has no
+// effect in them: a table rebuild must keep the rows its references point to valid.
 package store
 
 import (

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"maps"
 	"net/http"
@@ -435,6 +436,54 @@ func (s *server) runnerError(w http.ResponseWriter, r *http.Request, env environ
 	}
 }
 
+var (
+	errNoStackRunner = &statusError{code: http.StatusConflict, msg: "stacks can't be deployed to this environment"}
+	errStackBusy     = &statusError{code: http.StatusConflict, msg: "the stack is being changed"}
+	errNoStack       = &statusError{code: http.StatusNotFound, msg: "stack not found"}
+)
+
+// startStack claims stack name of env for one change at a time and syncs its files to
+// the environment's runner. The caller defers unlock.
+func (s *server) startStack(ctx context.Context, env environments.Environment, name string) (stacks.Runner, func(), error) {
+	runner := s.stackRunner(env)
+	if runner == nil {
+		return nil, nil, errNoStackRunner
+	}
+	key := stackKey(env.ID, name)
+	if !s.lockStack(key) {
+		return nil, nil, errStackBusy
+	}
+	unlock := func() { s.unlockStack(key) }
+	f, err := s.stackDir(env.ID).Read(name)
+	if errors.Is(err, stacks.ErrNotFound) {
+		unlock()
+		return nil, nil, errNoStack
+	}
+	if err != nil {
+		unlock()
+		return nil, nil, &internalFailure{msg: "read stack", err: err}
+	}
+	if err := runner.Sync(ctx, name, f); err != nil {
+		unlock()
+		return nil, nil, fmt.Errorf("sync stack: %w", err)
+	}
+	return runner, unlock, nil
+}
+
+// stackStartError answers a failed startStack.
+func (s *server) stackStartError(w http.ResponseWriter, r *http.Request, env environments.Environment, err error) {
+	var se *statusError
+	var inf *internalFailure
+	switch {
+	case errors.As(err, &se):
+		s.writeError(w, se.code, se.msg)
+	case errors.As(err, &inf):
+		s.internalError(w, inf.msg, inf.err)
+	default:
+		s.runnerError(w, r, env, "sync stack", err)
+	}
+}
+
 // stackRun is what a compose run of runStack works with.
 type stackRun struct {
 	env    environments.Environment
@@ -458,32 +507,14 @@ func (s *server) runStack(w http.ResponseWriter, r *http.Request, op string, run
 	if !ok {
 		return
 	}
-	runner := s.stackRunner(env)
-	if runner == nil {
-		s.writeError(w, http.StatusConflict, "stacks can't be deployed to this environment")
-		return
-	}
-	key := stackKey(env.ID, name)
-	if !s.lockStack(key) {
-		s.writeError(w, http.StatusConflict, "the stack is being changed")
-		return
-	}
-	defer s.unlockStack(key)
-	f, err := s.stackDir(env.ID).Read(name)
-	if errors.Is(err, stacks.ErrNotFound) {
-		s.writeError(w, http.StatusNotFound, "stack not found")
-		return
-	}
-	if err != nil {
-		s.internalError(w, "read stack", err)
-		return
-	}
 	ctx, cancel := context.WithTimeout(r.Context(), stackTimeout)
 	defer cancel()
-	if err := runner.Sync(ctx, name, f); err != nil {
-		s.runnerError(w, r, env, "sync stack", err)
+	runner, unlock, err := s.startStack(ctx, env, name)
+	if err != nil {
+		s.stackStartError(w, r, env, err)
 		return
 	}
+	defer unlock()
 	s.log.Info("stack "+op, "env", env.ID, "stack", name, "ip", clientIP(r))
 
 	// The header goes out with the first line, so a compose that can't start still gets
