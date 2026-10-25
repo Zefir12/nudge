@@ -297,6 +297,8 @@ func runAgent(ctx context.Context, cfg config.Agent, log *slog.Logger) error {
 // stackRunner deploys the local environment's stacks with compose here, and an agent
 // environment's through its agent's control service.
 func stackRunner(cfg config.Server, envs *environments.Service) func(environments.Environment) stacks.Runner {
+	// Up checks a local stack's binds against the mounts of nudge's own container.
+	self := stacks.SelfID(os.ReadFile, os.Hostname)
 	return func(env environments.Environment) stacks.Runner {
 		if env.Kind == environments.KindAgent {
 			return stacks.NewRemote(envs.ControlDialer(env.ID))
@@ -304,6 +306,7 @@ func stackRunner(cfg config.Server, envs *environments.Service) func(environment
 		return stacks.NewLocal(stacks.LocalOptions{
 			Dir:     stacks.NewDir(filepath.Join(cfg.StacksDir, strconv.FormatInt(env.ID, 10))),
 			Compose: cfg.Compose, DockerHost: cfg.DockerHost,
+			Mounts: stacks.ContainerMounts(self, func() (stacks.Inspector, error) { return envs.Client(env) }),
 		})
 	}
 }

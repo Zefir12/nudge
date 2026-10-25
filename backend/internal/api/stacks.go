@@ -411,7 +411,11 @@ func (s *server) decodeOptionalJSON(w http.ResponseWriter, r *http.Request, v an
 
 // runnerError answers a runner's failure before compose's output started.
 func (s *server) runnerError(w http.ResponseWriter, r *http.Request, env environments.Environment, msg string, err error) {
+	var bind *stacks.BindError
 	switch {
+	case errors.As(err, &bind):
+		// Names paths and mounts of nudge's own container, for its admin to fix.
+		s.writeError(w, http.StatusConflict, bind.Error())
 	case errors.Is(err, stacks.ErrNoCompose):
 		s.log.Error(msg, "env", env.ID, "err", err)
 		s.writeError(w, http.StatusServiceUnavailable, "docker-compose is not installed")
