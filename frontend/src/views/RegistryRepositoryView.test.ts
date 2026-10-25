@@ -91,6 +91,32 @@ describe('RegistryRepositoryView', () => {
     expect(manifestCalls()).toBe(1);
   });
 
+  it('drops a manifest that arrives after leaving the repository', async () => {
+    let answer: (r: Response) => void = () => {};
+    stubApi({
+      [`GET ${base}`]: { body: registry },
+      [`GET ${tagsPath}`]: { body: [{ tag: 'latest' }] },
+      [`GET /registries/2`]: { body: { ...registry, id: 2 } },
+      [`GET /registries/2/tags?repository=team%2Fapp`]: { body: [{ tag: 'latest' }] },
+    });
+    const stubbed = globalThis.fetch;
+    vi.stubGlobal('fetch', (url: string, init?: RequestInit) =>
+      url.includes('/manifest') ? new Promise<Response>((r) => (answer = r)) : stubbed(url, init),
+    );
+    const router = createAppRouter(createMemoryHistory());
+    await router.push('/registries/1/repository?name=team/app');
+    const wrapper = mount(RegistryRepositoryView, { global: { plugins: [router] } });
+    await flushPromises();
+    await tagButton(wrapper, 'latest').trigger('click');
+    await router.push('/registries/2/repository?name=team/app');
+    await flushPromises();
+    answer(new Response(JSON.stringify(latest)));
+    await flushPromises();
+    await tagButton(wrapper, 'latest').trigger('click');
+    // Registry 2's manifest is still loading; registry 1's answer wasn't kept for it.
+    expect(wrapper.find('dl').exists()).toBe(false);
+  });
+
   it('deletes a tag after a confirm naming the tags that go with it', async () => {
     let tags = [{ tag: 'latest' }, { tag: 'v1.2' }];
     const deletes: string[] = [];

@@ -41,8 +41,11 @@ const details = reactive(new Map<string, Detail>());
 const deleting = ref('');
 const deleteError = ref('');
 
-// Another repository (or registry) starts with every tag closed.
+// Another repository (or registry) starts with every tag closed; generation drops the
+// answers of requests made for the previous one.
+let generation = 0;
 watch([id, repository], () => {
+  generation++;
   details.clear();
   open.value = new Set();
   deleteError.value = '';
@@ -62,15 +65,14 @@ async function toggle(tag: string) {
   open.value = set;
   if (details.get(tag)?.manifest) return;
   details.set(tag, {});
-  const repo = repository.value;
+  const mine = generation;
   let detail: Detail;
   try {
-    detail = { manifest: await getRegistryManifest(registryId.value, repo, tag) };
+    detail = { manifest: await getRegistryManifest(registryId.value, repository.value, tag) };
   } catch (e) {
     detail = { error: message(e) };
   }
-  // The answer for a repository left in the meantime is dropped.
-  if (repo === repository.value) details.set(tag, detail);
+  if (mine === generation) details.set(tag, detail);
 }
 
 // confirmText names the tag and, for a generic registry (which deletes the manifest),
@@ -90,14 +92,16 @@ async function onDelete(m: RegistryManifest) {
   if (!window.confirm(confirmText(m))) return;
   deleting.value = m.tag;
   deleteError.value = '';
+  const mine = generation;
   try {
     await deleteRegistryTag(registryId.value, m.repository, m.tag, m.digest);
+    if (mine !== generation) return;
     // Shared tags may be gone too; drop every detail and reload the list.
     details.clear();
     open.value = new Set();
     await reload();
   } catch (e) {
-    deleteError.value = message(e);
+    if (mine === generation) deleteError.value = message(e);
   } finally {
     deleting.value = '';
   }
