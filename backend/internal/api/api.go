@@ -13,6 +13,7 @@ import (
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/audit"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/deployhooks"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/events"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/notify"
@@ -46,6 +47,11 @@ type Options struct {
 	Updates *updates.Service
 	// Webhooks are the notification targets; nil means notifications aren't available.
 	Webhooks *notify.Service
+	// DeployHooks are the deploy webhooks; nil means they aren't available.
+	DeployHooks *deployhooks.Service
+	// IsAdmin reports whether a user sees and manages every user's deploy webhooks; nil
+	// means every user is an admin (nudge has no roles yet).
+	IsAdmin func(auth.User) bool
 	// Events is the Docker events hub, shared with the notification watcher; nil means
 	// the API makes its own.
 	Events *events.Hub
@@ -72,13 +78,16 @@ var publicRoutes = map[string]bool{
 	// session.
 	"POST /api/v1/agents/enroll": true,
 	"GET /api/v1/agents/connect": true,
+	// A deploy webhook's secret is the credential (a bearer token or the key of the
+	// body's signature), checked by the handler.
+	"POST /api/v1/hooks/{id}": true,
 }
 
 // New returns the server's root handler: the API plus the web UI.
 func New(opts Options) http.Handler {
 	s := &server{
 		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries, audit: opts.Audit, updates: opts.Updates,
-		webhooks: opts.Webhooks, events: opts.Events,
+		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, isAdmin: opts.IsAdmin,
 		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, recreating: map[string]bool{},
 		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{},
 		checks: make(chan struct{}, maxStackChecks),
@@ -89,6 +98,9 @@ func New(opts Options) http.Handler {
 	}
 	if opts.Context != nil {
 		s.done = opts.Context
+	}
+	if s.isAdmin == nil {
+		s.isAdmin = func(auth.User) bool { return true }
 	}
 	if s.stackRunner == nil {
 		s.stackRunner = func(environments.Environment) stacks.Runner { return nil }
@@ -165,6 +177,12 @@ func New(opts Options) http.Handler {
 	api.HandleFunc("GET /api/v1/environments/{env}/updates", s.listUpdates)
 	api.HandleFunc("POST /api/v1/environments/{env}/updates/check", s.checkUpdates)
 	api.HandleFunc("GET /api/v1/environments/{env}/updates/history", s.listUpdateHistory)
+	api.HandleFunc("GET /api/v1/environments/{env}/webhooks", s.listDeployHooks)
+	api.HandleFunc("POST /api/v1/environments/{env}/webhooks", s.createDeployHook)
+	api.HandleFunc("DELETE /api/v1/environments/{env}/webhooks/{id}", s.deleteDeployHook)
+	api.HandleFunc("POST /api/v1/environments/{env}/webhooks/{id}/secret", s.rotateDeployHookSecret)
+	api.HandleFunc("GET /api/v1/environments/{env}/webhooks/{id}/runs", s.listDeployHookRuns)
+	api.HandleFunc("POST /api/v1/hooks/{id}", s.triggerDeployHook)
 	api.HandleFunc("/api/", s.notFound)
 
 	mux := http.NewServeMux()
@@ -183,6 +201,9 @@ type server struct {
 	audit      *audit.Service
 	updates    *updates.Service
 	webhooks   *notify.Service
+	// deployHooks are the deploy webhooks; isAdmin says who manages every user's.
+	deployHooks *deployhooks.Service
+	isAdmin     func(auth.User) bool
 	// done ends at shutdown (Options.Context).
 	done context.Context
 	// events fans each environment's Docker events out to the clients watching it.

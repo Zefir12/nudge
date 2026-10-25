@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/audit"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
 )
 
 // unaudited are writes the audit log leaves out: logins and logouts change no state
@@ -27,6 +28,9 @@ type auditKey struct{}
 type auditNote struct {
 	environment string
 	target      string
+	// user is who a public route acted as (a deploy webhook's creator); nil means the
+	// request's user.
+	user *auth.User
 	// status replaces the answered one for a stream that failed after its 200.
 	status int
 	// recordNow records the entry at once; recorded says it was.
@@ -46,6 +50,14 @@ func auditTarget(r *http.Request, target string) {
 func auditEnvironment(r *http.Request, env string) {
 	if n, ok := r.Context().Value(auditKey{}).(*auditNote); ok {
 		n.environment = env
+	}
+}
+
+// auditUser records u as the entry's user: a public route that authenticated its
+// caller by other means (a deploy webhook's secret) and acts as u.
+func auditUser(r *http.Request, u auth.User) {
+	if n, ok := r.Context().Value(auditKey{}).(*auditNote); ok {
+		n.user = &u
 	}
 }
 
@@ -132,6 +144,9 @@ func (s *server) record(r *http.Request, start time.Time, note *auditNote, statu
 		status = note.status
 	}
 	u, authenticated := userFrom(r.Context())
+	if note.user != nil {
+		u, authenticated = *note.user, true
+	}
 	if !authenticated && status >= 400 {
 		return
 	}
