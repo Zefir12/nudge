@@ -1,8 +1,10 @@
 package stacks
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -193,6 +195,109 @@ func TestRemoteErrors(t *testing.T) {
 		var op *net.OpError
 		if !errors.As(err, &op) {
 			t.Errorf("Sync = %v, want the dial's *net.OpError", err)
+		}
+	})
+}
+
+func TestRemoteCredentials(t *testing.T) {
+	t.Parallel()
+	gh := Credential{Address: "ghcr.io", Username: "bot", Password: "gh-pass"}
+	files := Files{Compose: "services:\n  app:\n    image: ghcr.io/org/app\n"}
+	tests := []struct {
+		name  string
+		creds []Credential
+		// set is whether the Remote has a credentials lookup.
+		set        bool
+		down       bool
+		wantBody   string
+		wantConfig string
+	}{
+		{name: "no lookup", wantBody: `{"pull":true}`},
+		{name: "none found", set: true, creds: []Credential{}, wantBody: `{"pull":true}`},
+		{name: "found", set: true, creds: []Credential{gh},
+			wantBody:   `{"pull":true,"credentials":[{"address":"ghcr.io","username":"bot","password":"gh-pass"}]}`,
+			wantConfig: `{"auths":{"ghcr.io":{"auth":"Ym90OmdoLXBhc3M="}}}`},
+		{name: "down", set: true, creds: []Credential{gh}, down: true, wantBody: `{"volumes":false}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			agentDir := NewDir(t.TempDir())
+			var run configRun
+			local := NewLocal(LocalOptions{Dir: agentDir, Exec: seeConfig(t, &run, "login gh-pass\n")})
+			control := NewControl(local, nil)
+			bodies := make(chan string, 2)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPost {
+					b, _ := io.ReadAll(r.Body)
+					bodies <- strings.TrimSpace(string(b))
+					r.Body = io.NopCloser(bytes.NewReader(b))
+				}
+				control.ServeHTTP(w, r)
+			}))
+			t.Cleanup(srv.Close)
+			addr := srv.Listener.Addr().String()
+			remote := NewRemote(func(ctx context.Context) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, "tcp", addr)
+			})
+			serverDir := NewDir(t.TempDir())
+			if err := serverDir.Create("web", files); err != nil {
+				t.Fatal(err)
+			}
+			if tt.set {
+				remote = remote.WithCredentials(serverDir, func(_ context.Context, f Files) ([]Credential, error) {
+					if f != files {
+						t.Errorf("Credentials got %+v, want the server's copy of the stack", f)
+					}
+					return tt.creds, nil
+				})
+			}
+			ctx := context.Background()
+			if err := remote.Sync(ctx, "web", files); err != nil {
+				t.Fatal(err)
+			}
+			out, lines := collect()
+			var err error
+			if tt.down {
+				_, err = remote.Down(ctx, "web", false, out)
+			} else {
+				_, err = remote.Up(ctx, "web", true, out)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if body := <-bodies; body != tt.wantBody {
+				t.Errorf("request body = %s, want %s", body, tt.wantBody)
+			}
+			if seen := run.get(); seen.config != tt.wantConfig {
+				t.Errorf("agent's config.json = %s, want %s", seen.config, tt.wantConfig)
+			}
+			if tt.wantConfig != "" {
+				for _, l := range lines() {
+					if strings.Contains(l.Text, "gh-pass") {
+						t.Errorf("output line %q has the password", l.Text)
+					}
+				}
+			}
+		})
+	}
+
+	t.Run("lookup fails", func(t *testing.T) {
+		t.Parallel()
+		remote := NewRemote(func(context.Context) (net.Conn, error) {
+			t.Error("dialled the agent after a failed lookup")
+			return nil, errors.New("no")
+		})
+		dir := NewDir(t.TempDir())
+		if err := dir.Create("web", files); err != nil {
+			t.Fatal(err)
+		}
+		remote = remote.WithCredentials(dir, func(context.Context, Files) ([]Credential, error) {
+			return nil, errors.New("sealed with another key")
+		})
+		if _, err := remote.Up(context.Background(), "web", false, func(Line) {}); err == nil {
+			t.Error("Up with a failing lookup succeeded")
 		}
 	})
 }

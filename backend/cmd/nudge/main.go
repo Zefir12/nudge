@@ -215,7 +215,7 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 			Web:        web.Handler(web.Dist()),
 
 			StacksDir:   cfg.StacksDir,
-			StackRunner: stackRunner(cfg, envs),
+			StackRunner: stackRunner(cfg, envs, regs),
 			// Drafts are checked next to the stacks, on the data volume.
 			StackChecker: stacks.NewChecker(stacks.CheckerOptions{TempDir: cfg.StacksDir, Compose: cfg.Compose}).Check,
 
@@ -295,16 +295,34 @@ func runAgent(ctx context.Context, cfg config.Agent, log *slog.Logger) error {
 }
 
 // stackRunner deploys the local environment's stacks with compose here, and an agent
-// environment's through its agent's control service.
-func stackRunner(cfg config.Server, envs *environments.Service) func(environments.Environment) stacks.Runner {
+// environment's through its agent's control service; both pull with the stored registry
+// credentials.
+func stackRunner(cfg config.Server, envs *environments.Service, regs *registries.Service) func(environments.Environment) stacks.Runner {
+	creds := stackCredentials(regs)
 	return func(env environments.Environment) stacks.Runner {
+		// The server's copy of the environment's stacks (api's stackDir).
+		dir := stacks.NewDir(filepath.Join(cfg.StacksDir, strconv.FormatInt(env.ID, 10)))
 		if env.Kind == environments.KindAgent {
-			return stacks.NewRemote(envs.ControlDialer(env.ID))
+			return stacks.NewRemote(envs.ControlDialer(env.ID)).WithCredentials(dir, creds)
 		}
 		return stacks.NewLocal(stacks.LocalOptions{
-			Dir:     stacks.NewDir(filepath.Join(cfg.StacksDir, strconv.FormatInt(env.ID, 10))),
-			Compose: cfg.Compose, DockerHost: cfg.DockerHost,
+			Dir: dir, Compose: cfg.Compose, DockerHost: cfg.DockerHost, Credentials: creds,
 		})
+	}
+}
+
+// stackCredentials finds the stored credentials of the registries a stack's files name.
+func stackCredentials(regs *registries.Service) stacks.CredentialFunc {
+	return func(ctx context.Context, f stacks.Files) ([]stacks.Credential, error) {
+		auths, err := regs.AuthsFor(ctx, f.Compose, f.Env)
+		if err != nil {
+			return nil, err
+		}
+		creds := make([]stacks.Credential, 0, len(auths))
+		for _, a := range auths {
+			creds = append(creds, stacks.Credential{Address: a.Address, Username: a.Username, Password: a.Password})
+		}
+		return creds, nil
 	}
 }
 

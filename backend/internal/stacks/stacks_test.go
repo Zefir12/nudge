@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -193,6 +195,167 @@ func TestLocalRuns(t *testing.T) {
 				t.Errorf("lines = %q, want %q", lines, want)
 			}
 		})
+	}
+}
+
+// configSeen is what an ExecFunc saw of compose's DOCKER_CONFIG.
+type configSeen struct {
+	dir     string
+	dirMode os.FileMode
+	mode    os.FileMode
+	config  string
+}
+
+// configRun records the configSeen of a run that may be on another goroutine.
+type configRun struct {
+	mu   sync.Mutex
+	seen configSeen
+}
+
+func (c *configRun) get() configSeen {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.seen
+}
+
+// seeConfig returns an ExecFunc that records DOCKER_CONFIG into run and prints out.
+func seeConfig(t *testing.T, run *configRun, out string) ExecFunc {
+	return func(_ context.Context, cmd Command) (int, error) {
+		var seen configSeen
+		defer func() {
+			run.mu.Lock()
+			run.seen = seen
+			run.mu.Unlock()
+		}()
+		for _, kv := range cmd.Env {
+			if v, ok := strings.CutPrefix(kv, "DOCKER_CONFIG="); ok {
+				seen.dir = v
+			}
+		}
+		if seen.dir != "" {
+			dirInfo, err := os.Stat(seen.dir)
+			if err != nil {
+				t.Errorf("DOCKER_CONFIG: %v", err)
+				return 1, nil
+			}
+			seen.dirMode = dirInfo.Mode().Perm()
+			path := filepath.Join(seen.dir, "config.json")
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Errorf("config.json: %v", err)
+				return 1, nil
+			}
+			seen.mode = info.Mode().Perm()
+			b, err := os.ReadFile(path) // #nosec G304 -- a test's temporary file
+			if err != nil {
+				t.Errorf("config.json: %v", err)
+			}
+			seen.config = string(b)
+		}
+		_, _ = cmd.Stdout.Write([]byte(out))
+		return 0, nil
+	}
+}
+
+func TestLocalCredentials(t *testing.T) {
+	t.Parallel()
+	hub := Credential{Address: "docker.io", Username: "hub", Password: "hub-pass"}
+	gh := Credential{Address: "ghcr.io", Username: "bot", Password: "gh:pa\"ss"}
+	files := Files{Compose: "services:\n  app:\n    image: ghcr.io/org/app\n", Env: "A=1\n"}
+	tests := []struct {
+		name string
+		// creds is what the Credentials option returns; nil means no option.
+		creds   []Credential
+		credErr error
+		// fromCtx are credentials handed over by the control service.
+		fromCtx    []Credential
+		down       bool
+		wantConfig string
+		wantErr    bool
+	}{
+		{name: "none", creds: []Credential{}},
+		{name: "no option"},
+		{name: "stored", creds: []Credential{hub, gh},
+			wantConfig: `{"auths":{"ghcr.io":{"auth":"Ym90OmdoOnBhInNz"},"https://index.docker.io/v1/":{"auth":"aHViOmh1Yi1wYXNz"}}}`},
+		{name: "from the control service", fromCtx: []Credential{gh},
+			wantConfig: `{"auths":{"ghcr.io":{"auth":"Ym90OmdoOnBhInNz"}}}`},
+		{name: "down gets none", creds: []Credential{hub}, down: true},
+		{name: "lookup fails", credErr: errors.New("sealed with another key"), wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			d := NewDir(t.TempDir())
+			if err := d.Create("web", files); err != nil {
+				t.Fatal(err)
+			}
+			var run configRun
+			opts := LocalOptions{Dir: d, Exec: seeConfig(t, &run, "pulled with gh:pa\"ss and hub-pass as Ym90OmdoOnBhInNz\n")}
+			called := false
+			if tt.creds != nil || tt.credErr != nil {
+				opts.Credentials = func(_ context.Context, f Files) ([]Credential, error) {
+					called = true
+					if f != files {
+						t.Errorf("Credentials got %+v, want the stack's files", f)
+					}
+					return tt.creds, tt.credErr
+				}
+			}
+			l := NewLocal(opts)
+			ctx := withCredentials(context.Background(), tt.fromCtx)
+			out, lines := collect()
+			var err error
+			if tt.down {
+				_, err = l.Down(ctx, "web", false, out)
+			} else {
+				_, err = l.Up(ctx, "web", true, out)
+			}
+			if tt.wantErr {
+				if err == nil || len(lines()) != 0 {
+					t.Errorf("Up = %v with output %q; want an error before compose runs", err, lines())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			seen := run.get()
+			if tt.down && called {
+				t.Error("down looked up credentials")
+			}
+			if seen.config != tt.wantConfig {
+				t.Errorf("config.json = %s, want %s", seen.config, tt.wantConfig)
+			}
+			if tt.wantConfig == "" {
+				if seen.dir != "" {
+					t.Errorf("DOCKER_CONFIG = %s with no credentials", seen.dir)
+				}
+				return
+			}
+			if seen.dirMode != 0o700 || seen.mode != 0o600 {
+				t.Errorf("modes: dir %o, config.json %o; want 700, 600", seen.dirMode, seen.mode)
+			}
+			if _, err := os.Stat(seen.dir); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("DOCKER_CONFIG left behind: %v", err)
+			}
+			for _, l := range lines() {
+				if strings.Contains(l.Text, "pa\"ss") || strings.Contains(l.Text, "Ym90OmdoOnBhInNz") {
+					t.Errorf("output line %q has a secret", l.Text)
+				}
+			}
+		})
+	}
+}
+
+func TestCredentialLogValue(t *testing.T) {
+	t.Parallel()
+	var buf strings.Builder
+	slog.New(slog.NewTextHandler(&buf, nil)).Info("x", "credential", Credential{Address: "ghcr.io", Username: "bot", Password: "s3cret"})
+	if strings.Contains(buf.String(), "s3cret") || !strings.Contains(buf.String(), "ghcr.io") {
+		t.Errorf("logged %q", buf.String())
+	}
+	if s := fmt.Sprint(Credential{Password: "s3cret"}); strings.Contains(s, "s3cret") {
+		t.Errorf("printed %q", s)
 	}
 }
 

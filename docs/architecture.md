@@ -142,7 +142,10 @@ to the UI as they are.
   - `PUT /v1/stacks/{name}`: body is `{"compose": "...", "env": "..."}` (at most 2 MB),
     each file written to a temporary file and swapped in with a rename. (A tar of extra
     project files can come later, when the UI edits them.)
-  - `POST /v1/stacks/{name}/up` `{"pull": bool}`: runs compose, answers NDJSON
+  - `POST /v1/stacks/{name}/up` `{"pull": bool, "credentials": [{"address", "username",
+    "password"}]}`: `credentials` (left out when there are none, so older agents still
+    deploy public images) are the registry logins the server picked for the stack; runs
+    compose, answers NDJSON
     `{"stream": "stdout"|"stderr", "line": "..."}` frames, then `{"exit_code": N}`.
     Cancelling the request kills the process.
   - `POST /v1/stacks/{name}/down` `{"volumes": bool}`: the same output format.
@@ -159,6 +162,17 @@ In code: a `stacks.Runner` interface (`Sync`, `Up`, `Down`, `Remove`) with a loc
 implementation (`stacks.Local`: writes the files, runs compose) used by the server for the
 local environment and by the agent's control service (`stacks.NewControl`), and
 `stacks.Remote`, which calls the control endpoints over `environments.ControlDialer`.
+
+Registry credentials: compose otherwise runs with only `DOCKER_HOST`, `HOME` and `PATH`,
+so for each `up` the runner that runs compose writes the credentials of the registries the stack
+may need (`registries.Service.AuthsFor`: hosts named in compose.yaml or `.env`, plus
+Docker Hub) to a `config.json` (0600) in a new private temporary directory (0700), sets
+`DOCKER_CONFIG` to it and removes it when compose exits. On an agent environment the
+server picks them and sends them with the `up` request; the agent writes the same
+temporary config. This gives the agent nothing new: image pulls already send the
+credentials through the tunnel (`X-Registry-Auth`). Passwords and their base64 `auth`
+are masked in compose's output, and `stacks.Credential` never logs or prints its
+password. Credential helpers are not supported.
 
 Out of scope for phase 5: swarm stacks, compose `build` with large contexts (git URLs
 are fine), and editing a project's extra files beyond compose.yaml and `.env` in the UI.
