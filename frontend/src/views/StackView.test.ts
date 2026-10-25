@@ -126,6 +126,20 @@ describe('StackView', () => {
     expect(wrapper.text()).toContain('bbbbbbbbbbbb (sha256:new)');
   });
 
+  it("shows the stack's deploy webhooks", async () => {
+    stubApi({
+      'GET /environments/1/stacks/web': { body: web() },
+      'GET /environments/1/webhooks?stack=web': {
+        body: [
+          { id: 'K3abc', name: 'ci-hook', kind: 'stack', target: 'web', tag_filter: '', last_status: '' },
+        ],
+      },
+    });
+    const { wrapper } = await mountView();
+    expect(wrapper.text()).toContain('Deploy webhooks');
+    expect(wrapper.text()).toContain('ci-hook');
+  });
+
   it('deploys without pulling', async () => {
     let body: unknown;
     stubApi({
@@ -209,7 +223,7 @@ describe('StackView', () => {
 
     await composeArea!.setValue('services:\n  app:\n    image: nginx:1\n');
     expect(wrapper.text()).toContain('Unsaved changes.');
-    await wrapper.find('form').trigger('submit');
+    await wrapper.find('form.files').trigger('submit');
     await flushPromises();
     expect(saved).toEqual({ compose: 'services:\n  app:\n    image: nginx:1\n', env: 'TAG=1\n' });
     expect(wrapper.text()).toContain('Saved.');

@@ -684,7 +684,7 @@ route (root on the host), a leaked webhook secret can only redeploy one target.
 `POST /api/v1/environments/{env}/webhooks` with `{"name": "ci", "container": "web",
 "tag_filter": "1.*"}` (or `"stack": "app"` instead of `"container"`) answers `201` with
 `{"id": "K3…", "name": "ci", "kind": "container", "target": "web", "tag_filter": "1.*",
-"created_by": "admin", "created_at": "...", "last_triggered_at": null, "url":
+"created_by": "admin", "created_at": "...", "last_triggered_at": null, "last_status": "", "url":
 "https://nudge.example.com/api/v1/hooks/K3…", "secret": "nudge_hook_…"}`. The secret is
 shown only here and by `POST .../webhooks/{id}/secret` (rotate: same answer, new secret,
 the old one is refused at once); it is stored encrypted, like registry passwords, since
@@ -702,6 +702,7 @@ request, like the agent join command).
   runs still go as the creator, so the audit log and update history name the creator,
   not the user who rotated the secret. Deleting a user deletes their webhooks. API tokens
   can manage webhooks like sessions (scoped tokens are #33).
+- `last_status` is the newest run's `status` (below), `""` before the first run.
 - `GET .../webhooks/{id}/runs` lists the runs, newest first, at most 50 per webhook:
   `{"id": 7, "trigger": "signature", "status": "updated", "queued_at": "...",
   "started_at": "...", "finished_at": "...", "image_before": "sha256:…",

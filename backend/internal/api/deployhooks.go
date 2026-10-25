@@ -40,6 +40,8 @@ type deployHookJSON struct {
 	CreatedBy       string     `json:"created_by"`
 	CreatedAt       time.Time  `json:"created_at"`
 	LastTriggeredAt *time.Time `json:"last_triggered_at"`
+	// LastStatus is the newest run's status, "" before the first.
+	LastStatus string `json:"last_status"`
 	// URL is the trigger URL; not a secret on its own.
 	URL string `json:"url"`
 }
@@ -66,7 +68,8 @@ func (s *server) toDeployHookJSON(r *http.Request, h deployhooks.Hook) deployHoo
 	return deployHookJSON{
 		ID: h.ID, Name: h.Name, Kind: string(h.Kind), Target: h.Target, TagFilter: h.TagFilter,
 		CreatedBy: h.Owner, CreatedAt: h.CreatedAt, LastTriggeredAt: h.LastTriggeredAt,
-		URL: s.serverURL(r) + "/api/v1/hooks/" + h.ID,
+		LastStatus: string(h.LastStatus),
+		URL:        s.serverURL(r) + "/api/v1/hooks/" + h.ID,
 	}
 }
 

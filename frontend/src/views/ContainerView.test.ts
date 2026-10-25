@@ -113,6 +113,20 @@ describe('ContainerView', () => {
     expect(links).toContain('/env/1/images/sha256:0123456789abcdef');
   });
 
+  it("shows the container's deploy webhooks", async () => {
+    stubApi({
+      'GET /environments/1/containers/web': { body: detail },
+      'GET /environments/1/webhooks?container=web': {
+        body: [
+          { id: 'K3abc', name: 'ci-hook', kind: 'container', target: 'web', tag_filter: '', last_status: '' },
+        ],
+      },
+    });
+    const wrapper = await mountAt('/env/1/containers/web');
+    expect(wrapper.text()).toContain('Deploy webhooks');
+    expect(wrapper.text()).toContain('ci-hook');
+  });
+
   it('goes back to the list after removing the container', async () => {
     const fetch = stubApi({
       'GET /environments/1/containers/web': { body: detail },

@@ -368,6 +368,10 @@ func TestTriggerDeployHook(t *testing.T) {
 				if !strings.Contains(runs.Body.String(), `"status":"skipped"`) {
 					t.Errorf("runs = %s, want the skipped one", runs.Body)
 				}
+				hooks := do(t, et.h, request{method: "GET", path: hooksPath(et, "local"), cookie: et.cookie})
+				if !strings.Contains(hooks.Body.String(), `"last_status":"skipped"`) {
+					t.Errorf("webhooks = %s, want the last run's status", hooks.Body)
+				}
 			}
 		})
 	}

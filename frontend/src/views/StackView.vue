@@ -17,6 +17,7 @@ import StackEditor from '../components/StackEditor.vue';
 import StackLogs from '../components/StackLogs.vue';
 import StateBadge from '../components/StateBadge.vue';
 import UpdateHistory from '../components/UpdateHistory.vue';
+import WebhooksCard from '../components/WebhooksCard.vue';
 import { readCompose } from '../compose';
 import { useLiveReload } from '../composables/useEvents';
 import { useLoad } from '../composables/useLoad';
@@ -250,6 +251,8 @@ function onRevert() {
       </section>
 
       <UpdateHistory ref="history" :env="env" kind="stack" :target="stack.name" />
+
+      <WebhooksCard :key="`${env}/${stack.name}`" :env="env" kind="stack" :target="stack.name" />
 
       <section class="card">
         <h2>Files</h2>

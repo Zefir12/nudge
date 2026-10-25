@@ -11,6 +11,7 @@ import LoadState from '../components/LoadState.vue';
 import StateBadge from '../components/StateBadge.vue';
 import UpdateBadge from '../components/UpdateBadge.vue';
 import UpdateHistory from '../components/UpdateHistory.vue';
+import WebhooksCard from '../components/WebhooksCard.vue';
 import { useLoad } from '../composables/useLoad';
 import { useParams } from '../composables/params';
 import { useUpdates } from '../composables/useUpdates';
@@ -147,6 +148,8 @@ const labels = computed(() =>
       </section>
 
       <UpdateHistory :env="env" kind="container" :target="c.name" />
+
+      <WebhooksCard :key="`${env}/${c.name}`" :env="env" kind="container" :target="c.name" />
 
       <ContainerStats v-if="c.state.running" :env="env" :id="c.id" />
 
