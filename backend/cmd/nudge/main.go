@@ -219,8 +219,9 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 			// Drafts are checked next to the stacks, on the data volume.
 			StackChecker: stacks.NewChecker(stacks.CheckerOptions{TempDir: cfg.StacksDir, Compose: cfg.Compose}).Check,
 
-			PublicURL:     cfg.PublicURL,
-			SecureCookies: cfg.TLS() || strings.HasPrefix(cfg.PublicURL, "https://"),
+			PublicURL:      cfg.PublicURL,
+			SecureCookies:  cfg.TLS() || strings.HasPrefix(cfg.PublicURL, "https://"),
+			TrustedProxies: cfg.TrustedProxies,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
@@ -233,7 +234,7 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 
 	errc := make(chan error, 1)
 	go func() {
-		log.Info("listening", "addr", cfg.Addr, "tls", cfg.TLS(), "public_url", cfg.PublicURL, "version", version.Version)
+		log.Info("listening", "addr", cfg.Addr, "tls", cfg.TLS(), "public_url", cfg.PublicURL, "trusted_proxies", cfg.TrustedProxies, "version", version.Version)
 		if certLoader != nil {
 			errc <- srv.ListenAndServeTLS("", "")
 			return

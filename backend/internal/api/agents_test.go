@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -235,6 +236,7 @@ func TestServerURL(t *testing.T) {
 		name      string
 		publicURL string
 		tls       bool
+		trusted   bool
 		proto     string
 		host      string
 		want      string
@@ -242,7 +244,8 @@ func TestServerURL(t *testing.T) {
 		{name: "public url wins", publicURL: "https://nudge.example.net", host: "10.0.0.5:8080", want: "https://nudge.example.net"},
 		{name: "plain http", host: "10.0.0.5:8080", want: "http://10.0.0.5:8080"},
 		{name: "own TLS", tls: true, host: "nudge.example.net", want: "https://nudge.example.net"},
-		{name: "TLS-terminating proxy", proto: "https", host: "nudge.example.net", want: "https://nudge.example.net"},
+		{name: "TLS-terminating proxy", trusted: true, proto: "https", host: "nudge.example.net", want: "https://nudge.example.net"},
+		{name: "X-Forwarded-Proto from an untrusted peer", proto: "https", host: "nudge.example.net", want: "http://nudge.example.net"},
 		{name: "unsafe host", host: "x;curl evil|sh", want: "https://<server>"},
 	}
 	for _, tt := range tests {
@@ -257,7 +260,11 @@ func TestServerURL(t *testing.T) {
 			if tt.proto != "" {
 				r.Header.Set("X-Forwarded-Proto", tt.proto)
 			}
-			if got := s.serverURL(r); got != tt.want {
+			var p proxies
+			if tt.trusted {
+				p = proxies{netip.MustParsePrefix("192.0.2.0/24")}
+			}
+			if got := s.serverURL(p.resolve(r)); got != tt.want {
 				t.Errorf("serverURL = %q, want %q", got, tt.want)
 			}
 		})
