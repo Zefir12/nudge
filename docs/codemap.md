@@ -15,7 +15,8 @@ docs/config/; grep there, not in README. The API reference is docs/api.md; the d
 `api.New(api.Options{Auth: …, Envs: …, Web: web.Handler(web.Dist())})`
 → root `http.ServeMux`: `/api/` goes through `server.protect` (with an `Authorization`
 header an API token, else the cross-origin check and a session; `server.authenticate`
-lets patterns in `publicRoutes` through without either credential) to the API mux
+lets patterns in `publicRoutes` through without either credential and refuses tokens on
+`sessionOnlyRoutes`) to the API mux
 (`/api/v1/...` handlers on `api.server`, `/api/` catch-all `notFound`); everything else
 `web.Handler` (static file or index.html for SPA routes).
 

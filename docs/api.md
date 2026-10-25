@@ -103,8 +103,12 @@ valid for 7 days. `GET /api/v1/auth/me` returns the same user object.
 nudge stores its SHA-256 hash. `GET /api/v1/tokens` lists the same objects without
 `token`.
 
-- A token acts as the user who created it, on every route; there are no scopes yet. That
-  includes creating more tokens, so after a leak revoke every token created since.
+- A token acts as the user who created it, on every route except the session-only ones;
+  there are no scopes. Creating a token is session-only: with an API token
+  `POST /api/v1/tokens` answers `403 {"error":"API tokens can't do this; sign in to the
+  web UI"}` (an unknown token is still `401`), so a leaked token can't mint one that
+  outlives its revocation. The refusal shows up in the audit log under the token's name.
+  Listing and revoking tokens work with a token.
 - Names are 1 to 64 bytes without control characters or surrounding spaces, unique per
   user (`409` otherwise). A user can hold at most 100 tokens (`409` beyond that).
 - `last_used_at` is updated at most once a minute.

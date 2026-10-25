@@ -75,6 +75,11 @@ refuses `ws://` unless `NUDGE_INSECURE=1`.
 - Browser: session cookie (`HttpOnly`, `Secure` behind TLS, `SameSite=Strict`), sessions
   in SQLite with expiry; writes additionally require a matching `Origin`.
 - Scripts: API tokens (`Authorization: Bearer nudge_...`), stored hashed, shown once.
+- Decision (#33): routes that mint a credential which outlives the token's revocation
+  (creating API tokens) are **session-only**, not scoped: a token request gets `403`,
+  audited under the token's name. They are listed in `sessionOnlyRoutes` in
+  `internal/api` and enforced in the auth middleware; a new route of that kind goes on
+  the list. Scopes stay a later option.
 - Login attempts are rate-limited per IP and username, with bounded memory.
 
 ## Stacks (phase 5)

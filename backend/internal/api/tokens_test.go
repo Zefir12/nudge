@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -116,7 +117,7 @@ func TestBearerAuth(t *testing.T) {
 		// The Authorization header decides; a valid cookie doesn't rescue a bad token.
 		{name: "bad bearer with cookie", req: request{method: "GET", path: "/api/v1/auth/me", cookie: cookie, headers: bearer("nudge_nope")}, wantCode: 401},
 		// No Origin check for bearer requests.
-		{name: "bearer cross-origin write", req: request{method: "POST", path: "/api/v1/tokens", body: `{"name":"x"}`, headers: map[string]string{"Authorization": "Bearer " + token, "Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"}}, wantCode: 201},
+		{name: "bearer cross-origin write", req: request{method: "DELETE", path: "/api/v1/tokens/999", headers: map[string]string{"Authorization": "Bearer " + token, "Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"}}, wantCode: 404},
 		{name: "cookie cross-origin write", req: request{method: "POST", path: "/api/v1/tokens", body: `{"name":"y"}`, cookie: cookie, headers: map[string]string{"Origin": "https://evil.example"}}, wantCode: 403},
 		// Public routes ignore the header; browsers can't send it cross-origin anyway.
 		{name: "public route with bearer", req: request{method: "GET", path: "/api/v1/health", headers: bearer("nudge_nope")}, wantCode: 200},
@@ -127,6 +128,79 @@ func TestBearerAuth(t *testing.T) {
 			rec := do(t, h, tt.req)
 			if rec.Code != tt.wantCode {
 				t.Errorf("code = %d, want %d (%s)", rec.Code, tt.wantCode, rec.Body)
+			}
+		})
+	}
+}
+
+// TestTokensNeedSession checks that an API token can't mint another token that would
+// outlive its revocation (#33), while a session still can and the token can still list
+// and revoke.
+func TestTokensNeedSession(t *testing.T) {
+	t.Parallel()
+	h, cookie := loggedIn(t)
+	token := createToken(t, h, cookie, "ci").Token
+	other := createToken(t, h, cookie, "other")
+	tests := []struct {
+		name     string
+		req      request
+		wantCode int
+		wantBody string
+	}{
+		{name: "create with token", req: request{method: "POST", path: "/api/v1/tokens", body: `{"name":"minted"}`, headers: bearer(token)}, wantCode: 403, wantBody: `{"error":"API tokens can't do this; sign in to the web UI"}`},
+		// The body isn't read: a malformed one is refused the same way.
+		{name: "create with token, bad body", req: request{method: "POST", path: "/api/v1/tokens", body: `{`, headers: bearer(token)}, wantCode: 403},
+		// A cookie next to the token doesn't help: the Authorization header decides.
+		{name: "create with token and cookie", req: request{method: "POST", path: "/api/v1/tokens", body: `{"name":"minted"}`, cookie: cookie, headers: bearer(token)}, wantCode: 403},
+		{name: "create with unknown token", req: request{method: "POST", path: "/api/v1/tokens", body: `{"name":"minted"}`, headers: bearer("nudge_nope")}, wantCode: 401},
+		{name: "list with token", req: request{method: "GET", path: "/api/v1/tokens", headers: bearer(token)}, wantCode: 200},
+		{name: "revoke with token", req: request{method: "DELETE", path: fmt.Sprintf("/api/v1/tokens/%d", other.ID), headers: bearer(token)}, wantCode: 204},
+		{name: "create with session", req: request{method: "POST", path: "/api/v1/tokens", body: `{"name":"fine"}`, cookie: cookie}, wantCode: 201},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := do(t, h, tt.req)
+			if rec.Code != tt.wantCode {
+				t.Errorf("code = %d, want %d (%s)", rec.Code, tt.wantCode, rec.Body)
+			}
+			if got := strings.TrimSpace(rec.Body.String()); tt.wantBody != "" && got != tt.wantBody {
+				t.Errorf("body = %s, want %s", got, tt.wantBody)
+			}
+		})
+	}
+
+	// Nothing was minted with the token, and each refusal is in the audit log under its name.
+	rec := do(t, h, request{method: "GET", path: "/api/v1/tokens", cookie: cookie})
+	if strings.Contains(rec.Body.String(), "minted") {
+		t.Errorf("a token minted another: %s", rec.Body)
+	}
+	refused := 0
+	for _, e := range keys(auditEntries(t, h, cookie, "").Entries) {
+		if e == (entryKey{User: "admin", Token: "ci", Action: "POST /api/v1/tokens", Status: 403}) {
+			refused++
+		}
+	}
+	if refused != 3 {
+		t.Errorf("audit has %d refused creates by token ci, want 3", refused)
+	}
+}
+
+// TestSessionOnlyRoutesRefuseTokens catches a pattern that is public too, or that names
+// no route (a typo would leave the real route open to tokens).
+func TestSessionOnlyRoutesRefuseTokens(t *testing.T) {
+	t.Parallel()
+	h, cookie := loggedIn(t)
+	token := createToken(t, h, cookie, "ci").Token
+	wildcard := regexp.MustCompile(`\{[^}]+\}`)
+	for pattern := range sessionOnlyRoutes {
+		t.Run(pattern, func(t *testing.T) {
+			if publicRoutes[pattern] {
+				t.Errorf("%s is both public and session-only", pattern)
+			}
+			method, path, _ := strings.Cut(wildcard.ReplaceAllString(pattern, "1"), " ")
+			rec := do(t, h, request{method: method, path: path, body: `{}`, headers: bearer(token)})
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("%s %s with a token: code = %d, want 403 (%s)", method, path, rec.Code, rec.Body)
 			}
 		})
 	}
