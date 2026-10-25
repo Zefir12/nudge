@@ -17,6 +17,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/events"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/notify"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/registries"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/registryclient"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/stacks"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/updates"
 )
@@ -32,6 +33,11 @@ type Options struct {
 	Envs    *environments.Service
 	// Registries has the credentials image pulls use.
 	Registries *registries.Service
+	// RegistryClient browses registries over HTTP; nil means a registryclient.Client.
+	RegistryClient RegistryBrowser
+	// Admin says whether a user may do admin-only actions (deleting registry tags); nil
+	// means every user is an admin, as nudge has one user until roles exist.
+	Admin func(auth.User) bool
 	// Audit records every write.
 	Audit *audit.Service
 	// StacksDir holds every environment's stacks as <dir>/<environment ID>/<name>/.
@@ -74,11 +80,18 @@ var publicRoutes = map[string]bool{
 	"GET /api/v1/agents/connect": true,
 }
 
+// sessionOnlyRoutes refuse API tokens (403) and need a session: they mint credentials
+// that would outlive the token's revocation, so a leaked token can't leave a way back in.
+// The refusal is audited with the token's name.
+var sessionOnlyRoutes = map[string]bool{
+	"POST /api/v1/tokens": true,
+}
+
 // New returns the server's root handler: the API plus the web UI.
 func New(opts Options) http.Handler {
 	s := &server{
 		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries, audit: opts.Audit, updates: opts.Updates,
-		webhooks: opts.Webhooks, events: opts.Events,
+		webhooks: opts.Webhooks, events: opts.Events, registryClient: opts.RegistryClient, isAdmin: opts.Admin,
 		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, recreating: map[string]bool{},
 		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{},
 		checks: make(chan struct{}, maxStackChecks),
@@ -86,6 +99,12 @@ func New(opts Options) http.Handler {
 	}
 	if s.events == nil {
 		s.events = events.New(events.Options{Context: opts.Context, Log: opts.Log})
+	}
+	if s.registryClient == nil {
+		s.registryClient = registryclient.New(registryclient.Options{})
+	}
+	if s.isAdmin == nil {
+		s.isAdmin = func(auth.User) bool { return true }
 	}
 	if opts.Context != nil {
 		s.done = opts.Context
@@ -109,6 +128,10 @@ func New(opts Options) http.Handler {
 	api.HandleFunc("GET /api/v1/registries/{id}", s.getRegistry)
 	api.HandleFunc("PUT /api/v1/registries/{id}", s.updateRegistry)
 	api.HandleFunc("DELETE /api/v1/registries/{id}", s.deleteRegistry)
+	api.HandleFunc("GET /api/v1/registries/{id}/repositories", s.listRegistryRepositories)
+	api.HandleFunc("GET /api/v1/registries/{id}/tags", s.listRegistryTags)
+	api.HandleFunc("DELETE /api/v1/registries/{id}/tags", s.deleteRegistryTag)
+	api.HandleFunc("GET /api/v1/registries/{id}/manifest", s.getRegistryManifest)
 	api.HandleFunc("GET /api/v1/webhooks", s.listWebhooks)
 	api.HandleFunc("POST /api/v1/webhooks", s.createWebhook)
 	api.HandleFunc("GET /api/v1/webhooks/{id}", s.getWebhook)
@@ -167,6 +190,13 @@ func New(opts Options) http.Handler {
 	api.HandleFunc("GET /api/v1/environments/{env}/updates/history", s.listUpdateHistory)
 	api.HandleFunc("/api/", s.notFound)
 
+	// tokenRefused answers the session-only routes for token requests, through a mux so
+	// the audit entry gets the route and its path values.
+	s.tokenRefused = http.NewServeMux()
+	for pattern := range sessionOnlyRoutes {
+		s.tokenRefused.HandleFunc(pattern, s.refuseToken)
+	}
+
 	mux := http.NewServeMux()
 	mux.Handle("/api/", s.protect(api))
 	mux.Handle("/", opts.Web)
@@ -179,10 +209,13 @@ type server struct {
 	auth    *auth.Service
 	envs    *environments.Service
 
-	registries *registries.Service
-	audit      *audit.Service
-	updates    *updates.Service
-	webhooks   *notify.Service
+	registries     *registries.Service
+	registryClient RegistryBrowser
+	// isAdmin gates admin-only actions (Options.Admin).
+	isAdmin  func(auth.User) bool
+	audit    *audit.Service
+	updates  *updates.Service
+	webhooks *notify.Service
 	// done ends at shutdown (Options.Context).
 	done context.Context
 	// events fans each environment's Docker events out to the clients watching it.
@@ -196,6 +229,8 @@ type server struct {
 	stackChecker func(ctx context.Context, f stacks.Files) ([]string, error)
 	// checks holds a slot per running stack check.
 	checks chan struct{}
+	// tokenRefused serves sessionOnlyRoutes to API tokens.
+	tokenRefused *http.ServeMux
 
 	mu sync.Mutex
 	// recreating holds "<env>/<container ID>" of the recreates running now.
@@ -215,10 +250,10 @@ func (s *server) protect(api *http.ServeMux) http.Handler {
 	cop.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		s.writeError(w, http.StatusForbidden, "cross-origin request refused")
 	}))
-	withSession := cop.Handler(s.authenticate(api, func(r *http.Request) (auth.User, error) {
+	withSession := cop.Handler(s.authenticate(api, false, func(r *http.Request) (auth.User, error) {
 		return s.auth.SessionUser(r.Context(), sessionToken(r))
 	}))
-	withToken := s.authenticate(api, func(r *http.Request) (auth.User, error) {
+	withToken := s.authenticate(api, true, func(r *http.Request) (auth.User, error) {
 		token, ok := bearerToken(r)
 		if !ok {
 			return auth.User{}, auth.ErrNoSession
@@ -235,10 +270,12 @@ func (s *server) protect(api *http.ServeMux) http.Handler {
 }
 
 // authenticate serves public routes as they are and every other route only to the user
-// that lookup finds.
-func (s *server) authenticate(api *http.ServeMux, lookup func(*http.Request) (auth.User, error)) http.Handler {
+// that lookup finds. With token set (lookup checks an API token) sessionOnlyRoutes are
+// refused.
+func (s *server) authenticate(api *http.ServeMux, token bool, lookup func(*http.Request) (auth.User, error)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, pattern := api.Handler(r); publicRoutes[pattern] {
+		_, pattern := api.Handler(r)
+		if publicRoutes[pattern] {
 			s.serveAudited(api, w, r)
 			return
 		}
@@ -251,8 +288,17 @@ func (s *server) authenticate(api *http.ServeMux, lookup func(*http.Request) (au
 			s.internalError(w, "authenticate", err)
 			return
 		}
-		s.serveAudited(api, w, r.WithContext(withUser(r.Context(), u)))
+		r = r.WithContext(withUser(r.Context(), u))
+		if token && sessionOnlyRoutes[pattern] {
+			s.serveAudited(s.tokenRefused, w, r)
+			return
+		}
+		s.serveAudited(api, w, r)
 	})
+}
+
+func (s *server) refuseToken(w http.ResponseWriter, _ *http.Request) {
+	s.writeError(w, http.StatusForbidden, "API tokens can't do this; sign in to the web UI")
 }
 
 type healthResponse struct {

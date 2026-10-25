@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -26,6 +27,8 @@ type joinTokenResponse struct {
 	ExpiresAt time.Time `json:"expires_at"`
 	// DockerRun starts the agent on the remote host with this token.
 	DockerRun string `json:"docker_run"`
+	// Compose is the same agent as a compose file.
+	Compose string `json:"compose"`
 }
 
 type createdEnvironmentResponse struct {
@@ -189,7 +192,13 @@ func (s *server) agentError(w http.ResponseWriter, err error, msg string) bool {
 }
 
 func (s *server) toJoinTokenResponse(r *http.Request, jt environments.JoinToken) joinTokenResponse {
-	return joinTokenResponse{Token: jt.Token, ExpiresAt: jt.ExpiresAt.UTC(), DockerRun: dockerRun(s.serverURL(r), jt.Token)}
+	server := s.serverURL(r)
+	return joinTokenResponse{
+		Token:     jt.Token,
+		ExpiresAt: jt.ExpiresAt.UTC(),
+		DockerRun: dockerRun(server, jt.Token),
+		Compose:   agentCompose(server, jt.Token),
+	}
 }
 
 // serverURL is the URL agents reach the server at: the configured public URL, else a
@@ -213,4 +222,32 @@ func dockerRun(server, token string) string {
 	return fmt.Sprintf("docker run -d --name nudge-agent --restart unless-stopped "+
 		"-v /var/run/docker.sock:/var/run/docker.sock -v nudge-agent:/data "+
 		"-e NUDGE_SERVER_URL=%s -e NUDGE_JOIN_TOKEN=%s %s agent", server, token, agentImage)
+}
+
+// agentCompose is dockerRun as a compose file (deploy/agent.compose.yml with the values
+// filled in).
+func agentCompose(server, token string) string {
+	return fmt.Sprintf(`services:
+  nudge-agent:
+    image: %s
+    command: agent
+    container_name: nudge-agent
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - nudge-agent:/data
+    environment:
+      NUDGE_SERVER_URL: %s
+      NUDGE_JOIN_TOKEN: %s
+
+volumes:
+  nudge-agent:
+`, agentImage, composeValue(server), composeValue(token))
+}
+
+// composeValue writes s as a double-quoted YAML scalar (every escape strconv.Quote writes,
+// \n, \xhh, \uhhhh, is also a YAML escape) with $ doubled, so compose does not
+// interpolate it.
+func composeValue(s string) string {
+	return strconv.Quote(strings.ReplaceAll(s, "$", "$$"))
 }

@@ -3,10 +3,14 @@ import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
 import {
   ApiError,
   apiFetch,
+  deleteRegistryTag,
   deleteToken,
   downStack,
   getHealth,
   getMe,
+  getRegistryManifest,
+  listRegistryRepositories,
+  listRegistryTags,
   logout,
   setUnauthorizedHandler,
   upStack,
@@ -72,6 +76,31 @@ describe('apiFetch', () => {
     await expect(getMe()).rejects.toMatchObject({ status: 401 });
     await expect(logout()).rejects.toMatchObject({ status: 401 });
     expect(handler).not.toHaveBeenCalled();
+  });
+});
+
+describe('registry browsing', () => {
+  it('puts repository names with slashes in the query', async () => {
+    const fn = mockFetch(200, '[]');
+    await listRegistryTags(2, 'zefir/nudge');
+    await getRegistryManifest(2, 'zefir/nudge', 'v1.2');
+    await listRegistryRepositories(2, 'nu', 'a/b');
+    mockFetch(204, '');
+    await deleteRegistryTag(2, 'zefir/nudge', 'latest', 'sha256:abc');
+    expect(fn.mock.calls.map((c) => (c as unknown[])[0])).toEqual([
+      '/api/v1/registries/2/tags?repository=zefir%2Fnudge',
+      '/api/v1/registries/2/manifest?repository=zefir%2Fnudge&tag=v1.2',
+      '/api/v1/registries/2/repositories?q=nu&cursor=a%2Fb',
+    ]);
+  });
+
+  it('deletes a tag with its digest', async () => {
+    const fn = mockFetch(204, '');
+    await expect(deleteRegistryTag(2, 'zefir/nudge', 'latest', 'sha256:abc')).resolves.toBeUndefined();
+    expect(fn).toHaveBeenCalledWith(
+      '/api/v1/registries/2/tags?repository=zefir%2Fnudge&tag=latest&digest=sha256%3Aabc',
+      expect.objectContaining({ method: 'DELETE' }),
+    );
   });
 });
 

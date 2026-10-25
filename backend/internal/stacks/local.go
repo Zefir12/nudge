@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"sync"
@@ -56,6 +57,12 @@ type LocalOptions struct {
 	// ConfigDir holds the temporary Docker configs with the credentials (see
 	// CleanConfigDir); empty means the system's temporary directory.
 	ConfigDir string
+	// Mounts, if set, lists the mounts of nudge's container, and Up refuses a stack
+	// whose binds in its directory the daemon would take from a different host path
+	// (a *BindError).
+	Mounts MountsFunc
+	// Log gets the bind check's warnings; nil discards them.
+	Log *slog.Logger
 }
 
 // Local runs compose here, on stacks in a directory of this machine.
@@ -66,11 +73,17 @@ type Local struct {
 	exec        ExecFunc
 	credentials CredentialFunc
 	configDir   string
+	mounts      MountsFunc
+	log         *slog.Logger
 }
 
 // NewLocal returns a runner for the stacks in opts.Dir.
 func NewLocal(opts LocalOptions) *Local {
-	l := &Local{dir: opts.Dir, compose: opts.Compose, dockerHost: opts.DockerHost, exec: opts.Exec, credentials: opts.Credentials, configDir: opts.ConfigDir}
+	l := &Local{dir: opts.Dir, compose: opts.Compose, dockerHost: opts.DockerHost, exec: opts.Exec,
+		credentials: opts.Credentials, configDir: opts.ConfigDir, mounts: opts.Mounts, log: opts.Log}
+	if l.log == nil {
+		l.log = slog.New(slog.DiscardHandler)
+	}
 	if l.compose == "" {
 		l.compose = DefaultCompose
 	}
@@ -87,8 +100,15 @@ func (l *Local) Sync(_ context.Context, name string, f Files) error {
 	return l.dir.Write(name, f)
 }
 
-// Up runs `up -d --remove-orphans`, with `--pull always` when pull is set.
+// Up runs `up -d --remove-orphans`, with `--pull always` when pull is set. With
+// LocalOptions.Mounts it first checks the stack's binds (checkBinds).
 func (l *Local) Up(ctx context.Context, name string, pull bool, out func(Line)) (int, error) {
+	if _, err := l.dir.Read(name); err != nil {
+		return 0, err
+	}
+	if err := l.checkBinds(ctx, name); err != nil {
+		return 0, err
+	}
 	args := []string{"up", "--detach", "--remove-orphans"}
 	if pull {
 		args = append(args, "--pull", "always")
@@ -117,12 +137,7 @@ func (l *Local) run(ctx context.Context, name string, args []string, out func(Li
 	if err != nil {
 		return 0, err
 	}
-	dir := l.dir.Path(name)
-	global := []string{
-		"--project-name", name, "--project-directory", dir, "--file", dir + "/" + ComposeFile,
-		"--ansi", "never", "--progress", "plain",
-	}
-	env := []string{"DOCKER_HOST=" + l.dockerHost, "HOME=" + os.TempDir(), "PATH=/usr/local/bin:/usr/bin:/bin"}
+	var env []string
 	var secrets []string
 	if args[0] == "up" {
 		creds, credErr := l.credentialsFor(ctx, files)
@@ -152,10 +167,9 @@ func (l *Local) run(ctx context.Context, name string, args []string, out func(Li
 		out(line)
 	}
 	stdout, stderr := &lineWriter{stream: "stdout", emit: emit}, &lineWriter{stream: "stderr", emit: emit}
-	code, err = l.exec(ctx, Command{
-		Path: l.compose, Args: append(global, args...), Dir: dir, Env: env,
-		Stdout: stdout, Stderr: stderr,
-	})
+	cmd := l.command(name, args, stdout, stderr)
+	cmd.Env = append(cmd.Env, env...)
+	code, err = l.exec(ctx, cmd)
 	stdout.flush()
 	stderr.flush()
 	if err != nil {
@@ -176,6 +190,20 @@ func (l *Local) credentialsFor(ctx context.Context, files Files) ([]Credential, 
 		return nil, fmt.Errorf("registry credentials: %w", err)
 	}
 	return append(creds[:len(creds):len(creds)], found...), nil
+}
+
+// command is compose on stack name with fixed global arguments and then args.
+func (l *Local) command(name string, args []string, stdout, stderr io.Writer) Command {
+	dir := l.dir.Path(name)
+	global := []string{
+		"--project-name", name, "--project-directory", dir, "--file", dir + "/" + ComposeFile,
+		"--ansi", "never", "--progress", "plain",
+	}
+	return Command{
+		Path: l.compose, Args: append(global, args...), Dir: dir,
+		Env:    []string{"DOCKER_HOST=" + l.dockerHost, "HOME=" + os.TempDir(), "PATH=/usr/local/bin:/usr/bin:/bin"},
+		Stdout: stdout, Stderr: stderr,
+	}
 }
 
 // runCommand runs cmd as a subprocess, killed when ctx ends.

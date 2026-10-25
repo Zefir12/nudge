@@ -9,6 +9,9 @@ Auth: the `nudge_session` cookie set by login or setup, or `Authorization: Beare
 with an API token (see Tokens). When an `Authorization` header is present it alone
 decides; the cookie is ignored. Routes marked *public* need neither; every other route
 answers `401 {"error":"authentication required"}` without a valid session or token.
+Routes marked *admin* are meant to answer `403 {"error":"admins only"}` to other users,
+but nudge has no roles yet: for now "admins only" means every logged-in user (and every
+API token).
 
 Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must carry
 `Sec-Fetch-Site: same-origin`, or an `Origin` whose host matches `Host`, or neither header
@@ -33,6 +36,10 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | GET | `/api/v1/registries/{id}` | session | one registry, without its password |
 | PUT | `/api/v1/registries/{id}` | session | change a registry; a missing password keeps the stored one |
 | DELETE | `/api/v1/registries/{id}` | session | delete a registry's credentials; `204` |
+| GET | `/api/v1/registries/{id}/repositories` | session | the registry's repositories, paged (`?q=`, `?cursor=`); see Registry browsing |
+| GET | `/api/v1/registries/{id}/tags` | session | a repository's tags (`?repository=`), sorted |
+| GET | `/api/v1/registries/{id}/manifest` | session | a tag's digest, size, platforms and the tags sharing its digest (`?repository=&tag=`) |
+| DELETE | `/api/v1/registries/{id}/tags` | admin | delete a tag (`?repository=&tag=&digest=`); `204` |
 | GET | `/api/v1/webhooks` | session | notification webhooks, by name; see Notifications |
 | POST | `/api/v1/webhooks` | session | add a webhook; `201` |
 | GET | `/api/v1/webhooks/{id}` | session | one webhook, without its URL path or header value |
@@ -103,8 +110,12 @@ valid for 7 days. `GET /api/v1/auth/me` returns the same user object.
 nudge stores its SHA-256 hash. `GET /api/v1/tokens` lists the same objects without
 `token`.
 
-- A token acts as the user who created it, on every route; there are no scopes yet. That
-  includes creating more tokens, so after a leak revoke every token created since.
+- A token acts as the user who created it, on every route except the session-only ones;
+  there are no scopes. Creating a token is session-only: with an API token
+  `POST /api/v1/tokens` answers `403 {"error":"API tokens can't do this; sign in to the
+  web UI"}` (an unknown token is still `401`), so a leaked token can't mint one that
+  outlives its revocation. The refusal shows up in the audit log under the token's name.
+  Listing and revoking tokens work with a token.
 - Names are 1 to 64 bytes without control characters or surrounding spaces, unique per
   user (`409` otherwise). A user can hold at most 100 tokens (`409` beyond that).
 - `last_used_at` is updated at most once a minute.
@@ -133,8 +144,10 @@ settings are not.
 - `POST /api/v1/environments` `{"name": "nas", "kind": "agent"}` creates an agent
   environment (`kind` must be `agent`: the local one is created automatically) and answers
   `201` with the environment plus its join token:
-  `"join_token": {"token": "nudge_join_…", "expires_at": "...", "docker_run": "docker run -d … nudge:latest agent"}`.
-  `docker_run` starts the agent on the remote host; its `NUDGE_SERVER_URL` is
+  `"join_token": {"token": "nudge_join_…", "expires_at": "...", "docker_run": "docker run -d … nudge:latest agent", "compose": "services:\n  nudge-agent: …"}`.
+  `docker_run` starts the agent on the remote host, and `compose` is the same agent as a
+  compose file (deploy/agent.compose.yml with the values filled in, quoted and with `$`
+  escaped). In both, `NUDGE_SERVER_URL` is
   `NUDGE_PUBLIC_URL`, or when that is unset the request's host (`https://` over TLS or
   with `X-Forwarded-Proto: https`). Names follow the token
   rules (1 to 64 bytes, no control characters or surrounding spaces); `409` if taken.
@@ -439,7 +452,11 @@ is in the audit log with the stack's name as its target.
   or `{"error": "..."}` if the run was cut short; a stream without either was cut off.
   Errors before compose starts are ordinary JSON errors: `404` no such stack, `409` the
   stack is being changed or deployed (one change per stack at a time) or the agent is too
-  old for stacks ("update the agent to use stacks", tunnel protocol 1), `503` no
+  old for stacks ("update the agent to use stacks", tunnel protocol 1), or (`up` and
+  `update` on the local environment) the stack binds a path under the stacks directory that the
+  daemon would take from another place on the host, as nudge has the stacks directory from
+  a volume or another host path (the message names the bind, the mount and
+  `NUDGE_STACKS_DIR`; docs/config/server.md, Stacks), `503` no
   `docker-compose` (in the server's image, or the agent's for agent environments) or the
   agent is offline. On an agent environment the server first sends the stack's files to
   the agent, and compose runs there, next to that host's daemon.
@@ -451,9 +468,30 @@ is in the audit log with the stack's name as its target.
 ### Registries
 `POST /api/v1/registries` with `{"name": "GitHub", "address": "ghcr.io", "username":
 "bot", "password": "ghp_..."}` answers `201` with `{"id": 1, "name": "GitHub", "address":
-"ghcr.io", "username": "bot", "created_at": "...", "updated_at": "..."}`; the password is
-never returned. `PUT /api/v1/registries/{id}` takes the same body; without `password` (or
-with `null`) the stored one is kept.
+"ghcr.io", "username": "bot", "kind": "generic", "owners": [], "plain_http": false,
+"created_at": "...", "updated_at": "..."}`; the password is never returned.
+`PUT /api/v1/registries/{id}` takes the same body; without `password` (or with `null`) the
+stored one is kept, unless the PUT changes `address`, `username` or `plain_http`: then
+`password` is required (`400 {"error": "password required when address, username or
+plain_http changes"}`), so the stored password never goes to a host or user it wasn't
+saved for. The other fields are replaced: a PUT without `kind` makes the registry
+`generic`.
+
+- `kind` is how nudge browses the registry (Registry browsing below): `generic` (the
+  default) for any Docker Registry v2 server (distribution/registry, Zot, Harbor, Docker
+  Hub and GHCR by name), `forgejo` for Forgejo's container registry. For `forgejo`, the
+  password must be a Forgejo access token with the `read:package` scope to browse and
+  `write:package` to delete tags.
+- `owners` (`forgejo` only, at most 20) are the Forgejo users and organizations whose
+  images are listed; empty means the registry's username.
+- `plain_http` lets nudge browse the registry over HTTP without TLS (a LAN registry). It
+  only applies to browsing; pulls go through the Docker daemon, which needs the registry
+  in its `insecure-registries`.
+- When browsing, the registry names its token server (the `realm` of its `WWW-Authenticate:
+  Bearer` challenge), and nudge sends the username and password there, as Docker does.
+  The realm may be **any HTTPS host** (Docker Hub uses `auth.docker.io`), so a registry
+  receives the credentials only if you trust it with them; a plain HTTP realm is only
+  accepted on the registry's own host when `plain_http` is set.
 
 - `address` is the registry host as image references name it, with an optional port. A
   pasted URL is reduced to its host (`https://ghcr.io/` → `ghcr.io`), and Docker Hub's
@@ -465,6 +503,53 @@ with `null`) the stored one is kept.
   daemon, on agent environments through the agent's tunnel to the remote host.
 - A pull reference may contain `@` only before a digest (`app@sha256:…`), so the
   credentials always match the host the daemon pulls from.
+
+### Registry browsing
+The server talks to the registry itself over HTTPS (HTTP with `plain_http`), with the
+stored credentials: the Registry v2 token flow (`WWW-Authenticate: Bearer`, tokens cached
+until they expire) or Basic auth. Credentials go to a token server only over HTTPS, or to
+the registry's own host when it is `plain_http`; redirects to another host (blob
+storage) never carry them. Each call is bounded (30 s, capped responses, at most 20
+pages of a listing).
+
+Repository names contain `/`, so they go in the query. Names follow the distribution
+grammar (`team/app`, lowercase; tags such as `v1.2`); anything else is `400`.
+
+- `GET /api/v1/registries/{id}/repositories?q=&cursor=` answers `{"repositories":
+  [{"name": "zefir/nudge"}], "next": "zefir/nudge"}`: 100 names a page, sorted, `q` a
+  case-insensitive substring filter; pass `next` as `cursor` for the next page (no `next`
+  on the last). `generic` registries list `/v2/_catalog`; `forgejo` registries list the
+  owners' container packages (`GET /api/v1/packages/{owner}?type=container`). Registries
+  without a catalog (Docker Hub, GHCR) answer `409 {"error": "registry doesn't list
+  repositories; open one by name"}`: tags and manifests still work for a repository the
+  user names (`nginx` on Docker Hub is `library/nginx`).
+- `GET /api/v1/registries/{id}/tags?repository=zefir/nudge` answers `[{"tag":
+  "latest"}]`, sorted. Forgejo's platform manifests (`sha256:…` versions) are left out.
+- `GET /api/v1/registries/{id}/manifest?repository=zefir/nudge&tag=latest` answers
+  `{"repository", "tag", "digest": "sha256:…", "media_type", "size", "created",
+  "platforms": [{"os", "architecture", "variant", "digest", "size"}], "shared_tags":
+  ["v1.2"], "shared_tags_complete": true}`. An image has `size` (config plus layers,
+  compressed) and `created` (from its config); an index (multi-arch) has `platforms`
+  instead, each with its size, without attestations. `shared_tags` are the repository's
+  other tags on the same digest (at most 100 tags are checked; `shared_tags_complete` is
+  false when not all were).
+- `DELETE /api/v1/registries/{id}/tags?repository=…&tag=…&digest=sha256:…` deletes the
+  tag; admins only (`403` otherwise; with no roles yet, that is every logged-in user).
+  `digest` must be the tag's current digest (from the manifest call), else `409
+  {"error": "the tag points to another digest now"}`, so a re-push in between is never
+  deleted. Audited with target `<address>/<repository>:<tag>`.
+  - `generic`: deletes the manifest by digest (`DELETE /v2/<repo>/manifests/<digest>`),
+    which removes **every tag on that digest** (`shared_tags`). The registry must allow
+    deletes (distribution: `REGISTRY_STORAGE_DELETE_ENABLED=true`), else `409
+    {"error": "registry doesn't allow deletes"}`, and frees the space only after its
+    garbage collection runs.
+  - `forgejo`: deletes the tag's package version through Forgejo's API (`DELETE
+    /api/v1/packages/{owner}/container/{name}/{tag}`); other tags on the same digest stay.
+- Errors: `404` for an unknown registry, repository or tag; `502 {"error": "registry
+  unreachable"}` or `502 {"error": "registry refused the credentials"}` (also a token
+  missing a scope), `502 {"error": "registry's token server isn't HTTPS"}`, and `409`
+  for a `forgejo` registry without owners whose username isn't a Forgejo user. The
+  registry's own error messages are never passed on.
 
 ### Image updates
 nudge checks the images that containers run by tag (an implicit `latest` included) for a
