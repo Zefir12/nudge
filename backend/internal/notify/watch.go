@@ -20,6 +20,8 @@ const (
 	// OfflineGrace is how long an agent stays offline before it is notified, so a
 	// restart or a short network cut stays quiet.
 	OfflineGrace = 2 * time.Minute
+	// MaxPings bounds the environments pinged at once.
+	MaxPings = 8
 	// killWindow is how long after a kill a container's exit counts as asked for: the
 	// stop timeout before SIGKILL is 10 seconds by default.
 	killWindow = 5 * time.Minute
@@ -41,6 +43,7 @@ type WatchEnvs interface {
 // Sender queues a notification; *Service is one.
 type Sender interface {
 	Send(ctx context.Context, key string, window time.Duration, m Message) (bool, error)
+	Recover(ctx context.Context, key string, m Message) (bool, error)
 }
 
 // WatchOptions are the Watcher's dependencies.
@@ -53,8 +56,8 @@ type WatchOptions struct {
 }
 
 // Watcher notifies failed containers, from each environment's Docker events, and agents
-// that stay offline. Events while an environment's stream is down (until the next look)
-// are missed.
+// that stay offline, and their recoveries. Events while an environment's stream is down
+// (until the next look) are missed.
 type Watcher struct {
 	envs  WatchEnvs
 	hub   *events.Hub
@@ -67,9 +70,8 @@ type Watcher struct {
 	// streams are the environments' event readers, keyed by environment id (bounded by
 	// the environments table); done is closed when the reader ends.
 	streams map[int64]stream
-	// offline is when each agent environment was first seen offline, notified whether
-	// that was sent.
-	offline map[int64]offline
+	// agents are the connected agent environments' outages, keyed by environment id.
+	agents map[int64]outage
 }
 
 type stream struct {
@@ -77,16 +79,18 @@ type stream struct {
 	done   chan struct{}
 }
 
-type offline struct {
+// outage is when an agent was first seen offline and last notified; both are zero
+// while it is online.
+type outage struct {
 	since    time.Time
-	notified bool
+	notified time.Time
 }
 
 // NewWatcher returns a Watcher; Run starts it.
 func NewWatcher(opts WatchOptions) *Watcher {
 	w := &Watcher{
 		envs: opts.Envs, hub: opts.Hub, send: opts.Send, log: opts.Log, clock: opts.Clock,
-		streams: map[int64]stream{}, offline: map[int64]offline{},
+		streams: map[int64]stream{}, agents: map[int64]outage{},
 	}
 	if w.log == nil {
 		w.log = slog.New(slog.DiscardHandler)
@@ -128,15 +132,25 @@ func (w *Watcher) look(ctx context.Context) {
 		}
 		return
 	}
+	online := make([]bool, len(list))
+	var wg sync.WaitGroup
+	slots := make(chan struct{}, MaxPings)
+	for i := range list {
+		slots <- struct{}{}
+		wg.Go(func() {
+			defer func() { <-slots }()
+			online[i] = w.envs.Online(ctx, &list[i])
+		})
+	}
+	wg.Wait()
+	if ctx.Err() != nil {
+		return
+	}
 	seen := map[int64]bool{}
-	for _, env := range list {
+	for i, env := range list {
 		seen[env.ID] = true
-		online := w.envs.Online(ctx, &env)
-		if ctx.Err() != nil {
-			return
-		}
 		if env.Kind == environments.KindAgent {
-			w.checkAgent(ctx, env, online)
+			w.checkAgent(ctx, env, online[i])
 		}
 		st, ok := w.streams[env.ID]
 		if ok {
@@ -147,7 +161,7 @@ func (w *Watcher) look(ctx context.Context) {
 			default:
 			}
 		}
-		if online && !ok {
+		if online[i] && !ok {
 			w.startStream(ctx, env)
 		}
 	}
@@ -158,37 +172,56 @@ func (w *Watcher) look(ctx context.Context) {
 			delete(w.streams, id)
 		}
 	}
-	for id := range w.offline {
+	for id := range w.agents {
 		if !seen[id] {
-			delete(w.offline, id)
+			delete(w.agents, id)
 		}
 	}
 }
 
-// checkAgent tracks how long an agent has been offline. Agents that never connected
-// aren't watched: they have nothing to lose yet.
+// checkAgent tracks how long an agent has been offline, notifies it after OfflineGrace
+// and again every OfflineWindow, and its return. Agents that never connected aren't
+// watched: they have nothing to lose yet.
 func (w *Watcher) checkAgent(ctx context.Context, env environments.Environment, online bool) {
-	if online || !env.Enrolled || env.LastSeenAt == nil {
-		delete(w.offline, env.ID)
+	if !env.Enrolled || env.LastSeenAt == nil {
+		delete(w.agents, env.ID)
+		return
+	}
+	key := "offline/" + strconv.FormatInt(env.ID, 10)
+	o, known := w.agents[env.ID]
+	if online {
+		// Not known yet: an outage may have been notified before nudge restarted. A
+		// recovery that failed is tried again at the next look.
+		if !known || !o.notified.IsZero() {
+			if !w.recovered(ctx, key, Message{
+				Event:       EventAgentOnline,
+				Text:        fmt.Sprintf("Agent environment %s is back online", env.Name),
+				Environment: envRef(env),
+			}) {
+				return
+			}
+		}
+		w.agents[env.ID] = outage{}
 		return
 	}
 	now := w.clock.Now()
-	o, ok := w.offline[env.ID]
-	if !ok {
-		w.offline[env.ID] = offline{since: now}
+	if o.since.IsZero() {
+		w.agents[env.ID] = outage{since: now}
 		return
 	}
-	if o.notified || now.Sub(o.since) < OfflineGrace {
+	if now.Sub(o.since) < OfflineGrace || (!o.notified.IsZero() && now.Sub(o.notified) < OfflineWindow) {
 		return
 	}
-	o.notified = true
-	w.offline[env.ID] = o
 	m := Message{
 		Event:       EventAgentOffline,
 		Text:        fmt.Sprintf("Agent environment %s is offline, last seen %s", env.Name, env.LastSeenAt.UTC().Format(time.RFC3339)),
 		Environment: envRef(env),
 	}
-	w.notify(ctx, "offline/"+strconv.FormatInt(env.ID, 10), m)
+	// A failed send is tried again at the next look.
+	if w.notify(ctx, key, OfflineWindow, m) {
+		o.notified = now
+		w.agents[env.ID] = o
+	}
 }
 
 func (w *Watcher) startStream(ctx context.Context, env environments.Environment) {
@@ -197,7 +230,7 @@ func (w *Watcher) startStream(ctx context.Context, env environments.Environment)
 		w.log.Warn("notify: environment client", "env", env.ID, "err", err)
 		return
 	}
-	sub, err := w.hub.Subscribe(env.ID, c)
+	sub, err := w.hub.SubscribeReserved(env.ID, c)
 	if err != nil {
 		w.log.Warn("notify: watch events", "env", env.ID, "err", err)
 		return
@@ -264,24 +297,49 @@ func (w *Watcher) handle(ctx context.Context, env environments.Environment, kill
 			return
 		}
 		c.ExitCode = &code
-		w.notify(ctx, "exited"+key, Message{
+		w.notify(ctx, "exited"+key, ProblemWindow, Message{
 			Event:       EventExited,
 			Text:        fmt.Sprintf("Container %s on %s exited with code %d", name, env.Name, code),
 			Environment: envRef(env),
 			Container:   c,
 		})
 	case "health_status: unhealthy":
-		w.notify(ctx, "unhealthy"+key, Message{
+		w.notify(ctx, "unhealthy"+key, ProblemWindow, Message{
 			Event:       EventUnhealthy,
 			Text:        fmt.Sprintf("Container %s on %s is unhealthy", name, env.Name),
+			Environment: envRef(env),
+			Container:   c,
+		})
+	case "health_status: healthy":
+		w.recovered(ctx, "unhealthy"+key, Message{
+			Event:       EventHealthy,
+			Text:        fmt.Sprintf("Container %s on %s is healthy again", name, env.Name),
 			Environment: envRef(env),
 			Container:   c,
 		})
 	}
 }
 
-func (w *Watcher) notify(ctx context.Context, key string, m Message) {
-	if _, err := w.send.Send(ctx, key, ProblemWindow, m); err != nil && ctx.Err() == nil {
-		w.log.Warn("notification not sent", "event", m.Event, "err", err)
+// notify sends m unless key was sent within window, and reports whether that worked
+// (a repeat kept quiet counts).
+func (w *Watcher) notify(ctx context.Context, key string, window time.Duration, m Message) bool {
+	if _, err := w.send.Send(ctx, key, window, m); err != nil {
+		if ctx.Err() == nil {
+			w.log.Warn("notification not sent", "event", m.Event, "err", err)
+		}
+		return false
 	}
+	return true
+}
+
+// recovered sends m if the problem under key was notified, and reports whether that
+// worked (no problem to recover counts).
+func (w *Watcher) recovered(ctx context.Context, key string, m Message) bool {
+	if _, err := w.send.Recover(ctx, key, m); err != nil {
+		if ctx.Err() == nil {
+			w.log.Warn("notification not sent", "event", m.Event, "err", err)
+		}
+		return false
+	}
+	return true
 }

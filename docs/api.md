@@ -614,33 +614,39 @@ hand: the previous image stays on the host (untagged) until it is pruned.
 
 ### Notifications
 `POST /api/v1/webhooks` with `{"name": "Chat", "url": "https://hooks.example.com/T0/abc",
-"header_name": "X-Token", "header_value": "...", "enabled": true}` answers `201` with
+"header_name": "X-Token", "header_value": "...", "enabled": true, "events":
+["container.exited", "container.unhealthy", "container.healthy"]}` answers `201` with
 `{"id": 1, "name": "Chat", "endpoint": "https://hooks.example.com", "header_name":
-"X-Token", "enabled": true, "last_sent_at": null, "last_error": "", "created_at": "...",
+"X-Token", "enabled": true, "events": ["container.unhealthy", "container.healthy",
+"container.exited"], "last_sent_at": null, "last_error": "", "created_at": "...",
 "updated_at": "..."}`. Chat webhooks carry their token in the URL, so the URL and the
 header value are encrypted like registry passwords and never returned: `endpoint` is the
 URL's scheme and host. `PUT /api/v1/webhooks/{id}` takes the same body; without `url`,
-`header_value` or `enabled` (or with `null`) the stored one is kept, and an empty
+`header_value`, `enabled` or `events` (or with `null`) the stored one is kept, and an empty
 `header_name` drops the header. The stored header value is kept only while the URL's
 scheme and host and the header name stay the same (`400` otherwise), so a secret never
 follows the URL elsewhere. `header_name` and `header_value` are optional; a new webhook's
-`enabled` defaults to `false`.
+`enabled` defaults to `false`, its `events` to the problems (`update.available`,
+`container.unhealthy`, `container.exited`, `agent.offline`), without the recoveries.
 
 - `url` is `http` or `https`, at most 2048 bytes, without credentials (send those in the
   header). Names (1 to 64 bytes) are unique (`409`), at most 20 webhooks (`409`).
 - `header_name` is any header but `Host`, `Content-Type`, `Content-Length`,
   `Transfer-Encoding`, `Connection`, `User-Agent` and `X-Nudge-Event`; values are 1 to
   4096 bytes without control characters.
+- `events` are the events (table below, not `test`) the webhook receives, at least one
+  (`400`); they are returned in the table's order.
 - `POST /api/v1/webhooks/{id}/test` posts a `test` notification to that webhook, enabled
   or not, and answers `200` with the outcome. `last_sent_at` and `last_error` describe the
   last delivery, of a test or a notification; errors never contain the URL.
 - `503` when the server runs without notifications (tests).
 
-Every enabled webhook gets a `POST` with `Content-Type: application/json`, `User-Agent:
+Every enabled webhook that receives the event gets a `POST` with `Content-Type: application/json`, `User-Agent:
 nudge/<version>`, `X-Nudge-Event: <event>` and the secret header. Redirects are not
 followed (the secret header would go along); any `2xx` is a delivery. A network error, a
 timeout, `408`, `429` or a `5xx` is tried three times in all (5 s, then 10 s apart);
-other answers aren't retried. Webhooks are served one after the other. The body:
+other answers aren't retried. Up to 4 webhooks are served at once; notifications go out
+one after the other. The body:
 
 ```json
 {"event": "container.exited", "time": "2026-10-24T12:00:00Z",
@@ -653,16 +659,21 @@ other answers aren't retried. Webhooks are served one after the other. The body:
 |---|---|---|---|
 | `update.available` | an update check finds a new registry digest for an image | `images: [{image, local_digest, remote_digest}]`, all images of one check and environment | for a newer digest only |
 | `container.exited` | a container stops with a non-zero exit code without a stop, kill or restart before it (5 minutes) | `container` with `exit_code` | an hour later at the earliest, per container name |
-| `container.unhealthy` | a container's health check turns unhealthy | `container` | an hour later at the earliest, per container name |
-| `agent.offline` | an agent environment that has connected before stays offline for 2 minutes | — | after it was back online, an hour later at the earliest |
+| `container.unhealthy` | a container's health check turns unhealthy | `container` | an hour later at the earliest, per container name, or at once after `container.healthy` |
+| `container.healthy` | the health check of a container notified as unhealthy turns healthy (up to a day after the notice's hour) | `container` | after the next `container.unhealthy` |
+| `agent.offline` | an agent environment that has connected before stays offline for 2 minutes | — | once a day while it stays offline; after it was back online, at the next outage |
+| `agent.online` | an agent notified as offline is back online | — | after the next `agent.offline` |
 | `test` | `POST /api/v1/webhooks/{id}/test` | — | — |
 
 Containers are watched through each online environment's Docker events (the stream the
 events WebSocket uses); environments are looked at every 30 seconds, so events while a
 stream is reconnecting are missed. What was sent is kept in the database, so a restart
 doesn't repeat it; a notification that no webhook got (none enabled, all failed, or more
-than 100 waiting) counts as not sent, so it goes out the next time it happens. An agent
-that stays offline is notified once, not again until it was back online.
+than 100 waiting) counts as not sent, so it goes out the next time it happens. A
+recovery (`container.healthy`, `agent.online`) is sent only when its problem was: a
+container that was never notified as unhealthy, or an agent back within its 2 minutes,
+stays quiet. It goes to the webhooks that receive the recovery event, whether or not they
+receive the problem.
 
 ### Webhooks
 Deploy webhooks (not to be confused with the notification webhooks above) let a CI job or

@@ -15,6 +15,7 @@ const chat = {
   endpoint: 'https://hooks.example.com',
   header_name: 'X-Token',
   enabled: true,
+  events: ['update.available', 'container.unhealthy', 'container.exited', 'agent.offline'],
   last_sent_at: null,
   last_error: '',
   created_at: '2026-10-24T12:00:00Z',
@@ -50,6 +51,7 @@ describe('WebhooksView', () => {
           header_name: 'X-Token',
           header_value: 'hunter2',
           enabled: true,
+          events: ['update.available', 'container.unhealthy', 'container.exited', 'agent.offline'],
         });
         list = [chat];
         return { status: 201, body: chat };
@@ -68,6 +70,29 @@ describe('WebhooksView', () => {
     expect((wrapper.find('input[name=header_value]').element as HTMLInputElement).value).toBe('');
   });
 
+  it('picks the events', async () => {
+    stubApi({
+      'GET /webhooks': { body: [{ ...chat, events: ['agent.offline'] }] },
+      'PUT /webhooks/1': (init) => {
+        expect(JSON.parse(String(init?.body)).events).toEqual(['agent.online']);
+        return { body: { ...chat, events: ['agent.online'] } };
+      },
+    });
+    const wrapper = mount(WebhooksView);
+    await flushPromises();
+    const box = (event: string) => wrapper.find(`input[name=events][value="${event}"]`);
+    expect((box('container.healthy').element as HTMLInputElement).checked).toBe(false);
+    expect((box('container.exited').element as HTMLInputElement).checked).toBe(true);
+    await button(wrapper, 'Edit')?.trigger('click');
+    expect((box('agent.offline').element as HTMLInputElement).checked).toBe(true);
+    await box('agent.offline').setValue(false);
+    expect(button(wrapper, 'Save')?.attributes('disabled')).toBeDefined();
+    await box('agent.online').setValue(true);
+    await wrapper.find('form').trigger('submit');
+    await flushPromises();
+    expect(wrapper.text()).toContain('Add a webhook');
+  });
+
   it('edits a webhook keeping its URL and header value', async () => {
     stubApi({
       'GET /webhooks': { body: [chat] },
@@ -76,6 +101,7 @@ describe('WebhooksView', () => {
           name: 'Chat',
           header_name: 'X-Token',
           enabled: false,
+          events: chat.events,
         });
         return { body: { ...chat, enabled: false } };
       },

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -27,6 +28,13 @@ const (
 	// MaxWebhooks bounds the targets, and so the deliveries of one notification.
 	MaxWebhooks = 20
 )
+
+// Events are the events a webhook can receive, in the order they are stored.
+var Events = []string{EventUpdateAvailable, EventUnhealthy, EventHealthy, EventExited, EventAgentOffline, EventAgentOnline}
+
+// DefaultEvents are a new webhook's events when its Input names none: the problems,
+// without the recoveries.
+var DefaultEvents = []string{EventUpdateAvailable, EventUnhealthy, EventExited, EventAgentOffline}
 
 var (
 	// ErrNotFound means there is no webhook with that id.
@@ -50,6 +58,8 @@ type Webhook struct {
 	Endpoint   string
 	HeaderName string
 	Enabled    bool
+	// Events are the events it receives, in the order of Events.
+	Events []string
 	// LastSentAt is the last delivery, nil if there was none; LastError says why it
 	// failed, empty if it didn't.
 	LastSentAt *time.Time
@@ -62,12 +72,14 @@ type Webhook struct {
 // HeaderValue the stored value (unless the endpoint or header name changes, so a secret
 // never follows the URL to another host) and a nil Enabled the stored state; an empty
 // HeaderName sends no header. A new webhook is disabled unless Enabled says otherwise.
+// Nil Events keep the stored ones, or are DefaultEvents for a new webhook.
 type Input struct {
 	Name        string
 	URL         *string
 	HeaderName  string
 	HeaderValue *string
 	Enabled     *bool
+	Events      []string
 }
 
 // target is a webhook with its secrets, for a delivery.
@@ -79,7 +91,7 @@ type target struct {
 	headerValue string
 }
 
-const selectWebhook = `SELECT id, name, endpoint, header_name, enabled, last_sent_at, last_error, created_at, updated_at FROM webhooks`
+const selectWebhook = `SELECT id, name, endpoint, header_name, enabled, events, last_sent_at, last_error, created_at, updated_at FROM webhooks`
 
 // List returns every webhook by name.
 func (s *Service) List(ctx context.Context) ([]Webhook, error) {
@@ -122,6 +134,9 @@ func (s *Service) Create(ctx context.Context, in Input) (Webhook, error) {
 	if in.HeaderName != "" && in.HeaderValue == nil {
 		return Webhook{}, &InputError{Msg: "header value is required with a header name"}
 	}
+	if in.Events == nil {
+		in.Events = DefaultEvents
+	}
 	endpoint, err := validate(&in)
 	if err != nil {
 		return Webhook{}, err
@@ -139,9 +154,10 @@ func (s *Service) Create(ctx context.Context, in Input) (Webhook, error) {
 		return Webhook{}, ErrTooMany
 	}
 	now := s.clock.Now().Unix()
-	res, err := tx.ExecContext(ctx, `INSERT INTO webhooks (name, endpoint, url_enc, header_name, header_value_enc, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
-		in.Name, endpoint, s.box.Seal([]byte(*in.URL), urlPurpose), in.HeaderName, s.sealHeader(in), in.Enabled != nil && *in.Enabled, now, now)
+	res, err := tx.ExecContext(ctx, `INSERT INTO webhooks (name, endpoint, url_enc, header_name, header_value_enc, enabled, events, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
+		in.Name, endpoint, s.box.Seal([]byte(*in.URL), urlPurpose), in.HeaderName, s.sealHeader(in), in.Enabled != nil && *in.Enabled,
+		strings.Join(in.Events, ","), now, now)
 	if err != nil {
 		return Webhook{}, fmt.Errorf("create webhook: %w", err)
 	}
@@ -172,11 +188,11 @@ func (s *Service) Update(ctx context.Context, id int64, in Input) (Webhook, erro
 		return Webhook{}, fmt.Errorf("update webhook: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	var oldEndpoint, oldHeader string
+	var oldEndpoint, oldHeader, events string
 	var urlEnc, headerEnc []byte
 	var enabled bool
-	err = tx.QueryRowContext(ctx, `SELECT endpoint, url_enc, header_name, header_value_enc, enabled FROM webhooks WHERE id = ?`, id).
-		Scan(&oldEndpoint, &urlEnc, &oldHeader, &headerEnc, &enabled)
+	err = tx.QueryRowContext(ctx, `SELECT endpoint, url_enc, header_name, header_value_enc, enabled, events FROM webhooks WHERE id = ?`, id).
+		Scan(&oldEndpoint, &urlEnc, &oldHeader, &headerEnc, &enabled, &events)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Webhook{}, ErrNotFound
 	}
@@ -190,6 +206,9 @@ func (s *Service) Update(ctx context.Context, id int64, in Input) (Webhook, erro
 	}
 	if in.Enabled != nil {
 		enabled = *in.Enabled
+	}
+	if in.Events != nil {
+		events = strings.Join(in.Events, ",")
 	}
 	switch {
 	case in.HeaderName == "":
@@ -208,8 +227,8 @@ func (s *Service) Update(ctx context.Context, id int64, in Input) (Webhook, erro
 	if taken {
 		return Webhook{}, ErrTaken
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE webhooks SET name = ?, endpoint = ?, url_enc = ?, header_name = ?, header_value_enc = ?, enabled = ?, updated_at = ?
-		WHERE id = ?`, in.Name, endpoint, urlEnc, in.HeaderName, headerEnc, enabled, s.clock.Now().Unix(), id); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE webhooks SET name = ?, endpoint = ?, url_enc = ?, header_name = ?, header_value_enc = ?, enabled = ?, events = ?, updated_at = ?
+		WHERE id = ?`, in.Name, endpoint, urlEnc, in.HeaderName, headerEnc, enabled, events, s.clock.Now().Unix(), id); err != nil {
 		return Webhook{}, fmt.Errorf("update webhook: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -241,13 +260,14 @@ func (s *Service) sealHeader(in Input) []byte {
 	return s.box.Seal([]byte(*in.HeaderValue), headerPurpose)
 }
 
-// targets returns the enabled webhooks with their secrets, or the one with id if id > 0
-// (enabled or not: a test may check one before turning it on).
-func (s *Service) targets(ctx context.Context, id int64) ([]target, error) {
-	query := `SELECT id, name, url_enc, header_name, header_value_enc FROM webhooks WHERE enabled`
+// targets returns the enabled webhooks that receive event with their secrets, or the one
+// with id if id > 0 (enabled or not, whatever its events: a test may check one before
+// turning it on).
+func (s *Service) targets(ctx context.Context, id int64, event string) ([]target, error) {
+	query := `SELECT id, name, url_enc, header_name, header_value_enc, events FROM webhooks WHERE enabled`
 	args := []any{}
 	if id > 0 {
-		query, args = `SELECT id, name, url_enc, header_name, header_value_enc FROM webhooks WHERE id = ?`, []any{id}
+		query, args = `SELECT id, name, url_enc, header_name, header_value_enc, events FROM webhooks WHERE id = ?`, []any{id}
 	}
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -258,8 +278,12 @@ func (s *Service) targets(ctx context.Context, id int64) ([]target, error) {
 	for rows.Next() {
 		var t target
 		var urlEnc, headerEnc []byte
-		if err := rows.Scan(&t.id, &t.name, &urlEnc, &t.headerName, &headerEnc); err != nil {
+		var events string
+		if err := rows.Scan(&t.id, &t.name, &urlEnc, &t.headerName, &headerEnc, &events); err != nil {
 			return nil, fmt.Errorf("webhook targets: %w", err)
+		}
+		if id == 0 && !slices.Contains(strings.Split(events, ","), event) {
+			continue
 		}
 		u, err := s.box.Open(urlEnc, urlPurpose)
 		if err != nil {
@@ -320,6 +344,13 @@ func validate(in *Input) (string, error) {
 			return "", &InputError{Msg: fmt.Sprintf("header value must be 1 to %d bytes without control characters", maxHeaderValue)}
 		}
 	}
+	if in.Events != nil {
+		events, err := validEvents(in.Events)
+		if err != nil {
+			return "", err
+		}
+		in.Events = events
+	}
 	if in.URL == nil {
 		return "", nil
 	}
@@ -339,15 +370,36 @@ func endpointOf(raw string) (string, error) {
 	return u.Scheme + "://" + u.Host, nil
 }
 
+// validEvents checks a webhook's events and returns them in the order of Events.
+func validEvents(events []string) ([]string, error) {
+	if len(events) == 0 {
+		return nil, &InputError{Msg: "events must name at least one event"}
+	}
+	for _, e := range events {
+		if !slices.Contains(Events, e) {
+			return nil, &InputError{Msg: fmt.Sprintf("unknown event %q", e)}
+		}
+	}
+	var list []string
+	for _, e := range Events {
+		if slices.Contains(events, e) {
+			list = append(list, e)
+		}
+	}
+	return list, nil
+}
+
 type scanner interface{ Scan(dest ...any) error }
 
 func scan(row scanner) (Webhook, error) {
 	var w Webhook
 	var lastSent sql.NullInt64
 	var created, updated int64
-	if err := row.Scan(&w.ID, &w.Name, &w.Endpoint, &w.HeaderName, &w.Enabled, &lastSent, &w.LastError, &created, &updated); err != nil {
+	var events string
+	if err := row.Scan(&w.ID, &w.Name, &w.Endpoint, &w.HeaderName, &w.Enabled, &events, &lastSent, &w.LastError, &created, &updated); err != nil {
 		return Webhook{}, err
 	}
+	w.Events = strings.Split(events, ",")
 	if lastSent.Valid {
 		t := time.Unix(lastSent.Int64, 0).UTC()
 		w.LastSentAt = &t

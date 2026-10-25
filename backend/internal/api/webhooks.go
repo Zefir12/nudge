@@ -17,20 +17,23 @@ type webhookResponse struct {
 	Endpoint   string     `json:"endpoint"`
 	HeaderName string     `json:"header_name"`
 	Enabled    bool       `json:"enabled"`
+	Events     []string   `json:"events"`
 	LastSentAt *time.Time `json:"last_sent_at"`
 	LastError  string     `json:"last_error"`
 	CreatedAt  time.Time  `json:"created_at"`
 	UpdatedAt  time.Time  `json:"updated_at"`
 }
 
-// webhookRequest creates or updates a webhook; on update a missing or null url or
-// header_value keeps the stored one.
+// webhookRequest creates or updates a webhook; on update a missing or null url,
+// header_value or events keeps the stored one, and a new webhook without events gets
+// notify.DefaultEvents.
 type webhookRequest struct {
-	Name        string  `json:"name"`
-	URL         *string `json:"url"`
-	HeaderName  string  `json:"header_name"`
-	HeaderValue *string `json:"header_value"`
-	Enabled     *bool   `json:"enabled"`
+	Name        string   `json:"name"`
+	URL         *string  `json:"url"`
+	HeaderName  string   `json:"header_name"`
+	HeaderValue *string  `json:"header_value"`
+	Enabled     *bool    `json:"enabled"`
+	Events      []string `json:"events"`
 }
 
 // webhookTestResponse is the outcome of a test delivery.
@@ -42,7 +45,7 @@ type webhookTestResponse struct {
 func toWebhookResponse(w notify.Webhook) webhookResponse {
 	return webhookResponse{
 		ID: w.ID, Name: w.Name, Endpoint: w.Endpoint, HeaderName: w.HeaderName, Enabled: w.Enabled,
-		LastSentAt: w.LastSentAt, LastError: w.LastError, CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt,
+		Events: w.Events, LastSentAt: w.LastSentAt, LastError: w.LastError, CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt,
 	}
 }
 

@@ -169,3 +169,32 @@ func TestShutdownEndsSubscriptions(t *testing.T) {
 	}
 	a.Close()
 }
+
+func TestReservedSubscription(t *testing.T) {
+	t.Parallel()
+	h, src := newHub(4), newFakeSource()
+	for range 2 {
+		if _, err := h.Subscribe(1, src); err != nil {
+			t.Fatal(err)
+		}
+	}
+	src.waitOpened(t)
+	if _, err := h.Subscribe(1, src); !errors.Is(err, ErrTooMany) {
+		t.Errorf("subscribe over the limit: err = %v, want ErrTooMany", err)
+	}
+	r, err := h.SubscribeReserved(1, src)
+	if err != nil {
+		t.Fatalf("reserved subscribe with the clients at the limit: %v", err)
+	}
+	if _, err := h.SubscribeReserved(1, src); !errors.Is(err, ErrTooMany) {
+		t.Errorf("second reserved subscribe: err = %v, want ErrTooMany", err)
+	}
+	src.msgs <- msg("start")
+	if e, _ := recv(t, r); e.Action != "start" {
+		t.Errorf("reserved got %+v", e)
+	}
+	r.Close()
+	if _, err := h.SubscribeReserved(1, src); err != nil {
+		t.Errorf("reserved subscribe after Close: %v", err)
+	}
+}
