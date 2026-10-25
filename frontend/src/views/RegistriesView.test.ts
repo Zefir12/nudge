@@ -1,8 +1,13 @@
 import { flushPromises, mount } from '@vue/test-utils';
 import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
+import { createMemoryHistory } from 'vue-router';
 
+import { createAppRouter } from '../router';
 import { stubApi } from '../test-utils';
 import RegistriesView from './RegistriesView.vue';
+
+const mountView = () =>
+  mount(RegistriesView, { global: { plugins: [createAppRouter(createMemoryHistory())] } });
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -27,11 +32,12 @@ const button = (wrapper: ReturnType<typeof mount>, text: string) =>
 describe('RegistriesView', () => {
   it('lists registries', async () => {
     stubApi({ 'GET /registries': { body: [ghcr] } });
-    const wrapper = mount(RegistriesView);
+    const wrapper = mountView();
     await flushPromises();
     expect(wrapper.find('tbody').text()).toContain('GitHub');
     expect(wrapper.find('tbody').text()).toContain('ghcr.io');
     expect(wrapper.find('tbody').text()).toContain('bot');
+    expect(wrapper.find('tbody a').attributes('href')).toBe('/registries/1');
   });
 
   it('adds a registry', async () => {
@@ -44,12 +50,15 @@ describe('RegistriesView', () => {
           address: 'ghcr.io',
           username: 'bot',
           password: 'hunter2',
+          kind: 'generic',
+          owners: [],
+          plain_http: false,
         });
         list = [ghcr];
         return { status: 201, body: ghcr };
       },
     });
-    const wrapper = mount(RegistriesView);
+    const wrapper = mountView();
     await flushPromises();
     expect(wrapper.text()).toContain('No registries yet.');
     await wrapper.find('input[name=name]').setValue(' GitHub ');
@@ -63,7 +72,6 @@ describe('RegistriesView', () => {
   });
 
   it('edits a registry without sending an unchanged password', async () => {
-    // The form doesn't show the browsing fields yet; an edit keeps them.
     const forge = { ...ghcr, kind: 'forgejo', owners: ['zefir'], plain_http: true };
     stubApi({
       'GET /registries': { body: [forge] },
@@ -73,18 +81,22 @@ describe('RegistriesView', () => {
           address: 'ghcr.io',
           username: 'bot',
           kind: 'forgejo',
-          owners: ['zefir'],
+          owners: ['zefir', 'team'],
           plain_http: true,
         });
         return { body: { ...forge, name: 'GitHub CR' } };
       },
     });
-    const wrapper = mount(RegistriesView);
+    const wrapper = mountView();
     await flushPromises();
     await button(wrapper, 'Edit')?.trigger('click');
     expect(wrapper.text()).toContain('Edit GitHub');
     expect(wrapper.find('input[name=password]').attributes('required')).toBeUndefined();
+    expect((wrapper.find('select[name=kind]').element as HTMLSelectElement).value).toBe('forgejo');
+    expect((wrapper.find('input[name=owners]').element as HTMLInputElement).value).toBe('zefir');
+    expect(wrapper.find('.warn').exists()).toBe(true);
     await wrapper.find('input[name=name]').setValue('GitHub CR');
+    await wrapper.find('input[name=owners]').setValue('zefir, team');
     await wrapper.find('form').trigger('submit');
     await flushPromises();
     expect(wrapper.text()).toContain('Add a registry');
@@ -99,7 +111,7 @@ describe('RegistriesView', () => {
         return { body: { ...ghcr, username: 'bot2' } };
       },
     });
-    const wrapper = mount(RegistriesView);
+    const wrapper = mountView();
     await flushPromises();
     await button(wrapper, 'Edit')?.trigger('click');
     await wrapper.find('input[name=username]').setValue('bot2');
@@ -126,6 +138,51 @@ describe('RegistriesView', () => {
     expect(wrapper.text()).toContain('Add a registry');
   });
 
+  it('adds a Forgejo registry browsed over plain HTTP', async () => {
+    const posts: unknown[] = [];
+    stubApi({
+      'GET /registries': { body: [] },
+      'POST /registries': (init) => {
+        posts.push(JSON.parse(String(init?.body)));
+        return { status: 201, body: ghcr };
+      },
+    });
+    const wrapper = mountView();
+    await flushPromises();
+    expect(wrapper.find('input[name=owners]').exists()).toBe(false);
+    expect(wrapper.find('.warn').exists()).toBe(false);
+    await wrapper.find('input[name=name]').setValue('Forge');
+    await wrapper.find('input[name=address]').setValue('git.lan:3000');
+    await wrapper.find('input[name=username]').setValue('bot');
+    await wrapper.find('input[name=password]').setValue('tok');
+    await wrapper.find('select[name=kind]').setValue('forgejo');
+    await wrapper.find('input[name=owners]').setValue(' zefir  team ');
+    await wrapper.find('input[name=plain_http]').setValue(true);
+    expect(wrapper.find('.warn').text()).toContain('unencrypted');
+    await wrapper.find('form').trigger('submit');
+    await flushPromises();
+    expect(posts).toEqual([
+      {
+        name: 'Forge',
+        address: 'git.lan:3000',
+        username: 'bot',
+        password: 'tok',
+        kind: 'forgejo',
+        owners: ['zefir', 'team'],
+        plain_http: true,
+      },
+    ]);
+  });
+
+  it('asks for the password again when plain HTTP changes', async () => {
+    stubApi({ 'GET /registries': { body: [ghcr] } });
+    const wrapper = mountView();
+    await flushPromises();
+    await button(wrapper, 'Edit')?.trigger('click');
+    await wrapper.find('input[name=plain_http]').setValue(true);
+    expect(wrapper.find('input[name=password]').attributes('required')).toBeDefined();
+  });
+
   it('shows an API error', async () => {
     stubApi({
       'GET /registries': { body: [] },
@@ -134,7 +191,7 @@ describe('RegistriesView', () => {
         body: { error: 'a registry with that name or address already exists' },
       },
     });
-    const wrapper = mount(RegistriesView);
+    const wrapper = mountView();
     await flushPromises();
     await wrapper.find('input[name=name]').setValue('x');
     await wrapper.find('input[name=address]').setValue('ghcr.io');
@@ -155,7 +212,7 @@ describe('RegistriesView', () => {
       },
     });
     const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
-    const wrapper = mount(RegistriesView);
+    const wrapper = mountView();
     await flushPromises();
     await button(wrapper, 'Delete')?.trigger('click');
     await flushPromises();

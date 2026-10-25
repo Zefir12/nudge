@@ -31,10 +31,12 @@ type userResponse struct {
 	ID        int64     `json:"id"`
 	Username  string    `json:"username"`
 	CreatedAt time.Time `json:"created_at"`
+	// Admin says whether the user may do admin-only actions, so the UI can hide them.
+	Admin bool `json:"admin"`
 }
 
-func toUserResponse(u auth.User) userResponse {
-	return userResponse{ID: u.ID, Username: u.Username, CreatedAt: u.CreatedAt.UTC()}
+func (s *server) toUserResponse(u auth.User) userResponse {
+	return userResponse{ID: u.ID, Username: u.Username, CreatedAt: u.CreatedAt.UTC(), Admin: s.isAdmin(u)}
 }
 
 type credentials struct {
@@ -114,7 +116,7 @@ func (s *server) startSession(w http.ResponseWriter, r *http.Request, c credenti
 	}
 	s.log.Info("logged in", "username", sess.User.Username, "ip", ip)
 	s.setSessionCookie(w, r, sess.Token, sess.ExpiresAt, 0)
-	s.writeJSON(w, code, toUserResponse(sess.User))
+	s.writeJSON(w, code, s.toUserResponse(sess.User))
 }
 
 func (s *server) logout(w http.ResponseWriter, r *http.Request) {
@@ -132,7 +134,7 @@ func (s *server) me(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusUnauthorized, "authentication required")
 		return
 	}
-	s.writeJSON(w, http.StatusOK, toUserResponse(u))
+	s.writeJSON(w, http.StatusOK, s.toUserResponse(u))
 }
 
 // setSessionCookie sets the session cookie; maxAge -1 deletes it.

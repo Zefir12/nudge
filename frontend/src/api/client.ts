@@ -73,6 +73,8 @@ export interface User {
   id: number;
   username: string;
   created_at: string;
+  // admin: the user may do admin-only actions (the UI hides them otherwise).
+  admin: boolean;
 }
 
 export interface Credentials {
@@ -172,6 +174,7 @@ export interface RegistryInput {
 }
 
 export const listRegistries = () => apiFetch<Registry[]>('/registries');
+export const getRegistry = (id: number) => apiFetch<Registry>(`/registries/${id}`);
 export const createRegistry = (r: RegistryInput) => apiFetch<Registry>('/registries', post(r));
 export const updateRegistry = (id: number, r: RegistryInput) =>
   apiFetch<Registry>(`/registries/${id}`, { method: 'PUT', body: JSON.stringify(r) });

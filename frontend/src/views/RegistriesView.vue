@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
+import { RouterLink } from 'vue-router';
 
 import {
   createRegistry,
@@ -8,6 +9,7 @@ import {
   updateRegistry,
   type Registry,
   type RegistryInput,
+  type RegistryKind,
 } from '../api/client';
 import { formatDate } from '../format';
 
@@ -16,7 +18,16 @@ const error = ref('');
 const busy = ref(false);
 // editing is the registry the form changes, null when it adds one.
 const editing = ref<Registry | null>(null);
-const form = ref({ name: '', address: '', username: '', password: '' });
+const emptyForm = () => ({
+  name: '',
+  address: '',
+  username: '',
+  password: '',
+  kind: 'generic' as RegistryKind,
+  owners: '',
+  plainHttp: false,
+});
+const form = ref(emptyForm());
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -30,28 +41,38 @@ async function load() {
 
 function reset() {
   editing.value = null;
-  form.value = { name: '', address: '', username: '', password: '' };
+  form.value = emptyForm();
 }
 
 function onEdit(r: Registry) {
   editing.value = r;
-  form.value = { name: r.name, address: r.address, username: r.username, password: '' };
+  form.value = {
+    name: r.name,
+    address: r.address,
+    username: r.username,
+    password: '',
+    kind: r.kind,
+    owners: r.owners.join(', '),
+    plainHttp: r.plain_http,
+  };
   error.value = '';
 }
 
-// needsPassword: the stored password only goes to the host and user it was saved for,
-// so an edit that changes either must give it again (the API refuses otherwise).
+// needsPassword: the stored password only goes to the host, user and scheme it was
+// saved for, so an edit that changes one must give it again (the API refuses otherwise).
 const needsPassword = computed(() => {
   const old = editing.value;
   if (!old) return true;
   const f = form.value;
-  return f.address.trim() !== old.address || f.username.trim() !== old.username;
+  return (
+    f.address.trim() !== old.address || f.username.trim() !== old.username || f.plainHttp !== old.plain_http
+  );
 });
 
 async function onSubmit() {
   const f = form.value;
   if (editing.value && needsPassword.value && !f.password) {
-    error.value = 'Enter the password again: the address or username changed.';
+    error.value = 'Enter the password again: the address, username or plain HTTP setting changed.';
     return;
   }
   busy.value = true;
@@ -60,16 +81,13 @@ async function onSubmit() {
     name: f.name.trim(),
     address: f.address.trim(),
     username: f.username.trim(),
+    kind: f.kind,
+    // Owners only apply to Forgejo, separated by commas or spaces.
+    owners: f.kind === 'forgejo' ? f.owners.split(/[\s,]+/).filter(Boolean) : [],
+    plain_http: f.plainHttp,
   };
   // An empty password on edit keeps the stored one.
   if (f.password) input.password = f.password;
-  const old = editing.value;
-  if (old) {
-    // The form has no browsing fields yet; a PUT without them would reset them.
-    input.kind = old.kind;
-    input.owners = old.owners;
-    input.plain_http = old.plain_http;
-  }
   try {
     if (editing.value) await updateRegistry(editing.value.id, input);
     else await createRegistry(input);
@@ -130,11 +148,33 @@ onMounted(load);
           :required="needsPassword"
         />
       </label>
+      <label>
+        Kind
+        <select v-model="form.kind" name="kind">
+          <option value="generic">Registry v2</option>
+          <option value="forgejo">Forgejo</option>
+        </select>
+      </label>
+      <label v-if="form.kind === 'forgejo'">
+        Owners
+        <input v-model="form.owners" name="owners" placeholder="users or orgs; empty: the username" />
+      </label>
+      <label class="check">
+        <input v-model="form.plainHttp" name="plain_http" type="checkbox" />
+        Browse over plain HTTP
+      </label>
       <div class="buttons">
         <button type="submit" class="primary" :disabled="busy">{{ editing ? 'Save' : 'Add' }}</button>
         <button v-if="editing" type="button" @click="reset">Cancel</button>
       </div>
     </form>
+    <p v-if="form.plainHttp" class="warn">
+      Plain HTTP sends the username and password unencrypted: use it only for a registry on a network you
+      trust. It applies to browsing only; pulls need the registry in the Docker daemon's insecure-registries.
+    </p>
+    <p v-if="form.kind === 'forgejo'" class="muted">
+      For Forgejo, the password is an access token with read:package (and write:package to delete tags).
+    </p>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
   </section>
 
@@ -154,7 +194,9 @@ onMounted(load);
         </thead>
         <tbody>
           <tr v-for="r in registries" :key="r.id">
-            <td>{{ r.name }}</td>
+            <td>
+              <RouterLink :to="{ name: 'registry', params: { id: r.id } }">{{ r.name }}</RouterLink>
+            </td>
             <td>
               <code>{{ r.address }}</code>
             </td>
@@ -188,6 +230,17 @@ onMounted(load);
   flex-direction: column;
   gap: 0.25rem;
   font-weight: 500;
+}
+
+.registry label.check {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: normal;
+}
+
+.warn {
+  color: var(--warn);
 }
 
 .buttons,
