@@ -50,6 +50,13 @@ async function onSubmit() {
   };
   // An empty password on edit keeps the stored one.
   if (f.password) input.password = f.password;
+  const old = editing.value;
+  if (old) {
+    // The form has no browsing fields yet; a PUT without them would reset them.
+    input.kind = old.kind;
+    input.owners = old.owners;
+    input.plain_http = old.plain_http;
+  }
   try {
     if (editing.value) await updateRegistry(editing.value.id, input);
     else await createRegistry(input);

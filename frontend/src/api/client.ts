@@ -148,17 +148,27 @@ export interface Registry {
   name: string;
   address: string;
   username: string;
+  // kind is how the server browses the registry; owners are the Forgejo users/orgs
+  // listed (forgejo only); plain_http browses it without TLS.
+  kind: RegistryKind;
+  owners: string[];
+  plain_http: boolean;
   created_at: string;
   updated_at: string;
 }
 
+export type RegistryKind = 'generic' | 'forgejo';
+
 // RegistryInput creates or updates a registry; on update a missing password keeps the
-// stored one.
+// stored one, while a missing kind, owners or plain_http resets them.
 export interface RegistryInput {
   name: string;
   address: string;
   username: string;
   password?: string;
+  kind?: RegistryKind;
+  owners?: string[];
+  plain_http?: boolean;
 }
 
 export const listRegistries = () => apiFetch<Registry[]>('/registries');
@@ -166,6 +176,48 @@ export const createRegistry = (r: RegistryInput) => apiFetch<Registry>('/registr
 export const updateRegistry = (id: number, r: RegistryInput) =>
   apiFetch<Registry>(`/registries/${id}`, { method: 'PUT', body: JSON.stringify(r) });
 export const deleteRegistry = (id: number) => apiFetch<void>(`/registries/${id}`, { method: 'DELETE' });
+
+// RegistryRepositories is a page of a registry's repositories; next is the cursor of
+// the following page.
+export interface RegistryRepositories {
+  repositories: { name: string }[];
+  next?: string;
+}
+
+export interface RegistryPlatform {
+  os: string;
+  architecture: string;
+  variant?: string;
+  digest: string;
+  size: number;
+}
+
+// RegistryManifest describes a tag: an image has size and created, an index platforms.
+// shared_tags are the other tags on the same digest (a generic registry's delete
+// removes them too).
+export interface RegistryManifest {
+  repository: string;
+  tag: string;
+  digest: string;
+  media_type: string;
+  size?: number;
+  created?: string;
+  platforms: RegistryPlatform[];
+  shared_tags: string[];
+  shared_tags_complete: boolean;
+}
+
+export const listRegistryRepositories = (id: number, q = '', cursor = '') =>
+  apiFetch<RegistryRepositories>(`/registries/${id}/repositories?${new URLSearchParams({ q, cursor })}`);
+export const listRegistryTags = (id: number, repository: string) =>
+  apiFetch<{ tag: string }[]>(`/registries/${id}/tags?${new URLSearchParams({ repository })}`);
+export const getRegistryManifest = (id: number, repository: string, tag: string) =>
+  apiFetch<RegistryManifest>(`/registries/${id}/manifest?${new URLSearchParams({ repository, tag })}`);
+// deleteRegistryTag needs the tag's current digest, so a re-pushed tag isn't deleted.
+export const deleteRegistryTag = (id: number, repository: string, tag: string, digest: string) =>
+  apiFetch<void>(`/registries/${id}/tags?${new URLSearchParams({ repository, tag, digest })}`, {
+    method: 'DELETE',
+  });
 
 // A notification webhook; the API never returns the URL's path or the header value.
 export interface Webhook {

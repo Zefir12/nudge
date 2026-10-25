@@ -14,6 +14,9 @@ const ghcr = {
   name: 'GitHub',
   address: 'ghcr.io',
   username: 'bot',
+  kind: 'generic',
+  owners: [],
+  plain_http: false,
   created_at: '2026-10-24T12:00:00Z',
   updated_at: '2026-10-24T12:00:00Z',
 };
@@ -60,15 +63,20 @@ describe('RegistriesView', () => {
   });
 
   it('edits a registry without sending an unchanged password', async () => {
+    // The form doesn't show the browsing fields yet; an edit keeps them.
+    const forge = { ...ghcr, kind: 'forgejo', owners: ['zefir'], plain_http: true };
     stubApi({
-      'GET /registries': { body: [ghcr] },
+      'GET /registries': { body: [forge] },
       'PUT /registries/1': (init) => {
         expect(JSON.parse(String(init?.body))).toEqual({
           name: 'GitHub',
           address: 'ghcr.io',
           username: 'bot2',
+          kind: 'forgejo',
+          owners: ['zefir'],
+          plain_http: true,
         });
-        return { body: { ...ghcr, username: 'bot2' } };
+        return { body: { ...forge, username: 'bot2' } };
       },
     });
     const wrapper = mount(RegistriesView);
