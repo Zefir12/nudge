@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/netip"
 	"net/url"
 	"path/filepath"
 	"regexp"
@@ -44,6 +45,9 @@ type Server struct {
 	// PublicURL is the URL browsers and agents reach the server at, scheme://host[:port]
 	// without a trailing slash; empty means guess it from each request.
 	PublicURL string
+	// TrustedProxies are the reverse proxies whose X-Forwarded-For and X-Forwarded-Proto
+	// headers are believed; empty means none.
+	TrustedProxies []netip.Prefix
 	// AuditRetentionDays is how long audit log entries are kept.
 	AuditRetentionDays int
 	// UpdateCheckInterval is how often images are checked for updates; zero turns the
@@ -68,6 +72,7 @@ func LoadServer(args []string, getenv func(string) string, out io.Writer) (Serve
 	fs.StringVar(&c.TLSCert, "tls-cert", getenv("NUDGE_TLS_CERT"), "PEM certificate (chain) file; serve HTTPS with -tls-key (NUDGE_TLS_CERT)")
 	fs.StringVar(&c.TLSKey, "tls-key", getenv("NUDGE_TLS_KEY"), "PEM private key file for -tls-cert (NUDGE_TLS_KEY)")
 	fs.StringVar(&c.PublicURL, "public-url", getenv("NUDGE_PUBLIC_URL"), "URL browsers and agents reach the server at, e.g. https://nudge.example.net (NUDGE_PUBLIC_URL)")
+	proxyList := fs.String("trusted-proxies", getenv("NUDGE_TRUSTED_PROXIES"), "comma-separated CIDRs or IPs of reverse proxies whose X-Forwarded-For and X-Forwarded-Proto are trusted (NUDGE_TRUSTED_PROXIES)")
 	retention, err := strconv.Atoi(envOr(getenv, "NUDGE_AUDIT_RETENTION_DAYS", "90"))
 	if err != nil {
 		return Server{}, fmt.Errorf("NUDGE_AUDIT_RETENTION_DAYS %q: want a number of days", getenv("NUDGE_AUDIT_RETENTION_DAYS"))
@@ -123,7 +128,42 @@ func LoadServer(args []string, getenv func(string) string, out io.Writer) (Serve
 		}
 		c.PublicURL = u
 	}
+	if c.TrustedProxies, err = parseProxies(*proxyList); err != nil {
+		return Server{}, err
+	}
 	return c, nil
+}
+
+// parseProxies parses a comma-separated list of CIDRs and single addresses (as /32 or
+// /128). IPv4-mapped addresses become IPv4, as the peers they are compared with do.
+func parseProxies(s string) ([]netip.Prefix, error) {
+	if strings.TrimSpace(s) == "" {
+		return nil, nil
+	}
+	var out []netip.Prefix
+	for entry := range strings.SplitSeq(s, ",") {
+		entry = strings.TrimSpace(entry)
+		bad := fmt.Errorf("trusted proxy %q: want a CIDR such as 172.16.0.0/12 or an IP address", entry)
+		var p netip.Prefix
+		if strings.Contains(entry, "/") {
+			var err error
+			if p, err = netip.ParsePrefix(entry); err != nil {
+				return nil, bad
+			}
+			if a := p.Addr(); a.Is4In6() && p.Bits() >= 96 {
+				p = netip.PrefixFrom(a.Unmap(), p.Bits()-96)
+			}
+		} else {
+			a, err := netip.ParseAddr(entry)
+			if err != nil || a.Zone() != "" {
+				return nil, bad
+			}
+			a = a.Unmap()
+			p = netip.PrefixFrom(a, a.BitLen())
+		}
+		out = append(out, p.Masked())
+	}
+	return out, nil
 }
 
 // Agent is the configuration of `nudge agent`.
