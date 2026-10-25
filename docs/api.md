@@ -442,7 +442,11 @@ is in the audit log with the stack's name as its target.
   (`env_file`, bind sources) aren't checked. `400` empty compose, `429` four checks are
   already running, `503` the image has no `docker-compose`. Not in the audit log.
 - `POST .../stacks/{name}/up` runs `docker-compose up --detach --remove-orphans`, with
-  `{"pull": true}` also `--pull always` (an update); the body may be left out.
+  `{"pull": true}` also `--pull always` (an update); the body may be left out. Compose
+  pulls with the credentials under `/registries` of every registry whose host the
+  stack's compose.yaml or `.env` names (`ghcr.io/org/app`, not `notghcr.io` nor another
+  port), and Docker Hub's (whenever stored); their passwords are masked
+  (`********`) in the output. `update` pulls the same way.
   `POST .../stacks/{name}/down` runs `docker-compose down --remove-orphans`, with
   `{"volumes": true}` also `--volumes`. Both answer `200` with `Content-Type:
   application/x-ndjson`, one line per line compose prints: `{"stream": "stderr", "line":

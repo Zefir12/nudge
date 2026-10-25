@@ -120,6 +120,9 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 	if err := prepareDataDir(cfg.DataDir); err != nil {
 		return err
 	}
+	if err := cleanComposeConfigs(composeConfigDir(cfg.DataDir), log); err != nil {
+		return err
+	}
 	var certLoader *certs.Loader
 	if cfg.TLS() {
 		if certLoader, err = certs.Load(cfg.TLSCert, cfg.TLSKey, log); err != nil {
@@ -227,7 +230,7 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 			Web:        web.Handler(web.Dist()),
 
 			StacksDir:   cfg.StacksDir,
-			StackRunner: stackRunner(cfg, envs, log),
+			StackRunner: stackRunner(cfg, envs, regs, log),
 			// Drafts are checked next to the stacks, on the data volume.
 			StackChecker: stacks.NewChecker(stacks.CheckerOptions{TempDir: cfg.StacksDir, Compose: cfg.Compose}).Check,
 
@@ -277,6 +280,9 @@ func runAgent(ctx context.Context, cfg config.Agent, log *slog.Logger) error {
 	if err := prepareDataDir(cfg.DataDir); err != nil {
 		return err
 	}
+	if err := cleanComposeConfigs(composeConfigDir(cfg.DataDir), log); err != nil {
+		return err
+	}
 	dial, err := docker.LocalDialer(cfg.DockerHost)
 	if err != nil {
 		return err
@@ -296,6 +302,7 @@ func runAgent(ctx context.Context, cfg config.Agent, log *slog.Logger) error {
 		Dial:      dial,
 		Control: stacks.NewControl(stacks.NewLocal(stacks.LocalOptions{
 			Dir: stacks.NewDir(cfg.StacksDir), Compose: cfg.Compose, DockerHost: cfg.DockerHost,
+			ConfigDir: composeConfigDir(cfg.DataDir),
 		}), log),
 		Version:  version.Version,
 		Hostname: hostname,
@@ -308,20 +315,61 @@ func runAgent(ctx context.Context, cfg config.Agent, log *slog.Logger) error {
 }
 
 // stackRunner deploys the local environment's stacks with compose here, and an agent
-// environment's through its agent's control service.
-func stackRunner(cfg config.Server, envs *environments.Service, log *slog.Logger) func(environments.Environment) stacks.Runner {
+// environment's through its agent's control service; both pull with the stored registry
+// credentials.
+func stackRunner(cfg config.Server, envs *environments.Service, regs *registries.Service, log *slog.Logger) func(environments.Environment) stacks.Runner {
+	creds := stackCredentials(regs)
 	// Up checks a local stack's binds against the mounts of nudge's own container.
 	self := stacks.SelfID(os.ReadFile, os.Hostname)
 	return func(env environments.Environment) stacks.Runner {
+		// The server's copy of the environment's stacks (api's stackDir).
+		dir := stacks.NewDir(filepath.Join(cfg.StacksDir, strconv.FormatInt(env.ID, 10)))
 		if env.Kind == environments.KindAgent {
-			return stacks.NewRemote(envs.ControlDialer(env.ID))
+			return stacks.NewRemote(envs.ControlDialer(env.ID)).WithCredentials(dir, creds)
 		}
 		return stacks.NewLocal(stacks.LocalOptions{
-			Dir:     stacks.NewDir(filepath.Join(cfg.StacksDir, strconv.FormatInt(env.ID, 10))),
-			Compose: cfg.Compose, DockerHost: cfg.DockerHost,
-			Mounts: stacks.ContainerMounts(self, func() (stacks.Inspector, error) { return envs.Client(env) }),
-			Log:    log.With("env", env.ID),
+			Dir: dir, Compose: cfg.Compose, DockerHost: cfg.DockerHost, Credentials: creds,
+			ConfigDir: composeConfigDir(cfg.DataDir),
+			Mounts:    stacks.ContainerMounts(self, func() (stacks.Inspector, error) { return envs.Client(env) }),
+			Log:       log.With("env", env.ID),
 		})
+	}
+}
+
+// composeConfigDir is where compose runs get their temporary Docker configs with the
+// registry credentials: on the data volume, private to nudge (not in the stacks
+// directory, which stacks may bind-mount).
+func composeConfigDir(dataDir string) string {
+	if dataDir == "" {
+		return ""
+	}
+	return filepath.Join(dataDir, "compose-config")
+}
+
+// cleanComposeConfigs prepares dir and removes the Docker configs a killed run left there.
+func cleanComposeConfigs(dir string, log *slog.Logger) error {
+	n, err := stacks.CleanConfigDir(dir)
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		log.Warn("removed docker configs left by an interrupted compose run", "count", n, "dir", dir)
+	}
+	return nil
+}
+
+// stackCredentials finds the stored credentials of the registries a stack's files name.
+func stackCredentials(regs *registries.Service) stacks.CredentialFunc {
+	return func(ctx context.Context, f stacks.Files) ([]stacks.Credential, error) {
+		auths, err := regs.AuthsFor(ctx, f.Compose, f.Env)
+		if err != nil {
+			return nil, err
+		}
+		creds := make([]stacks.Credential, 0, len(auths))
+		for _, a := range auths {
+			creds = append(creds, stacks.Credential{Address: a.Address, Username: a.Username, Password: a.Password})
+		}
+		return creds, nil
 	}
 }
 

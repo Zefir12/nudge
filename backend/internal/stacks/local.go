@@ -51,6 +51,12 @@ type LocalOptions struct {
 	DockerHost string
 	// Exec runs compose; nil means as a subprocess.
 	Exec ExecFunc
+	// Credentials finds the registry credentials of a stack's `compose up`; nil means
+	// none (an agent's runner gets them from the server with each request).
+	Credentials CredentialFunc
+	// ConfigDir holds the temporary Docker configs with the credentials (see
+	// CleanConfigDir); empty means the system's temporary directory.
+	ConfigDir string
 	// Mounts, if set, lists the mounts of nudge's container, and Up refuses a stack
 	// whose binds in its directory the daemon would take from a different host path
 	// (a *BindError).
@@ -61,17 +67,20 @@ type LocalOptions struct {
 
 // Local runs compose here, on stacks in a directory of this machine.
 type Local struct {
-	dir        Dir
-	compose    string
-	dockerHost string
-	exec       ExecFunc
-	mounts     MountsFunc
-	log        *slog.Logger
+	dir         Dir
+	compose     string
+	dockerHost  string
+	exec        ExecFunc
+	credentials CredentialFunc
+	configDir   string
+	mounts      MountsFunc
+	log         *slog.Logger
 }
 
 // NewLocal returns a runner for the stacks in opts.Dir.
 func NewLocal(opts LocalOptions) *Local {
-	l := &Local{dir: opts.Dir, compose: opts.Compose, dockerHost: opts.DockerHost, exec: opts.Exec, mounts: opts.Mounts, log: opts.Log}
+	l := &Local{dir: opts.Dir, compose: opts.Compose, dockerHost: opts.DockerHost, exec: opts.Exec,
+		credentials: opts.Credentials, configDir: opts.ConfigDir, mounts: opts.Mounts, log: opts.Log}
 	if l.log == nil {
 		l.log = slog.New(slog.DiscardHandler)
 	}
@@ -121,25 +130,66 @@ func (l *Local) Remove(_ context.Context, name string) error {
 	return l.dir.Remove(name)
 }
 
-// run runs compose on stack name with fixed global arguments and then args.
-func (l *Local) run(ctx context.Context, name string, args []string, out func(Line)) (int, error) {
-	if _, err := l.dir.Read(name); err != nil {
+// run runs compose on stack name with fixed global arguments and then args; `up` gets
+// the registry credentials it may need.
+func (l *Local) run(ctx context.Context, name string, args []string, out func(Line)) (code int, err error) {
+	files, err := l.dir.Read(name)
+	if err != nil {
 		return 0, err
 	}
+	var env []string
+	var secrets []string
+	if args[0] == "up" {
+		creds, credErr := l.credentialsFor(ctx, files)
+		if credErr != nil {
+			return 0, fmt.Errorf("compose up %s: %w", name, credErr)
+		}
+		if len(creds) > 0 {
+			config, cfgErr := writeDockerConfig(l.configDir, creds)
+			if cfgErr != nil {
+				return 0, fmt.Errorf("compose up %s: %w", name, cfgErr)
+			}
+			// err is run's result here, so a config left on disk fails the run.
+			defer func() {
+				if rmErr := os.RemoveAll(config); rmErr != nil && err == nil {
+					code, err = 0, fmt.Errorf("compose up %s: remove docker config: %w", name, rmErr)
+				}
+			}()
+			env = append(env, "DOCKER_CONFIG="+config)
+			secrets = secretsOf(creds)
+		}
+	}
 	var mu sync.Mutex
-	emit := func(l Line) {
+	emit := func(line Line) {
+		line.Text = mask(line.Text, secrets)
 		mu.Lock()
 		defer mu.Unlock()
-		out(l)
+		out(line)
 	}
 	stdout, stderr := &lineWriter{stream: "stdout", emit: emit}, &lineWriter{stream: "stderr", emit: emit}
-	code, err := l.exec(ctx, l.command(name, args, stdout, stderr))
+	cmd := l.command(name, args, stdout, stderr)
+	cmd.Env = append(cmd.Env, env...)
+	code, err = l.exec(ctx, cmd)
 	stdout.flush()
 	stderr.flush()
 	if err != nil {
 		return 0, fmt.Errorf("compose %s %s: %w", args[0], name, err)
 	}
 	return code, nil
+}
+
+// credentialsFor returns the credentials handed over in ctx and those the Credentials
+// option finds for files.
+func (l *Local) credentialsFor(ctx context.Context, files Files) ([]Credential, error) {
+	creds := credentialsFrom(ctx)
+	if l.credentials == nil {
+		return creds, nil
+	}
+	found, err := l.credentials(ctx, files)
+	if err != nil {
+		return nil, fmt.Errorf("registry credentials: %w", err)
+	}
+	return append(creds[:len(creds):len(creds)], found...), nil
 }
 
 // command is compose on stack name with fixed global arguments and then args.
