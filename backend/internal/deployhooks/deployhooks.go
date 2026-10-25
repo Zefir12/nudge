@@ -99,6 +99,8 @@ type Hook struct {
 	Owner           string
 	CreatedAt       time.Time
 	LastTriggeredAt *time.Time
+	// LastStatus is the newest run's status; empty if it has none.
+	LastStatus Status
 }
 
 // Input creates a webhook.
@@ -257,7 +259,8 @@ func (s *Service) Create(ctx context.Context, actor Actor, in Input) (Hook, stri
 }
 
 const hookColumns = `h.id, h.name, h.environment_id, h.kind, h.target, h.tag_filter, h.created_by, u.username,
-	h.created_at, h.last_triggered_at`
+	h.created_at, h.last_triggered_at,
+	coalesce((SELECT r.status FROM deploy_hook_runs r WHERE r.hook_id = h.id ORDER BY r.id DESC LIMIT 1), '')`
 
 type scanner interface{ Scan(dest ...any) error }
 
@@ -266,7 +269,7 @@ func scanHook(row scanner, extra ...any) (Hook, error) {
 	var created int64
 	var last sql.NullInt64
 	err := row.Scan(append([]any{&h.ID, &h.Name, &h.Environment, &h.Kind, &h.Target, &h.TagFilter, &h.CreatedBy, &h.Owner,
-		&created, &last}, extra...)...)
+		&created, &last, &h.LastStatus}, extra...)...)
 	if err != nil {
 		return Hook{}, err
 	}

@@ -134,7 +134,7 @@ func TestCreateListDeleteRotate(t *testing.T) {
 	if !ValidID(h.ID) || !strings.HasPrefix(secret, SecretPrefix) || len(secret) != len(SecretPrefix)+43 {
 		t.Errorf("id %q, secret %q: want a random ID and nudge_hook_ with 32 bytes", h.ID, secret)
 	}
-	if h.Owner != "alice" || h.Target != "web" || h.Kind != KindContainer || !h.CreatedAt.Equal(ht.clock.Now()) {
+	if h.Owner != "alice" || h.Target != "web" || h.Kind != KindContainer || !h.CreatedAt.Equal(ht.clock.Now()) || h.LastStatus != "" {
 		t.Errorf("hook = %+v", h)
 	}
 	if _, _, err := ht.svc.Create(ctx, ht.alice, Input{Name: "ci", Environment: ht.env, Kind: KindStack, Target: "app"}); !errors.Is(err, ErrTaken) {
@@ -414,6 +414,12 @@ func TestTriggerDebounce(t *testing.T) {
 	got, _ := ht.svc.Get(ctx, ht.alice, ht.env, h.ID)
 	if got.LastTriggeredAt == nil || !got.LastTriggeredAt.Equal(ht.clock.Now()) {
 		t.Errorf("last triggered = %v", got.LastTriggeredAt)
+	}
+	if got.LastStatus != StatusUnchanged {
+		t.Errorf("last status = %q, want the newest run's", got.LastStatus)
+	}
+	if list, err := ht.svc.List(ctx, ht.alice, ht.env, "", ""); err != nil || len(list) != 1 || list[0].LastStatus != StatusUnchanged {
+		t.Errorf("list = %+v, %v; want the newest run's status", list, err)
 	}
 
 	// Idle again: the next trigger runs at once.

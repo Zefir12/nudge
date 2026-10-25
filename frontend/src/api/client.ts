@@ -1067,3 +1067,63 @@ export const listUpdateHistory = (
   const qs = q.toString();
   return apiFetch<UpdateRecord[]>(envPath(env, `/updates/history${qs ? `?${qs}` : ''}`));
 };
+
+// DeployHookStatus is a deploy webhook run's status.
+export type DeployHookStatus = 'queued' | 'running' | 'updated' | 'unchanged' | 'skipped' | 'failed';
+
+// DeployHook is a deploy webhook: a URL a CI job or a Forgejo webhook calls to make one
+// container or stack pull its image and redeploy. Its secret is never listed.
+export interface DeployHook {
+  id: string;
+  name: string;
+  kind: 'container' | 'stack';
+  target: string;
+  // tag_filter is a pattern a package event's version must match; '' for none.
+  tag_filter: string;
+  created_by: string;
+  created_at: string;
+  last_triggered_at: string | null;
+  // last_status is the newest run's status, '' before the first.
+  last_status: DeployHookStatus | '';
+  url: string;
+}
+
+// DeployHookWithSecret is a webhook with its secret, answered only on create and rotate.
+export interface DeployHookWithSecret extends DeployHook {
+  secret: string;
+}
+
+// DeployHookRun is one trigger of a deploy webhook. The images are digests, or for a stack
+// the changed services as service=ID lists.
+export interface DeployHookRun {
+  id: number;
+  trigger: 'bearer' | 'signature';
+  status: DeployHookStatus;
+  queued_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  image_before: string;
+  image_after: string;
+  error: string;
+}
+
+// DeployHookTarget is the container or stack a deploy webhook redeploys.
+export type DeployHookTarget = { kind: 'container' | 'stack'; target: string };
+
+const hooksPath = (env: string, rest = '') => envPath(env, `/webhooks${rest}`);
+
+// listDeployHooks lists one container's or stack's deploy webhooks the user may see.
+export const listDeployHooks = (env: string, t: DeployHookTarget) =>
+  apiFetch<DeployHook[]>(hooksPath(env, `?${new URLSearchParams({ [t.kind]: t.target })}`));
+export const createDeployHook = (
+  env: string,
+  t: DeployHookTarget,
+  hook: { name: string; tag_filter: string },
+) => apiFetch<DeployHookWithSecret>(hooksPath(env), post({ ...hook, [t.kind]: t.target }));
+export const deleteDeployHook = (env: string, id: string) =>
+  apiFetch<void>(hooksPath(env, `/${enc(id)}`), { method: 'DELETE' });
+// rotateDeployHook gives a webhook a new secret; the old one stops working at once.
+export const rotateDeployHook = (env: string, id: string) =>
+  apiFetch<DeployHookWithSecret>(hooksPath(env, `/${enc(id)}/secret`), post({}));
+export const listDeployHookRuns = (env: string, id: string) =>
+  apiFetch<DeployHookRun[]>(hooksPath(env, `/${enc(id)}/runs`));
