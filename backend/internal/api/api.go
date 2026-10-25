@@ -17,6 +17,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/events"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/notify"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/registries"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/registryclient"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/stacks"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/updates"
 )
@@ -32,6 +33,11 @@ type Options struct {
 	Envs    *environments.Service
 	// Registries has the credentials image pulls use.
 	Registries *registries.Service
+	// RegistryClient browses registries over HTTP; nil means a registryclient.Client.
+	RegistryClient RegistryBrowser
+	// Admin says whether a user may do admin-only actions (deleting registry tags); nil
+	// means every user is an admin, as nudge has one user until roles exist.
+	Admin func(auth.User) bool
 	// Audit records every write.
 	Audit *audit.Service
 	// StacksDir holds every environment's stacks as <dir>/<environment ID>/<name>/.
@@ -78,7 +84,7 @@ var publicRoutes = map[string]bool{
 func New(opts Options) http.Handler {
 	s := &server{
 		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries, audit: opts.Audit, updates: opts.Updates,
-		webhooks: opts.Webhooks, events: opts.Events,
+		webhooks: opts.Webhooks, events: opts.Events, registryClient: opts.RegistryClient, isAdmin: opts.Admin,
 		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, recreating: map[string]bool{},
 		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{},
 		checks: make(chan struct{}, maxStackChecks),
@@ -86,6 +92,12 @@ func New(opts Options) http.Handler {
 	}
 	if s.events == nil {
 		s.events = events.New(events.Options{Context: opts.Context, Log: opts.Log})
+	}
+	if s.registryClient == nil {
+		s.registryClient = registryclient.New(registryclient.Options{})
+	}
+	if s.isAdmin == nil {
+		s.isAdmin = func(auth.User) bool { return true }
 	}
 	if opts.Context != nil {
 		s.done = opts.Context
@@ -109,6 +121,10 @@ func New(opts Options) http.Handler {
 	api.HandleFunc("GET /api/v1/registries/{id}", s.getRegistry)
 	api.HandleFunc("PUT /api/v1/registries/{id}", s.updateRegistry)
 	api.HandleFunc("DELETE /api/v1/registries/{id}", s.deleteRegistry)
+	api.HandleFunc("GET /api/v1/registries/{id}/repositories", s.listRegistryRepositories)
+	api.HandleFunc("GET /api/v1/registries/{id}/tags", s.listRegistryTags)
+	api.HandleFunc("DELETE /api/v1/registries/{id}/tags", s.deleteRegistryTag)
+	api.HandleFunc("GET /api/v1/registries/{id}/manifest", s.getRegistryManifest)
 	api.HandleFunc("GET /api/v1/webhooks", s.listWebhooks)
 	api.HandleFunc("POST /api/v1/webhooks", s.createWebhook)
 	api.HandleFunc("GET /api/v1/webhooks/{id}", s.getWebhook)
@@ -179,10 +195,13 @@ type server struct {
 	auth    *auth.Service
 	envs    *environments.Service
 
-	registries *registries.Service
-	audit      *audit.Service
-	updates    *updates.Service
-	webhooks   *notify.Service
+	registries     *registries.Service
+	registryClient RegistryBrowser
+	// isAdmin gates admin-only actions (Options.Admin).
+	isAdmin  func(auth.User) bool
+	audit    *audit.Service
+	updates  *updates.Service
+	webhooks *notify.Service
 	// done ends at shutdown (Options.Context).
 	done context.Context
 	// events fans each environment's Docker events out to the clients watching it.
