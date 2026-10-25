@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
@@ -226,25 +227,35 @@ func (s *server) pullImage(w http.ResponseWriter, r *http.Request) {
 	send(pullEvent{Done: true})
 }
 
+// errRegistryDecrypt means the stored registry password can't be decrypted.
+var errRegistryDecrypt = errors.New("registry credentials can't be decrypted")
+
 // pullOptions returns the options for pulling ref with the stored credentials of its
 // registry, if any, and their password (to mask in the daemon's messages); it answers a
 // failed lookup itself.
 func (s *server) pullOptions(w http.ResponseWriter, r *http.Request, ref string) (client.ImagePullOptions, string, bool) {
-	auth, found, err := s.registries.AuthFor(r.Context(), ref)
-	if errors.Is(err, secretbox.ErrDecrypt) {
-		s.log.Error("registry credentials", "image", ref, "err", err)
-		s.writeError(w, http.StatusInternalServerError, "the stored registry password can't be decrypted (was secret.key replaced?): enter it again under Registries")
+	opts, password, err := s.registryAuth(r.Context(), ref)
+	if err != nil {
+		s.replaceError(w, r, environments.Environment{}, err)
 		return client.ImagePullOptions{}, "", false
+	}
+	return opts, password, true
+}
+
+// registryAuth returns the options for pulling ref with the stored credentials of its
+// registry, if any, and their password.
+func (s *server) registryAuth(ctx context.Context, ref string) (client.ImagePullOptions, string, error) {
+	auth, found, err := s.registries.AuthFor(ctx, ref)
+	if errors.Is(err, secretbox.ErrDecrypt) {
+		return client.ImagePullOptions{}, "", fmt.Errorf("%w for %s: %w", errRegistryDecrypt, ref, err)
 	}
 	if err != nil {
-		s.internalError(w, "registry credentials", err)
-		return client.ImagePullOptions{}, "", false
+		return client.ImagePullOptions{}, "", &internalFailure{msg: "registry credentials", err: err}
 	}
 	if !found {
-		return client.ImagePullOptions{}, "", true
+		return client.ImagePullOptions{}, "", nil
 	}
-	opts := client.ImagePullOptions{RegistryAuth: auth.Header()}
-	return opts, auth.Password, true
+	return client.ImagePullOptions{RegistryAuth: auth.Header()}, auth.Password, nil
 }
 
 // digest matches the part after "@" in a reference pinned to a digest.

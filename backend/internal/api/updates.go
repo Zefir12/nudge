@@ -13,6 +13,7 @@ import (
 	"github.com/moby/moby/api/types/container"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/stacks"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/updates"
 )
@@ -97,6 +98,9 @@ type updateContainerResponse struct {
 	ImageID         string `json:"image_id"`
 }
 
+// errPinnedImage refuses to update a container that runs an image by ID or digest.
+var errPinnedImage = &statusError{code: http.StatusBadRequest, msg: "the container runs an image by ID or digest, which has no newer version to pull"}
+
 // updateContainer pulls the image a container was created from and, if that brought a
 // newer one, recreates the container with it, keeping every setting (and restoring the
 // old container if that fails). The image it ran before goes into the update history.
@@ -105,73 +109,107 @@ func (s *server) updateContainer(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rp, ok := s.beginReplace(w, r, id)
+	env, c, ok := s.environment(w, r)
 	if !ok {
 		return
+	}
+	u, _ := userFrom(r.Context())
+	res, err := s.updateContainerImage(r.Context(), env, c, id, u.Username)
+	if err != nil {
+		s.replaceError(w, r, env, err)
+		return
+	}
+	if res.Updated {
+		s.log.Info("container update", "env", env.ID, "container", res.oldID, "new", res.ID, "image", res.ImageID, "ip", clientIP(r))
+	}
+	s.writeJSON(w, http.StatusOK, res.updateContainerResponse)
+}
+
+// containerUpdate is what updateContainerImage did.
+type containerUpdate struct {
+	updateContainerResponse
+	oldID string
+}
+
+// updateContainerImage pulls the image container id (an ID or a name) was created from
+// and, if that brought a newer one, recreates the container with it; user goes into the
+// update history.
+func (s *server) updateContainerImage(ctx context.Context, env environments.Environment, c docker.Client, id, user string) (containerUpdate, error) {
+	rp, err := s.startReplace(ctx, env, c, id)
+	if err != nil {
+		return containerUpdate{}, err
 	}
 	defer rp.done()
 	ref := rp.old.Config.Image
 	if digest.MatchString(ref) || strings.Contains(ref, "@") || !validPullRef(ref) {
-		s.writeError(w, http.StatusBadRequest, "the container runs an image by ID or digest, which has no newer version to pull")
-		return
+		return containerUpdate{}, errPinnedImage
 	}
-	if !s.pullForReplace(w, r, rp, ref) {
-		return
+	if err := s.pullWithAuth(ctx, rp.c, ref); err != nil {
+		return containerUpdate{}, err
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), dockerTimeout)
+	ictx, cancel := context.WithTimeout(ctx, dockerTimeout)
 	defer cancel()
-	res, err := rp.c.ImageInspect(ctx, ref)
+	res, err := rp.c.ImageInspect(ictx, ref)
 	if err != nil {
-		s.dockerError(w, r, rp.env, "container update", fmt.Errorf("inspect pulled image: %w", err))
-		return
+		return containerUpdate{}, &dockerFailure{msg: "container update", err: fmt.Errorf("inspect pulled image: %w", err)}
 	}
 	pulled := res.InspectResponse
+	out := containerUpdate{oldID: rp.old.ID, updateContainerResponse: updateContainerResponse{ID: rp.old.ID, PreviousImageID: rp.old.Image, ImageID: pulled.ID}}
 	if pulled.ID == rp.old.Image {
-		s.envs.Seen(r.Context(), &rp.env)
-		s.writeJSON(w, http.StatusOK, updateContainerResponse{ID: rp.old.ID, PreviousImageID: rp.old.Image, ImageID: pulled.ID})
-		return
+		s.envs.Seen(ctx, &rp.env)
+		return out, nil
 	}
-	newID, ok := s.finishReplace(w, r, rp, nil)
-	if !ok {
-		return
+	newID, err := s.completeReplace(ctx, rp, nil)
+	if err != nil {
+		return containerUpdate{}, err
 	}
-	s.recordUpdates(r, []updates.Change{{
+	s.recordUpdates(ctx, user, []updates.Change{{
 		Environment: rp.env.ID, Kind: updates.KindContainer, Target: strings.TrimPrefix(rp.old.Name, "/"), Image: ref,
 		OldImageID: rp.old.Image, OldDigest: updates.DigestFor(ref, rp.oldImage.RepoDigests),
 		NewImageID: pulled.ID, NewDigest: updates.DigestFor(ref, pulled.RepoDigests),
 	}})
-	s.log.Info("container update", "env", rp.env.ID, "container", rp.old.ID, "new", newID, "image", pulled.ID, "ip", clientIP(r))
-	s.writeJSON(w, http.StatusOK, updateContainerResponse{Updated: true, ID: newID, PreviousImageID: rp.old.Image, ImageID: pulled.ID})
+	out.Updated, out.ID = true, newID
+	return out, nil
 }
 
 // updateStackImages pulls a stack's images and deploys it (up with --pull always),
 // streamed like up, then records each service whose image changed in the update history.
 func (s *server) updateStackImages(w http.ResponseWriter, r *http.Request) {
+	u, _ := userFrom(r.Context())
 	s.runStack(w, r, "update", func(ctx context.Context, run stackRun) (int, error) {
-		lctx, cancel := context.WithTimeout(ctx, dockerTimeout)
-		before, err := projectContainers(lctx, run.c, run.name)
-		cancel()
-		if err != nil {
-			// The update can go on; only its history is lost.
-			s.log.Warn("stack update: list containers", "env", run.env.ID, "stack", run.name, "err", err)
-		}
-		code, err := run.runner.Up(ctx, run.name, true, run.out)
-		// Even a failed or cut-short run may have replaced some services.
-		if before != nil {
-			s.recordStackUpdate(ctx, r, run, before)
-		}
+		code, _, err := s.pullAndDeploy(ctx, run, u.Username)
 		return code, err
 	})
 }
 
-// recordStackUpdate records the services of a stack whose image changed since before.
-func (s *server) recordStackUpdate(ctx context.Context, r *http.Request, run stackRun, before []container.Summary) {
+// pullAndDeploy runs compose up with --pull always for run's stack and records each
+// service whose image changed in the update history as user's; it returns them.
+func (s *server) pullAndDeploy(ctx context.Context, run stackRun, user string) (int, []updates.Change, error) {
+	lctx, cancel := context.WithTimeout(ctx, dockerTimeout)
+	before, err := projectContainers(lctx, run.c, run.name)
+	cancel()
+	if err != nil {
+		// The update can go on; only its history is lost.
+		s.log.Warn("stack update: list containers", "env", run.env.ID, "stack", run.name, "err", err)
+	}
+	code, err := run.runner.Up(ctx, run.name, true, run.out)
+	// Even a failed or cut-short run may have replaced some services.
+	var changes []updates.Change
+	if before != nil {
+		changes = s.recordStackUpdate(ctx, user, run, before)
+	}
+	return code, changes, err
+}
+
+// recordStackUpdate records the services of a stack whose image changed since before
+// and returns them.
+func (s *server) recordStackUpdate(ctx context.Context, user string, run stackRun, before []container.Summary) []updates.Change {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dockerTimeout)
 	defer cancel()
 	after, err := projectContainers(ctx, run.c, run.name)
 	if err != nil {
 		s.log.Warn("stack update: list containers", "env", run.env.ID, "stack", run.name, "err", err)
-		return
+		return nil
 	}
 	changes := stackChanges(before, after)
 	digests := map[string][]string{}
@@ -192,7 +230,8 @@ func (s *server) recordStackUpdate(ctx context.Context, r *http.Request, run sta
 		c.OldDigest = updates.DigestFor(c.Image, repoDigests(c.OldImageID))
 		c.NewDigest = updates.DigestFor(c.Image, repoDigests(c.NewImageID))
 	}
-	s.recordUpdates(r, changes)
+	s.recordUpdates(ctx, user, changes)
+	return changes
 }
 
 // stackChanges lists the services whose containers run another image after than
@@ -221,17 +260,16 @@ func stackChanges(before, after []container.Summary) []updates.Change {
 	return out
 }
 
-// recordUpdates saves changes made by r's user in the update history. The update has
+// recordUpdates saves changes made by user in the update history. The update has
 // happened, so a failure is only logged.
-func (s *server) recordUpdates(r *http.Request, changes []updates.Change) {
+func (s *server) recordUpdates(ctx context.Context, user string, changes []updates.Change) {
 	if s.updates == nil || len(changes) == 0 {
 		return
 	}
-	u, _ := userFrom(r.Context())
 	for i := range changes {
-		changes[i].User = u.Username
+		changes[i].User = user
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), auditTimeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), auditTimeout)
 	defer cancel()
 	if err := s.updates.Record(ctx, changes); err != nil {
 		s.log.Error("record update", "err", err)
