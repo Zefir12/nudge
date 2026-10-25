@@ -180,7 +180,6 @@ func (c *control) up(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	defer c.end(name)
 	r = r.WithContext(withCredentials(r.Context(), req.Credentials))
 	c.stream(w, r, "up", name, func(ctx context.Context, out func(Line)) (int, error) {
 		return c.runner.Up(ctx, name, req.Pull, out)
@@ -195,14 +194,14 @@ func (c *control) down(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	defer c.end(name)
 	c.stream(w, r, "down", name, func(ctx context.Context, out func(Line)) (int, error) {
 		return c.runner.Down(ctx, name, req.Volumes, out)
 	})
 }
 
 // stream runs compose and writes its output as JSON lines. The header goes out with the
-// first line, so a compose that can't start gets an ordinary error.
+// first line, so a compose that can't start gets an ordinary error. It ends the change
+// begun on name before the final line, so the client's next request isn't ErrBusy.
 func (c *control) stream(w http.ResponseWriter, r *http.Request, op, name string, run func(ctx context.Context, out func(Line)) (int, error)) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
@@ -224,6 +223,7 @@ func (c *control) stream(w http.ResponseWriter, r *http.Request, op, name string
 		}
 	}
 	code, err := run(ctx, func(l Line) { send(controlEvent{Stream: l.Stream, Line: l.Text}) })
+	c.end(name)
 	switch {
 	case err == nil:
 		send(controlEvent{ExitCode: &code})

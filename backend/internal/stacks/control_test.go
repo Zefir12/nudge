@@ -420,3 +420,40 @@ func TestRemoteCancelKillsCompose(t *testing.T) {
 		t.Errorf("Up = %v, want context.Canceled", err)
 	}
 }
+
+// finalLineWriter records, when the final exit_code line of a change is written, the
+// status of a DELETE of the same stack: the client may send it as soon as it reads the line.
+type finalLineWriter struct {
+	*httptest.ResponseRecorder
+	handler http.Handler
+	status  int
+}
+
+func (w *finalLineWriter) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte(`"exit_code"`)) {
+		rec := httptest.NewRecorder()
+		w.handler.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/v1/stacks/web", nil))
+		w.status = rec.Code
+	}
+	return w.ResponseRecorder.Write(p)
+}
+
+func TestControlReleasesStackBeforeFinalLine(t *testing.T) {
+	t.Parallel()
+	for _, op := range []string{"up", "down"} {
+		t.Run(op, func(t *testing.T) {
+			t.Parallel()
+			dir := NewDir(t.TempDir())
+			if err := dir.Write("web", Files{Compose: "services: {}\n"}); err != nil {
+				t.Fatal(err)
+			}
+			local := NewLocal(LocalOptions{Dir: dir, Compose: "/bin/compose", DockerHost: "unix:///docker.sock", Exec: output("", 0, nil)})
+			h := NewControl(local, nil)
+			w := &finalLineWriter{ResponseRecorder: httptest.NewRecorder(), handler: h}
+			h.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/stacks/web/"+op, strings.NewReader("{}")))
+			if w.status != http.StatusNoContent {
+				t.Errorf("DELETE while the %s answer is sent = %d, want %d", op, w.status, http.StatusNoContent)
+			}
+		})
+	}
+}
