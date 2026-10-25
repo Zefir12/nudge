@@ -1,0 +1,21 @@
+# nudge agent on a remote Docker host. "Add environment" in the UI shows this file with
+# the server URL and a one-time join token filled in; or set them here and run
+# `docker compose -f deploy/agent.compose.yml up -d`. No inbound port: the agent dials out.
+services:
+  nudge-agent:
+    image: registrydedic.zefirlabs.net/nudge:latest
+    command: agent
+    container_name: nudge-agent
+    restart: unless-stopped
+    volumes:
+      # Root-equivalent access to the host's Docker. No --privileged needed.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # agent.json (agent ID and secret) after the first connect.
+      - nudge-agent:/data
+    environment:
+      NUDGE_SERVER_URL: "https://nudge.example.net"
+      # Needed only on the first connect.
+      NUDGE_JOIN_TOKEN: "<from the UI>"
+
+volumes:
+  nudge-agent:

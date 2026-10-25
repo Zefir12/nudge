@@ -29,6 +29,7 @@ const joinToken = {
   token: 'nudge_join_secret',
   expires_at: '2026-10-25T12:00:00Z',
   docker_run: 'docker run -d --name nudge-agent -e NUDGE_JOIN_TOKEN=nudge_join_secret nudge:latest agent',
+  compose: 'services:\n  nudge-agent:\n    environment:\n      NUDGE_JOIN_TOKEN: "nudge_join_secret"\n',
 };
 
 beforeEach(() => {
