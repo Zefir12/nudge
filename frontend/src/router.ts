@@ -24,6 +24,8 @@ import NetworksView from './views/NetworksView.vue';
 import NetworkView from './views/NetworkView.vue';
 import NotFoundView from './views/NotFoundView.vue';
 import RegistriesView from './views/RegistriesView.vue';
+import RegistryRepositoryView from './views/RegistryRepositoryView.vue';
+import RegistryView from './views/RegistryView.vue';
 import StackNewView from './views/StackNewView.vue';
 import StacksView from './views/StacksView.vue';
 import StackView from './views/StackView.vue';
@@ -65,6 +67,9 @@ export function createAppRouter(history: RouterHistory) {
       { path: '/env/:env/events', name: 'events', component: EventsView },
       { path: '/environments', name: 'environments', component: EnvironmentsView },
       { path: '/registries', name: 'registries', component: RegistriesView },
+      { path: '/registries/:id', name: 'registry', component: RegistryView },
+      // Repository names contain "/", so the name goes in the query (?name=team/app).
+      { path: '/registries/:id/repository', name: 'registry-repository', component: RegistryRepositoryView },
       { path: '/webhooks', name: 'webhooks', component: WebhooksView },
       { path: '/tokens', name: 'tokens', component: TokensView },
       { path: '/audit', name: 'audit', component: AuditView },

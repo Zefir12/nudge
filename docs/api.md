@@ -90,12 +90,15 @@ Add a row (and a section below, for anything non-trivial) with every new endpoin
 ### Setup and login
 `POST /api/v1/setup` and `POST /api/v1/auth/login` take
 `{"username": "admin", "password": "..."}` and answer with the user
-`{"id": 1, "username": "admin", "created_at": "2026-10-24T12:00:00Z"}` (`201` for setup,
+`{"id": 1, "username": "admin", "created_at": "2026-10-24T12:00:00Z", "admin": true}`
+(`201` for setup,
 `200` for login) plus the session cookie: `HttpOnly`, `SameSite=Strict`, `Path=/`,
 `Secure` when nudge serves TLS or `NUDGE_PUBLIC_URL` is `https://`, else when the request
 came over HTTPS (or with `X-Forwarded-Proto: https` from a trusted proxy,
 `NUDGE_TRUSTED_PROXIES`),
-valid for 7 days. `GET /api/v1/auth/me` returns the same user object.
+valid for 7 days. `GET /api/v1/auth/me` returns the same user object. `admin` says
+whether the user may use the *admin* routes (true for every user until nudge has roles);
+the web UI hides admin-only actions when it is false.
 
 - Setup works only while no user exists, else `409`. The username is 1 to 64 bytes
   without control characters or surrounding spaces; the password at least 8 characters
