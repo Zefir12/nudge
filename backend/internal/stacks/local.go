@@ -53,6 +53,9 @@ type LocalOptions struct {
 	// Credentials finds the registry credentials of a stack's `compose up`; nil means
 	// none (an agent's runner gets them from the server with each request).
 	Credentials CredentialFunc
+	// ConfigDir holds the temporary Docker configs with the credentials (see
+	// CleanConfigDir); empty means the system's temporary directory.
+	ConfigDir string
 }
 
 // Local runs compose here, on stacks in a directory of this machine.
@@ -62,11 +65,12 @@ type Local struct {
 	dockerHost  string
 	exec        ExecFunc
 	credentials CredentialFunc
+	configDir   string
 }
 
 // NewLocal returns a runner for the stacks in opts.Dir.
 func NewLocal(opts LocalOptions) *Local {
-	l := &Local{dir: opts.Dir, compose: opts.Compose, dockerHost: opts.DockerHost, exec: opts.Exec, credentials: opts.Credentials}
+	l := &Local{dir: opts.Dir, compose: opts.Compose, dockerHost: opts.DockerHost, exec: opts.Exec, credentials: opts.Credentials, configDir: opts.ConfigDir}
 	if l.compose == "" {
 		l.compose = DefaultCompose
 	}
@@ -126,7 +130,7 @@ func (l *Local) run(ctx context.Context, name string, args []string, out func(Li
 			return 0, fmt.Errorf("compose up %s: %w", name, credErr)
 		}
 		if len(creds) > 0 {
-			config, cfgErr := writeDockerConfig(creds)
+			config, cfgErr := writeDockerConfig(l.configDir, creds)
 			if cfgErr != nil {
 				return 0, fmt.Errorf("compose up %s: %w", name, cfgErr)
 			}

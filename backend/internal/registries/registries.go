@@ -286,7 +286,10 @@ func (s *Service) AuthsFor(ctx context.Context, texts ...string) ([]Auth, error)
 // namesHost reports whether text has host as a whole host name (not part of a longer
 // one, nor with another port), ignoring case.
 func namesHost(text, host string) bool {
-	text = strings.ToLower(text)
+	if host == "" {
+		return false
+	}
+	text, host = strings.ToLower(text), strings.ToLower(host)
 	for i := 0; ; {
 		j := strings.Index(text[i:], host)
 		if j < 0 {

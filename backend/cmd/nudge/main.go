@@ -108,6 +108,9 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 	if err := prepareDataDir(cfg.DataDir); err != nil {
 		return err
 	}
+	if err := cleanComposeConfigs(composeConfigDir(cfg.DataDir), log); err != nil {
+		return err
+	}
 	var certLoader *certs.Loader
 	if cfg.TLS() {
 		if certLoader, err = certs.Load(cfg.TLSCert, cfg.TLSKey, log); err != nil {
@@ -264,6 +267,9 @@ func runAgent(ctx context.Context, cfg config.Agent, log *slog.Logger) error {
 	if err := prepareDataDir(cfg.DataDir); err != nil {
 		return err
 	}
+	if err := cleanComposeConfigs(composeConfigDir(cfg.DataDir), log); err != nil {
+		return err
+	}
 	dial, err := docker.LocalDialer(cfg.DockerHost)
 	if err != nil {
 		return err
@@ -283,6 +289,7 @@ func runAgent(ctx context.Context, cfg config.Agent, log *slog.Logger) error {
 		Dial:      dial,
 		Control: stacks.NewControl(stacks.NewLocal(stacks.LocalOptions{
 			Dir: stacks.NewDir(cfg.StacksDir), Compose: cfg.Compose, DockerHost: cfg.DockerHost,
+			ConfigDir: composeConfigDir(cfg.DataDir),
 		}), log),
 		Version:  version.Version,
 		Hostname: hostname,
@@ -307,8 +314,31 @@ func stackRunner(cfg config.Server, envs *environments.Service, regs *registries
 		}
 		return stacks.NewLocal(stacks.LocalOptions{
 			Dir: dir, Compose: cfg.Compose, DockerHost: cfg.DockerHost, Credentials: creds,
+			ConfigDir: composeConfigDir(cfg.DataDir),
 		})
 	}
+}
+
+// composeConfigDir is where compose runs get their temporary Docker configs with the
+// registry credentials: on the data volume, private to nudge (not in the stacks
+// directory, which stacks may bind-mount).
+func composeConfigDir(dataDir string) string {
+	if dataDir == "" {
+		return ""
+	}
+	return filepath.Join(dataDir, "compose-config")
+}
+
+// cleanComposeConfigs prepares dir and removes the Docker configs a killed run left there.
+func cleanComposeConfigs(dir string, log *slog.Logger) error {
+	n, err := stacks.CleanConfigDir(dir)
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		log.Warn("removed docker configs left by an interrupted compose run", "count", n, "dir", dir)
+	}
+	return nil
 }
 
 // stackCredentials finds the stored credentials of the registries a stack's files name.

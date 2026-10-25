@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -264,6 +266,40 @@ func TestStackRunner(t *testing.T) {
 	runner := stackRunner(config.Server{StacksDir: t.TempDir(), Compose: "/bin/compose", DockerHost: "unix:///docker.sock"}, nil, nil)
 	if _, ok := runner(environments.Environment{ID: 1, Kind: environments.KindLocal}).(*stacks.Local); !ok {
 		t.Error("the local environment's runner isn't a stacks.Local")
+	}
+}
+
+func TestCleanComposeConfigs(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		stale   []string
+		wantLog bool
+	}{
+		{"nothing left", nil, false},
+		{"stale configs", []string{"nudge-compose-1", "nudge-compose-2"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := composeConfigDir(t.TempDir())
+			for _, name := range tt.stale {
+				if err := os.MkdirAll(filepath.Join(dir, name), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var buf bytes.Buffer
+			if err := cleanComposeConfigs(dir, slog.New(slog.NewTextHandler(&buf, nil))); err != nil {
+				t.Fatal(err)
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil || len(entries) != 0 {
+				t.Errorf("left %v, %v", entries, err)
+			}
+			if logged := strings.Contains(buf.String(), "count="+strconv.Itoa(len(tt.stale))); logged != tt.wantLog {
+				t.Errorf("log %q, want a count: %v", buf.String(), tt.wantLog)
+			}
+		})
 	}
 }
 

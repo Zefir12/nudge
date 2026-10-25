@@ -3,6 +3,7 @@ package stacks
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -282,6 +283,47 @@ func TestRemoteCredentials(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("agent too old", func(t *testing.T) {
+		t.Parallel()
+		// An agent from before credentials: its up body has only "pull".
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			dec := json.NewDecoder(r.Body)
+			dec.DisallowUnknownFields()
+			var req struct {
+				Pull bool `json:"pull"`
+			}
+			if err := dec.Decode(&req); err != nil {
+				controlError(w, http.StatusBadRequest, "invalid JSON body")
+				return
+			}
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			_, _ = w.Write([]byte(`{"exit_code":0}` + "\n"))
+		}))
+		t.Cleanup(srv.Close)
+		addr := srv.Listener.Addr().String()
+		dir := NewDir(t.TempDir())
+		if err := dir.Create("web", files); err != nil {
+			t.Fatal(err)
+		}
+		for _, tt := range []struct {
+			name    string
+			creds   []Credential
+			wantOld bool
+		}{
+			{"with credentials", []Credential{gh}, true},
+			{"without", nil, false},
+		} {
+			remote := NewRemote(func(ctx context.Context) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, "tcp", addr)
+			}).WithCredentials(dir, func(context.Context, Files) ([]Credential, error) { return tt.creds, nil })
+			_, err := remote.Up(context.Background(), "web", false, func(Line) {})
+			if got := errors.Is(err, ErrOldAgent); got != tt.wantOld || (!tt.wantOld && err != nil) {
+				t.Errorf("%s: Up = %v, want ErrOldAgent %v", tt.name, err, tt.wantOld)
+			}
+		}
+	})
 
 	t.Run("lookup fails", func(t *testing.T) {
 		t.Parallel()

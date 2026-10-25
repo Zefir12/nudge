@@ -189,6 +189,26 @@ func TestCRUDAndAuth(t *testing.T) {
 	}
 }
 
+func TestNamesHost(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		text, host string
+		want       bool
+	}{
+		{"image: GHCR.io/app", "ghcr.io", true},
+		{"image: ghcr.io/app", "GHCR.IO", true},
+		{"image: ghcr.io:443/app", "ghcr.io", false},
+		{"image: my-ghcr.io/app", "ghcr.io", false},
+		{"ghcr.io", "ghcr.io", true},
+		{"", "ghcr.io", false},
+	}
+	for _, tt := range tests {
+		if got := namesHost(tt.text, tt.host); got != tt.want {
+			t.Errorf("namesHost(%q, %q) = %v, want %v", tt.text, tt.host, got, tt.want)
+		}
+	}
+}
+
 func TestAuthsFor(t *testing.T) {
 	t.Parallel()
 	s := newTestService(t)

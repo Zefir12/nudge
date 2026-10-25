@@ -347,6 +347,89 @@ func TestLocalCredentials(t *testing.T) {
 	}
 }
 
+func TestMaskCredentials(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		creds []Credential
+		in    string
+		want  string
+	}{
+		{"password and auth", []Credential{{Username: "bot", Password: "s3cret"}},
+			"s3cret as Ym90OnMzY3JldA==", "******** as ********"},
+		{"short password", []Credential{{Username: "u", Password: "a"}},
+			"a dTph", "******** ********"},
+		// base64("u:dT") is "dTpkVA==": masking the password first would leave "pkVA==".
+		{"password inside its auth", []Credential{{Username: "u", Password: "dT"}},
+			"auth dTpkVA== and dT", "auth ******** and ********"},
+		{"same password twice", []Credential{{Username: "u", Password: "pw"}, {Username: "v", Password: "pw"}},
+			"pw", "********"},
+		{"no password", []Credential{{Username: "u"}}, "u: dTo=", "u: dTo="},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := mask(tt.in, secretsOf(tt.creds)); got != tt.want {
+				t.Errorf("mask(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCleanConfigDir(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	dir := filepath.Join(root, "compose-config")
+	if n, err := CleanConfigDir(dir); err != nil || n != 0 {
+		t.Fatalf("CleanConfigDir of a missing dir = %d, %v", n, err)
+	}
+	if info, err := os.Stat(dir); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("created %v, %v; want a 0700 directory", info, err)
+	}
+	for _, name := range []string{"nudge-compose-1", "nudge-compose-2/sub"} {
+		if err := os.MkdirAll(filepath.Join(dir, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name, "config.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	other := filepath.Join(dir, "keep")
+	if err := os.WriteFile(other, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := CleanConfigDir(dir); err != nil || n != 2 {
+		t.Fatalf("CleanConfigDir = %d, %v; want 2 removed", n, err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "keep" {
+		t.Errorf("left %v, %v; want only keep", entries, err)
+	}
+}
+
+func TestLocalConfigDir(t *testing.T) {
+	t.Parallel()
+	d := NewDir(t.TempDir())
+	if err := d.Create("web", Files{Compose: "services: {}\n"}); err != nil {
+		t.Fatal(err)
+	}
+	configDir := filepath.Join(t.TempDir(), "compose-config")
+	if _, err := CleanConfigDir(configDir); err != nil {
+		t.Fatal(err)
+	}
+	var run configRun
+	l := NewLocal(LocalOptions{Dir: d, ConfigDir: configDir, Exec: seeConfig(t, &run, ""),
+		Credentials: func(context.Context, Files) ([]Credential, error) {
+			return []Credential{{Address: "ghcr.io", Username: "u", Password: "p"}}, nil
+		}})
+	if _, err := l.Up(context.Background(), "web", false, func(Line) {}); err != nil {
+		t.Fatal(err)
+	}
+	if seen := run.get(); filepath.Dir(seen.dir) != configDir || !strings.HasPrefix(filepath.Base(seen.dir), "nudge-compose-") {
+		t.Errorf("DOCKER_CONFIG = %s, want a nudge-compose-* dir in %s", seen.dir, configDir)
+	}
+}
+
 func TestCredentialLogValue(t *testing.T) {
 	t.Parallel()
 	var buf strings.Builder

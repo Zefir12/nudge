@@ -6,7 +6,7 @@ image without setting anything. A flag wins over its variable.
 | Flag | Env | Default | Description |
 |---|---|---|---|
 | `-addr` | `NUDGE_ADDR` | `:8080` | listen address of the API and web UI |
-| `-data` | `NUDGE_DATA` | `/data` | data directory (database, stacks); mount a volume here |
+| `-data` | `NUDGE_DATA` | `/data` | data directory (database, stacks, `compose-config/` with the short-lived registry logins of a stack deploy); mount a volume here |
 | `-stacks-dir` | `NUDGE_STACKS_DIR` | `<data>/stacks` | compose stacks, an absolute path; mount it at the same path on the host (see Stacks) |
 | `-compose` | `NUDGE_COMPOSE` | `/usr/local/bin/docker-compose` | docker-compose binary that deploys stacks (shipped in the image) |
 | `-log-level` | `NUDGE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`; logs are JSON on stderr |

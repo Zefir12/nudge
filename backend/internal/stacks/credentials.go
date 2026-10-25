@@ -1,6 +1,7 @@
 package stacks
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -8,12 +9,15 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
 // Registry credentials reach compose through a Docker config of its own: for each
 // `compose up`, a config.json (0600) in a new private temporary directory (0700) named by
-// DOCKER_CONFIG, removed when compose exits. Their passwords are masked in its output.
+// DOCKER_CONFIG, removed when compose exits. The directories live in LocalOptions.ConfigDir
+// (`<data>/compose-config`), which CleanConfigDir sweeps at start in case a killed
+// process left one. Their passwords are masked in compose's output.
 
 // dockerHub is the address nudge stores Docker Hub's credentials under, and
 // dockerHubKey the one Docker configs use for it.
@@ -67,9 +71,39 @@ func basicAuth(c Credential) string {
 	return base64.StdEncoding.EncodeToString([]byte(c.Username + ":" + c.Password))
 }
 
-// writeDockerConfig writes creds to config.json in a new private temporary directory and
-// returns it; the caller removes it.
-func writeDockerConfig(creds []Credential) (string, error) {
+// configPrefix starts the name of each temporary Docker config directory.
+const configPrefix = "nudge-compose-"
+
+// CleanConfigDir makes dir (0700) for the temporary Docker configs and removes the ones a
+// killed run left there, returning how many. Call it at start, before any compose run.
+func CleanConfigDir(dir string) (int, error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return 0, fmt.Errorf("docker config directory: %w", err)
+	}
+	// MkdirAll leaves an existing directory's mode alone.
+	if err := os.Chmod(dir, 0o700); err != nil { // #nosec G302 -- a directory: 0700 is owner-only
+		return 0, fmt.Errorf("docker config directory: %w", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, fmt.Errorf("docker config directory: %w", err)
+	}
+	n := 0
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), configPrefix) {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			return n, fmt.Errorf("remove stale docker config: %w", err)
+		}
+		n++
+	}
+	return n, nil
+}
+
+// writeDockerConfig writes creds to config.json in a new private temporary directory in
+// parent (empty: the system's) and returns it; the caller removes it.
+func writeDockerConfig(parent string, creds []Credential) (string, error) {
 	type auth struct {
 		Auth string `json:"auth"`
 	}
@@ -83,7 +117,7 @@ func writeDockerConfig(creds []Credential) (string, error) {
 	}
 	// Marshalling a map of strings can't fail.
 	b, _ := json.Marshal(map[string]any{"auths": auths})
-	dir, err := os.MkdirTemp("", "nudge-compose-")
+	dir, err := os.MkdirTemp(parent, configPrefix)
 	if err != nil {
 		return "", fmt.Errorf("docker config: %w", err)
 	}
@@ -107,7 +141,8 @@ func writePrivate(path string, b []byte) error {
 	return f.Close()
 }
 
-// secretsOf returns what of creds must not show in compose's output.
+// secretsOf returns what of creds must not show in compose's output, once each and
+// longest first, so masking a short password can't break up an auth that contains it.
 func secretsOf(creds []Credential) []string {
 	var secrets []string
 	for _, c := range creds {
@@ -115,10 +150,17 @@ func secretsOf(creds []Credential) []string {
 			secrets = append(secrets, c.Password, basicAuth(c))
 		}
 	}
-	return secrets
+	slices.SortFunc(secrets, func(a, b string) int {
+		if n := cmp.Compare(len(b), len(a)); n != 0 {
+			return n
+		}
+		return strings.Compare(a, b)
+	})
+	return slices.Compact(secrets)
 }
 
-// mask replaces each of secrets in s.
+// mask replaces each of secrets in s, in order. A secret is matched within one line, so
+// a password with a newline in it isn't masked.
 func mask(s string, secrets []string) string {
 	for _, secret := range secrets {
 		s = strings.ReplaceAll(s, secret, masked)

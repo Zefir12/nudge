@@ -429,7 +429,7 @@ is in the audit log with the stack's name as its target.
   `{"pull": true}` also `--pull always` (an update); the body may be left out. Compose
   pulls with the credentials under `/registries` of every registry whose host the
   stack's compose.yaml or `.env` names (`ghcr.io/org/app`, not `notghcr.io` nor another
-  port), and Docker Hub's for images without a host; their passwords are masked
+  port), and Docker Hub's (whenever stored); their passwords are masked
   (`********`) in the output. `update` pulls the same way.
   `POST .../stacks/{name}/down` runs `docker-compose down --remove-orphans`, with
   `{"volumes": true}` also `--volumes`. Both answer `200` with `Content-Type:

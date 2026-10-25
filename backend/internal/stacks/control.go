@@ -31,6 +31,18 @@ const maxEventSize = 1 << 20
 // ErrBusy means the agent is already changing or deploying the stack.
 var ErrBusy = errors.New("the stack is being changed on the agent")
 
+// ErrOldAgent means the agent refused an up with registry credentials: it was built
+// before them.
+var ErrOldAgent = errors.New("the agent is too old for registry credentials; update it")
+
+// statusError is an error answer of the control service.
+type statusError struct {
+	code int
+	msg  string
+}
+
+func (e *statusError) Error() string { return fmt.Sprintf("agent answered %d: %s", e.code, e.msg) }
+
 // controlEvent is one line of a control output stream: an output line, then the exit code
 // or an error.
 type controlEvent struct {
@@ -292,7 +304,14 @@ func (rm *Remote) Up(ctx context.Context, name string, pull bool, out func(Line)
 			return 0, fmt.Errorf("compose up %s: registry credentials: %w", name, err)
 		}
 	}
-	return rm.run(ctx, name, "up", req, out)
+	code, err := rm.run(ctx, name, "up", req, out)
+	var se *statusError
+	if len(req.Credentials) > 0 && errors.As(err, &se) && se.code == http.StatusBadRequest {
+		// The server's request is otherwise valid: an agent from before credentials
+		// refuses the unknown field.
+		return 0, fmt.Errorf("compose up %s: %w", name, ErrOldAgent)
+	}
+	return code, err
 }
 
 // Down runs compose down on the agent.
@@ -388,5 +407,5 @@ func (rm *Remote) do(ctx context.Context, method, name, suffix string, body any)
 	if msg == "" {
 		msg = resp.Status
 	}
-	return nil, fmt.Errorf("agent answered %d: %s", resp.StatusCode, msg)
+	return nil, &statusError{code: resp.StatusCode, msg: msg}
 }
