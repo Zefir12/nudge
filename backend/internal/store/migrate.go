@@ -56,15 +56,25 @@ func loadMigrations(fsys fs.FS, dir string) ([]migration, error) {
 }
 
 // migrate applies the migrations in dir of fsys that are not yet recorded in
-// schema_migrations, each in its own transaction. The transactions take the write lock
-// up front (BEGIN IMMEDIATE, see dsn) and check the version inside it, so concurrent
-// migrates of the same file wait for each other and apply each migration once.
-func migrate(ctx context.Context, db *sql.DB, fsys fs.FS, dir string) error {
+// schema_migrations, all in one transaction: a failed migration rolls back every one
+// applied with it. The transaction takes the write lock up front (BEGIN IMMEDIATE, see
+// dsn) and reads the version inside it, so concurrent migrates of the same file take the
+// lock once each, wait for each other and apply each migration once.
+func migrate(ctx context.Context, db *sql.DB, fsys fs.FS, dir string) (err error) {
 	ms, err := loadMigrations(fsys, dir)
 	if err != nil {
 		return err
 	}
-	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin migrations: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version    INTEGER PRIMARY KEY,
 		name       TEXT    NOT NULL,
 		applied_at INTEGER NOT NULL DEFAULT (unixepoch())
@@ -72,38 +82,30 @@ func migrate(ctx context.Context, db *sql.DB, fsys fs.FS, dir string) error {
 		return fmt.Errorf("create schema_migrations: %w", err)
 	}
 	var latest int
-	if err := db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&latest); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&latest); err != nil {
 		return fmt.Errorf("read schema version: %w", err)
 	}
 	if len(ms) > 0 && latest > ms[len(ms)-1].version {
 		return fmt.Errorf("%w: database at version %d, binary knows up to %d", errNewerSchema, latest, ms[len(ms)-1].version)
 	}
 	for _, m := range ms {
-		if err := apply(ctx, db, m); err != nil {
+		if err := apply(ctx, tx, m); err != nil {
 			return err
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migrations: %w", err)
 	}
 	return nil
 }
 
-func apply(ctx context.Context, db *sql.DB, m migration) (err error) {
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("migration %s: begin: %w", m.name, err)
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
+// apply runs m in tx unless schema_migrations already records it.
+func apply(ctx context.Context, tx *sql.Tx, m migration) error {
 	var n int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, m.version).Scan(&n); err != nil {
 		return fmt.Errorf("migration %s: check: %w", m.name, err)
 	}
 	if n > 0 {
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("migration %s: commit: %w", m.name, err)
-		}
 		return nil
 	}
 	if _, err := tx.ExecContext(ctx, m.sql); err != nil {
@@ -111,9 +113,6 @@ func apply(ctx context.Context, db *sql.DB, m migration) (err error) {
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations (version, name) VALUES (?, ?)`, m.version, m.name); err != nil {
 		return fmt.Errorf("migration %s: record: %w", m.name, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("migration %s: commit: %w", m.name, err)
 	}
 	return nil
 }

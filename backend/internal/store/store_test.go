@@ -190,6 +190,14 @@ func TestMigrate(t *testing.T) {
 			},
 			wantErr: "0001_a.sql",
 		},
+		{
+			name: "failed migration rolls back the ones before it",
+			files: fstest.MapFS{
+				"m/0001_a.sql": {Data: []byte(`CREATE TABLE a (id);`)},
+				"m/0002_b.sql": {Data: []byte(`CREATE TABLE oops (`)},
+			},
+			wantErr: "0002_b.sql",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
