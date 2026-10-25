@@ -117,7 +117,12 @@ location / {
 ```
 
 Set `NUDGE_PUBLIC_URL=https://nudge.example.net` as well. Behind a proxy all clients
-share its IP for the login rate limit (see docs/api.md).
+share its IP for the login rate limit (see docs/api.md). Failed deploy webhook checks
+(`POST /api/v1/hooks/{id}` with a wrong or missing secret) count against the same per-IP
+limit, so behind a proxy a CI job with a stale secret uses up the limit for logins too:
+after 20 failures in 15 minutes, logins and webhook triggers through the proxy get `429`
+until the window ends. Fix or rotate the secret in CI promptly. nudge ignores
+`X-Forwarded-For`, which anyone can forge.
 
 ## Sessions
 Logins last 7 days (a cookie `nudge_session`; the database keeps only its SHA-256).

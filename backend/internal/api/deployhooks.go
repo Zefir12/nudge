@@ -25,6 +25,8 @@ import (
 const (
 	// maxHookBody bounds a trigger's body, read whole before its signature is checked.
 	maxHookBody = 1 << 20
+	// hookReadTimeout bounds reading a trigger's body.
+	hookReadTimeout = 30 * time.Second
 	// hookWaitTimeout bounds how long ?wait=1 waits for a run.
 	hookWaitTimeout = 5 * time.Minute
 )
@@ -262,14 +264,8 @@ func (s *server) triggerDeployHook(w http.ResponseWriter, r *http.Request) {
 	if !s.deployHooksReady(w) {
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxHookBody))
-	if err != nil {
-		var tooBig *http.MaxBytesError
-		if errors.As(err, &tooBig) {
-			s.writeError(w, http.StatusRequestEntityTooLarge, "the body is too large")
-		}
-		return
-	}
+	// The IP's limit first, so a blocked client gets nothing read; the attempt is handed
+	// back only once the credential turned out valid.
 	ip := clientIP(r)
 	succeeded, err := s.auth.Attempt(ip)
 	var limited *auth.RateLimitedError
@@ -279,17 +275,37 @@ func (s *server) triggerDeployHook(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusTooManyRequests, "too many failed attempts, try again later")
 		return
 	}
+	if r.ContentLength > maxHookBody {
+		s.writeError(w, http.StatusRequestEntityTooLarge, "the body is too large")
+		return
+	}
+	// A slow sender can't hold the request open; not every writer supports deadlines.
+	// The deadline goes again once the body is in: net/http's read that notices a client
+	// going away would hit it and cancel a ?wait=1 caller's request.
+	rc := http.NewResponseController(w)
+	_ = rc.SetReadDeadline(time.Now().Add(hookReadTimeout))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxHookBody))
+	_ = rc.SetReadDeadline(time.Time{})
+	var tooBig *http.MaxBytesError
+	switch {
+	case errors.As(err, &tooBig):
+		s.writeError(w, http.StatusRequestEntityTooLarge, "the body is too large")
+		return
+	case err != nil:
+		s.writeError(w, http.StatusBadRequest, "the body could not be read")
+		return
+	}
 	h, trigger, err := s.deployHooks.Authenticate(r.Context(), r.PathValue("id"), r.Header, body)
 	if errors.Is(err, deployhooks.ErrUnauthorized) {
 		s.log.Warn("webhook trigger refused", "ip", ip)
 		s.writeError(w, http.StatusUnauthorized, "authentication required")
 		return
 	}
-	succeeded()
 	if err != nil {
 		s.internalError(w, "authenticate webhook", err)
 		return
 	}
+	succeeded()
 	auditUser(r, auth.User{ID: h.CreatedBy, Username: h.Owner, Token: "hook:" + h.Name})
 	auditEnvironment(r, strconv.FormatInt(h.Environment, 10))
 	wait, ok := s.queryBool(w, r, "wait")

@@ -594,8 +594,11 @@ request, like the agent join command).
 - Names are 1 to 64 bytes, unique per user (`409`); at most 100 webhooks per user (`409`).
   `tag_filter` is optional, a pattern with `*`, `?` and `[...]` (Go's `path.Match`).
 - Every user manages their own webhooks; others' answer `404`. Admins see and manage
-  all (nudge has no roles yet, so every user is an admin today). Deleting a user deletes
-  their webhooks. API tokens can manage webhooks like sessions (scoped tokens are #33).
+  all. nudge has no roles yet, so today every user is an admin: any user can list,
+  rotate and delete any user's webhooks (and, with the new secret, trigger them), and the
+  runs still go as the creator, so the audit log and update history name the creator,
+  not the user who rotated the secret. Deleting a user deletes their webhooks. API tokens
+  can manage webhooks like sessions (scoped tokens are #33).
 - `GET .../webhooks/{id}/runs` lists the runs, newest first, at most 50 per webhook:
   `{"id": 7, "trigger": "signature", "status": "updated", "queued_at": "...",
   "started_at": "...", "finished_at": "...", "image_before": "sha256:…",
@@ -609,14 +612,17 @@ as either
 
 - `Authorization: Bearer nudge_hook_…`, or
 - an HMAC-SHA256 of the raw body keyed with the secret, in `X-Forgejo-Signature` or
-  `X-Gitea-Signature` (hex) or `X-Hub-Signature-256` (`sha256=` and hex). With an
-  `Authorization` header present only the bearer counts.
+  `X-Gitea-Signature` (hex) or `X-Hub-Signature-256` (`sha256=` and hex). A
+  `Bearer nudge_hook_…` header decides alone; any other `Authorization` header (a
+  proxy's Basic auth, say) is ignored and the signature counts.
 
-Both are compared in constant time. The body is read (at most 1 MiB, else `413`) before
-the check and never echoed. An unknown webhook, a missing and a wrong credential all
-answer `401 {"error":"authentication required"}`, and count against the client IP's
-failed-login limit (20 in 15 minutes, shared with logins; then `429` with
-`Retry-After`). A webhook accepts 10 triggers a minute (`429` beyond).
+Both are compared in constant time. The client IP's failed-login limit is checked first
+(20 in 15 minutes, shared with logins; then `429` with `Retry-After`, before the body is
+read). The body is then read, at most 1 MiB (`413`, refused up front when
+`Content-Length` says more) within 30 seconds (`400` if it can't be read), and never
+echoed. An unknown webhook, a missing and a wrong credential all answer
+`401 {"error":"authentication required"}` and count as failed attempts, as do refused
+bodies. A webhook accepts 10 triggers a minute (`429` beyond).
 
 - The update is the one `POST .../containers/{id}/update` or `.../stacks/{name}/update`
   makes, run as the webhook's creator: it goes into the update history under their name,
@@ -634,8 +640,15 @@ failed-login limit (20 in 15 minutes, shared with logins; then `429` with
   it, the answer is `200 {"run_id": 8, "status": "skipped"}` and nothing is deployed.
   Other events and bearer calls always run.
 
-Use HTTPS: a bearer secret over plain HTTP can be read by anyone on the path (a signature
-can't be replayed for another body, but it can for the same one).
+Use HTTPS: a bearer secret over plain HTTP can be read by anyone on the path. A signed
+request can't be changed, but it can be replayed: the signature covers only the body, with
+no timestamp or nonce, so whoever sees one signed request can send it again as often as
+they like. Each replay is just another trigger of the same update, and the 10 triggers a
+minute per webhook bound them.
+
+Behind a reverse proxy every client has the proxy's IP, so failed webhook checks and
+failed logins share one limit: a misconfigured CI job that keeps sending a wrong secret
+can lock everyone out of logging in for 15 minutes (see docs/config/server.md).
 
 A Forgejo (or GitHub) Actions step after the image is pushed, with the secret in the
 repository's secrets as `NUDGE_HOOK_SECRET` and the URL in its variables:

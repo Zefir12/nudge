@@ -116,12 +116,7 @@ func (t Ticket) Done() <-chan struct{} { return t.done }
 // allowLocked counts a trigger of hook id, unless it reached TriggerLimit this window;
 // it returns the webhook's slot. The caller holds mu.
 func (s *Service) allowLocked(id string, now time.Time) (*slot, time.Duration, bool) {
-	sl, ok := s.slots[id]
-	if !ok {
-		sl = &slot{windowStart: now}
-		s.pruneLocked(now)
-		s.slots[id] = sl
-	}
+	sl := s.slotLocked(id, now)
 	if !now.Before(sl.windowStart.Add(TriggerWindow)) {
 		sl.windowStart, sl.count = now, 0
 	}
@@ -130,6 +125,17 @@ func (s *Service) allowLocked(id string, now time.Time) (*slot, time.Duration, b
 	}
 	sl.count++
 	return sl, 0, true
+}
+
+// slotLocked returns webhook id's slot, making one if it has none. The caller holds mu.
+func (s *Service) slotLocked(id string, now time.Time) *slot {
+	sl, ok := s.slots[id]
+	if !ok {
+		sl = &slot{windowStart: now}
+		s.pruneLocked(now)
+		s.slots[id] = sl
+	}
+	return sl
 }
 
 // pruneLocked drops idle slots. Slots exist only for authenticated webhooks, which the
@@ -152,32 +158,63 @@ func (e *RateLimitedError) Unwrap() error { return ErrRateLimited }
 // queued already the trigger merges into it. The run outlives ctx, which bounds only
 // the bookkeeping.
 func (s *Service) Trigger(ctx context.Context, h Hook, trigger Trigger, deploy DeployFunc) (Ticket, error) {
+	now := s.clock.Now()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed || s.ctx.Err() != nil {
+		s.mu.Unlock()
 		return Ticket{}, ErrClosed
 	}
-	now := s.clock.Now()
 	sl, wait, ok := s.allowLocked(h.ID, now)
+	var merged *active
+	if ok {
+		merged = sl.next
+	}
+	s.mu.Unlock()
 	if !ok {
 		return Ticket{}, &RateLimitedError{RetryAfter: wait}
 	}
+	// The database is written without mu, so a slow write doesn't hold up every
+	// webhook; the slot is looked at again after.
 	s.touch(ctx, h.ID, now)
-	if sl.next != nil {
-		return Ticket{RunID: sl.next.id, done: sl.next.done}, nil
+	if merged != nil {
+		return Ticket{RunID: merged.id, done: merged.done}, nil
 	}
 	id, err := s.insertRun(ctx, h.ID, trigger, StatusQueued, now)
 	if err != nil {
 		return Ticket{}, err
 	}
-	a := &active{id: id, hook: h, deploy: deploy, done: make(chan struct{}), trigger: trigger}
-	if sl.running != nil {
-		sl.next = a
-	} else {
-		sl.running = a
-		s.wg.Go(func() { s.loop(sl, a) })
+
+	s.mu.Lock()
+	// The slot may have gone idle and been dropped meanwhile.
+	sl = s.slotLocked(h.ID, now)
+	var t Ticket
+	switch {
+	case s.closed || s.ctx.Err() != nil:
+		err = ErrClosed
+	case sl.next != nil:
+		// Another trigger queued a follow-up meanwhile: merge into it.
+		t = Ticket{RunID: sl.next.id, done: sl.next.done}
+	default:
+		a := &active{id: id, hook: h, deploy: deploy, done: make(chan struct{}), trigger: trigger}
+		t = Ticket{RunID: id, done: a.done}
+		if sl.running != nil {
+			sl.next = a
+		} else {
+			sl.running = a
+			s.wg.Go(func() { s.loop(sl, a) })
+		}
 	}
-	return Ticket{RunID: id, done: a.done}, nil
+	s.mu.Unlock()
+	if t.RunID != id {
+		// The row isn't needed.
+		if _, derr := s.db.ExecContext(context.WithoutCancel(ctx), `DELETE FROM deploy_hook_runs WHERE id = ?`, id); derr != nil {
+			s.log.Warn("drop merged webhook run", "hook", h.ID, "run", id, "err", derr)
+		}
+	}
+	if err != nil {
+		return Ticket{}, err
+	}
+	return t, nil
 }
 
 // Skip records a trigger of h that the tag filter let pass by.

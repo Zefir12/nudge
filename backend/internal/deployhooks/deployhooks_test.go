@@ -257,8 +257,11 @@ func TestAuthenticate(t *testing.T) {
 		{name: "wrong bearer", header: map[string]string{"Authorization": "Bearer " + secret + "x"}},
 		{name: "another webhook's bearer", header: map[string]string{"Authorization": "Bearer " + other}},
 		{name: "basic auth", header: map[string]string{"Authorization": "Basic " + secret}},
-		// An Authorization header is the credential even next to a valid signature.
-		{name: "wrong bearer with a signature", header: map[string]string{"Authorization": "Bearer x", "X-Forgejo-Signature": sign(secret, body)}},
+		// A webhook bearer is the credential even next to a valid signature.
+		{name: "wrong bearer with a signature", header: map[string]string{"Authorization": "Bearer " + secret + "x", "X-Forgejo-Signature": sign(secret, body)}},
+		// Any other Authorization header (a proxy's, an API token) leaves the signature.
+		{name: "basic auth with a signature", header: map[string]string{"Authorization": "Basic dXNlcjpwYXNz", "X-Forgejo-Signature": sign(secret, body)}, want: TriggerSignature},
+		{name: "API token with a signature", header: map[string]string{"Authorization": "Bearer nudge_ABC", "X-Hub-Signature-256": "sha256=" + sign(secret, body)}, want: TriggerSignature},
 		{name: "forgejo signature", header: map[string]string{"X-Forgejo-Signature": sign(secret, body)}, want: TriggerSignature},
 		{name: "gitea signature", header: map[string]string{"X-Gitea-Signature": sign(secret, body)}, want: TriggerSignature},
 		{name: "github signature", header: map[string]string{"X-Hub-Signature-256": "sha256=" + sign(secret, body)}, want: TriggerSignature},
@@ -442,6 +445,50 @@ func TestTriggerIndependentHooks(t *testing.T) {
 	d.release <- Outcome{Status: StatusUnchanged}
 	waitDone(t, ta)
 	waitDone(t, tb)
+}
+
+func TestConcurrentTriggersMerge(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	ht := newHookTest(t)
+	h, _ := ht.create(t, ht.alice, "ci")
+	d := newDeployer()
+	first, err := ht.svc.Trigger(ctx, h, TriggerBearer, d.deploy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitStarted(t, d)
+	const n = TriggerLimit - 1
+	tickets := make(chan Ticket, n)
+	var wg sync.WaitGroup
+	for range n {
+		wg.Go(func() {
+			tk, err := ht.svc.Trigger(ctx, h, TriggerBearer, d.deploy)
+			if err != nil {
+				t.Error(err)
+			}
+			tickets <- tk
+		})
+	}
+	wg.Wait()
+	close(tickets)
+	var follow Ticket
+	for tk := range tickets {
+		if follow.RunID == 0 {
+			follow = tk
+		}
+		if tk.RunID != follow.RunID || tk.RunID == first.RunID {
+			t.Errorf("run %d, want every trigger merged into one follow-up (%d)", tk.RunID, follow.RunID)
+		}
+	}
+	runs, err := ht.svc.Runs(ctx, ht.alice, ht.env, h.ID)
+	if err != nil || len(runs) != 2 {
+		t.Errorf("runs = %+v, %v; want the first and one follow-up", runs, err)
+	}
+	d.release <- Outcome{Status: StatusUnchanged}
+	waitStarted(t, d)
+	d.release <- Outcome{Status: StatusUnchanged}
+	waitDone(t, follow)
 }
 
 func TestTriggerRateLimit(t *testing.T) {

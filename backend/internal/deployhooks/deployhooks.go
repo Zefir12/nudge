@@ -375,14 +375,12 @@ type credential struct {
 	mac     []byte
 }
 
-// credentialOf finds the trigger's credential: an Authorization header, which must
-// then be a bearer secret, else the first signature header.
+// credentialOf finds the trigger's credential: a webhook secret as the Authorization
+// bearer, else the first signature header. Another Authorization header (a proxy's
+// Basic auth, an API token) is no credential here and leaves the signature to decide.
 func credentialOf(header http.Header) (credential, bool) {
-	if a := header.Get("Authorization"); a != "" {
-		scheme, token, ok := strings.Cut(a, " ")
-		if !ok || !strings.EqualFold(scheme, "Bearer") || !strings.HasPrefix(token, SecretPrefix) {
-			return credential{}, false
-		}
+	scheme, token, ok := strings.Cut(header.Get("Authorization"), " ")
+	if ok && strings.EqualFold(scheme, "Bearer") && strings.HasPrefix(token, SecretPrefix) {
 		return credential{trigger: TriggerBearer, bearer: token}, true
 	}
 	for _, sh := range signatureHeaders {

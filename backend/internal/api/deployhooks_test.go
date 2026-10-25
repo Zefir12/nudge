@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -478,6 +479,51 @@ func TestTriggerDeployHookStack(t *testing.T) {
 	rec = trigger(t, st.h, hook.ID, "?wait=1", "", bearer(hook.Secret))
 	if run := runOf(t, rec); rec.Code != http.StatusBadGateway || run.Error != "compose exited with code 1" {
 		t.Errorf("failing compose = %d %s", rec.Code, rec.Body)
+	}
+}
+
+// failingBody breaks off after its first bytes, like a client that goes silent.
+type failingBody struct{ sent bool }
+
+func (b *failingBody) Read(p []byte) (int, error) {
+	if b.sent {
+		return 0, errors.New("read timeout")
+	}
+	b.sent = true
+	return copy(p, "{"), nil
+}
+
+func TestTriggerDeployHookBody(t *testing.T) {
+	t.Parallel()
+	et, _ := newDeployHookTest(t, "sha256:img2")
+	hook := createHook(t, et.h, et.cookie, hooksPath(et, "local"), `{"name":"ci","container":"web"}`)
+	send := func(contentLength int64, body io.Reader, secret string) *httptest.ResponseRecorder {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/hooks/"+hook.ID, body)
+		r.ContentLength = contentLength
+		r.Header.Set("Authorization", "Bearer "+secret)
+		rec := httptest.NewRecorder()
+		et.h.ServeHTTP(rec, r)
+		return rec
+	}
+	// Refused by its length before it is read.
+	rec := send(maxHookBody+1, strings.NewReader("{}"), hook.Secret)
+	if rec.Code != http.StatusRequestEntityTooLarge || !strings.Contains(rec.Body.String(), "too large") {
+		t.Errorf("long body = %d %s, want 413", rec.Code, rec.Body)
+	}
+	rec = send(-1, &failingBody{}, hook.Secret)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"error"`) {
+		t.Errorf("broken body = %d %s, want a 400 JSON error", rec.Code, rec.Body)
+	}
+
+	// The IP's limit comes first: a blocked client's body isn't even read.
+	for i := range 20 {
+		if rec := trigger(t, et.h, hook.ID, "", "", bearer(hook.Secret+"x")); rec.Code != http.StatusUnauthorized && rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("attempt %d = %d", i, rec.Code)
+		}
+	}
+	if rec := send(maxHookBody+1, strings.NewReader("{}"), hook.Secret); rec.Code != http.StatusTooManyRequests {
+		t.Errorf("long body from a blocked IP = %d, want 429", rec.Code)
 	}
 }
 
