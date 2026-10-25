@@ -220,6 +220,8 @@ export interface JoinToken {
   expires_at: string;
   // docker_run starts the agent on the remote host with this token.
   docker_run: string;
+  // compose is the same agent as a compose file.
+  compose: string;
 }
 
 export interface CreatedEnvironment extends Environment {
