@@ -141,7 +141,7 @@ last trusted hop. `X-Forwarded-Proto: https` (its first value in a list) then co
 HTTPS. IPv6 clients are still keyed by their /64. The proxy must append the peer it saw
 to `X-Forwarded-For` (Caddy and Traefik do by default, nginx with the line in the example
 above). Don't trust a range that untrusted clients can connect from (`0.0.0.0/0` makes
-every forged header count). The PROXY protocol is not supported.
+every forged header count; nudge logs a warning at start for `0.0.0.0/0` and `::/0`). IPv4-mapped prefixes (`::ffff:a.b.c.d/n`) need at least /96. The PROXY protocol is not supported.
 
 ## Sessions
 Logins last 7 days (a cookie `nudge_session`; the database keeps only its SHA-256).

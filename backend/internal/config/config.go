@@ -150,7 +150,11 @@ func parseProxies(s string) ([]netip.Prefix, error) {
 			if p, err = netip.ParsePrefix(entry); err != nil {
 				return nil, bad
 			}
-			if a := p.Addr(); a.Is4In6() && p.Bits() >= 96 {
+			if a := p.Addr(); a.Is4In6() {
+				// Shorter than /96 would reach past the mapped range into plain IPv6.
+				if p.Bits() < 96 {
+					return nil, fmt.Errorf("trusted proxy %q: an IPv4-mapped prefix needs at least /96", entry)
+				}
 				p = netip.PrefixFrom(a.Unmap(), p.Bits()-96)
 			}
 		} else {

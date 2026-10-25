@@ -88,9 +88,14 @@ func forwardedFor(lines []string) []string {
 	return hops
 }
 
-// parseHop parses an X-Forwarded-For entry: an address, optionally with a port
-// (IPv6 then in brackets).
+// parseHop parses an X-Forwarded-For entry: an address, optionally with a port, IPv6
+// optionally in brackets ([2001:db8::1] or [2001:db8::1]:443).
 func parseHop(s string) (netip.Addr, bool) {
+	if inner, ok := strings.CutPrefix(s, "["); ok {
+		if inner, ok = strings.CutSuffix(inner, "]"); ok {
+			s = inner
+		}
+	}
 	addr, err := netip.ParseAddr(s)
 	if err != nil {
 		host, _, splitErr := net.SplitHostPort(s)

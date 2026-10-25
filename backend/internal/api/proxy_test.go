@@ -49,6 +49,8 @@ func TestProxiesClient(t *testing.T) {
 		{name: "entries with ports", remote: "10.0.0.5:1234", xff: []string{"203.0.113.9:5555, 10.0.0.7:80"}, wantIP: "203.0.113.9"},
 		{name: "IPv6 client keyed by /64", remote: "10.0.0.5:1234", xff: []string{"2001:db8:1:2:aaaa::1"}, wantIP: "2001:db8:1:2::/64"},
 		{name: "bracketed IPv6 client with port", remote: "10.0.0.5:1234", xff: []string{"[2001:db8:1:2::1]:443"}, wantIP: "2001:db8:1:2::/64"},
+		{name: "bracketed IPv6 client without port", remote: "10.0.0.5:1234", xff: []string{"[2001:db8:1:2::1]"}, wantIP: "2001:db8:1:2::/64"},
+		{name: "bracketed trusted IPv6 hop without port", remote: "10.0.0.5:1234", xff: []string{"203.0.113.9, [2001:db8:ffff::2]"}, wantIP: "203.0.113.9"},
 		{name: "IPv6 client with zone", remote: "10.0.0.5:1234", xff: []string{"fe80::1%eth0"}, wantIP: "fe80::/64"},
 		{name: "IPv6 trusted proxy", remote: "[2001:db8:ffff::1]:443", xff: []string{"198.51.100.4, 2001:db8:ffff:1::2"}, wantIP: "198.51.100.4"},
 		{name: "IPv4-mapped peer and entries", remote: "[::ffff:10.0.0.5]:1234", xff: []string{"::ffff:198.51.100.4, ::ffff:10.0.0.7"}, wantIP: "198.51.100.4"},
