@@ -1,10 +1,12 @@
 package stacks
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"reflect"
 	"slices"
 	"strings"
@@ -24,29 +26,36 @@ func TestBindSources(t *testing.T) {
 	}{
 		{"none", `{"services":{"web":{"image":"nginx"}}}`, []string{}},
 		{"binds under the directory", `{"services":{
-			"web":{"volumes":[{"type":"bind","source":"/s/web/data","target":"/data"},{"type":"bind","source":"/s/web","target":"/app"}]},
-			"db":{"volumes":[{"type":"bind","source":"/s/web/data/","target":"/x"}]}}}`,
-			[]string{"/s/web", "/s/web/data"}},
+			"web":{"volumes":[{"type":"bind","source":"/s/stacks/web/data","target":"/data"},{"type":"bind","source":"/s/stacks/web","target":"/app"}]},
+			"db":{"volumes":[{"type":"bind","source":"/s/stacks/web/data/","target":"/x"}]}}}`,
+			[]string{"/s/stacks/web", "/s/stacks/web/data"}},
 		{"volumes and outside binds left out", `{"services":{"web":{"volumes":[
 			{"type":"volume","source":"data","target":"/data"},
 			{"type":"bind","source":"/var/run/docker.sock","target":"/var/run/docker.sock"},
-			{"type":"bind","source":"/s/webapp","target":"/a"},
-			{"type":"bind","source":"/s/other/x","target":"/b"},
+			{"type":"bind","source":"/stacks","target":"/a"},
+			{"type":"bind","source":"/s/stacksx/web","target":"/b"},
 			{"type":"tmpfs","target":"/tmp"}]}}}`, []string{}},
-		{"secrets and configs", `{"services":{},"secrets":{"pw":{"file":"/s/web/pw.txt"},"ext":{"external":true}},
-			"configs":{"conf":{"file":"/s/web/nginx.conf"},"env":{"environment":"X"}}}`,
-			[]string{"/s/web/nginx.conf", "/s/web/pw.txt"}},
+		{"other stacks under the root", `{"services":{"web":{"volumes":[
+			{"type":"bind","source":"/s/stacks/shared/data","target":"/data"}]}}}`, []string{"/s/stacks/shared/data"}},
+		{"used secrets and configs", `{"services":{"web":{"secrets":[{"source":"pw","target":"/run/secrets/pw"},{"source":"ext"}],
+			"configs":[{"source":"conf","target":"/etc/nginx.conf"}]}},
+			"secrets":{"pw":{"file":"/s/stacks/web/pw.txt"},"ext":{"external":true}},
+			"configs":{"conf":{"file":"/s/stacks/web/nginx.conf"},"env":{"environment":"X"}}}`,
+			[]string{"/s/stacks/web/nginx.conf", "/s/stacks/web/pw.txt"}},
+		{"unused secrets and configs", `{"services":{"web":{"image":"nginx"}},
+			"secrets":{"pw":{"file":"/s/stacks/web/pw.txt"}},"configs":{"conf":{"file":"/s/stacks/web/nginx.conf"}}}`,
+			[]string{}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := bindSources([]byte(tt.config), "/s/web")
+			got, err := bindSources([]byte(tt.config), "/s/stacks")
 			if err != nil || !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("bindSources = %q, %v; want %q", got, err, tt.want)
 			}
 		})
 	}
-	if _, err := bindSources([]byte("not json"), "/s/web"); err == nil {
+	if _, err := bindSources([]byte("not json"), "/s/stacks"); err == nil {
 		t.Error("bindSources of invalid JSON: no error")
 	}
 }
@@ -56,6 +65,7 @@ func TestBindSources(t *testing.T) {
 type configExec struct {
 	config     string
 	configCode int
+	configErr  error
 	calls      []string
 }
 
@@ -68,7 +78,7 @@ func (e *configExec) exec(_ context.Context, cmd Command) (int, error) {
 			return 0, fmt.Errorf("config args %q", cmd.Args[i+1:])
 		}
 		_, _ = cmd.Stdout.Write([]byte(e.config))
-		return e.configCode, nil
+		return e.configCode, e.configErr
 	}
 	return 0, nil
 }
@@ -100,6 +110,9 @@ func TestLocalChecksBinds(t *testing.T) {
 		{name: "project directory bound", binds: []string{""},
 			mounts:    []Mount{{Type: "volume", Name: "nudge-data", Destination: "%[2]s"}},
 			wantCalls: []string{"config"}, wantErr: "the bind mount . can't"},
+		{name: "another stack's directory", binds: []string{"../shared/data"},
+			mounts:    []Mount{{Type: "volume", Name: "nudge-data", Destination: "%[2]s"}},
+			wantCalls: []string{"config"}, wantErr: "the bind mount ../shared/data can't be deployed: the daemon takes %[1]s/shared/data from"},
 		{name: "same path on the host", binds: []string{"data", "conf/nginx.conf"},
 			mounts:    []Mount{{Type: "volume", Name: "nudge-data", Destination: "%[2]s"}, {Type: "bind", Source: "%[1]s", Destination: "%[1]s/"}},
 			wantCalls: []string{"config", "up"}},
@@ -171,34 +184,41 @@ func TestLocalChecksBinds(t *testing.T) {
 	}
 }
 
-func TestLocalBindCheckErrors(t *testing.T) {
+func TestLocalBindCheckFailures(t *testing.T) {
 	t.Parallel()
 	d := NewDir(t.TempDir())
 	if err := d.Create("web", Files{Compose: "services: {}\n"}); err != nil {
 		t.Fatal(err)
 	}
-	inspectErr := errors.New("daemon gone")
+	bind := `{"services":{"web":{"volumes":[{"type":"bind","source":"` + d.Path("web") + `/x"}]}}}`
+	volume := func(context.Context) ([]Mount, bool, error) {
+		return []Mount{{Type: "volume", Name: "v", Destination: "/"}}, true, nil
+	}
 	tests := []struct {
-		name   string
-		config string
-		mounts MountsFunc
-		want   error
+		name      string
+		config    string
+		configErr error
+		mounts    MountsFunc
 	}{
-		{"inspect fails", `{"services":{"web":{"volumes":[{"type":"bind","source":"` + d.Path("web") + `/x"}]}}}`,
-			func(context.Context) ([]Mount, bool, error) { return nil, false, inspectErr }, inspectErr},
-		{"invalid config output", `{`, func(context.Context) ([]Mount, bool, error) { return nil, true, nil }, nil},
+		{"inspect fails", bind, nil, func(context.Context) ([]Mount, bool, error) { return nil, false, errors.New("daemon gone") }},
+		{"invalid config output", `{`, nil, volume},
+		{"oversized config output", bind + strings.Repeat(" ", maxConfigOutput), nil, volume},
+		{"compose config fails to run", bind, errors.New("killed"), volume},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			ex := &configExec{config: tt.config}
-			_, err := NewLocal(LocalOptions{Dir: d, Exec: ex.exec, Mounts: tt.mounts}).Up(context.Background(), "web", false, func(Line) {})
-			var bind *BindError
-			if err == nil || errors.As(err, &bind) || (tt.want != nil && !errors.Is(err, tt.want)) {
-				t.Errorf("Up = %v, want a plain error (%v)", err, tt.want)
+			var logs bytes.Buffer
+			ex := &configExec{config: tt.config, configErr: tt.configErr}
+			l := NewLocal(LocalOptions{Dir: d, Exec: ex.exec, Mounts: tt.mounts, Log: slog.New(slog.NewTextHandler(&logs, nil))})
+			if _, err := l.Up(context.Background(), "web", false, func(Line) {}); err != nil {
+				t.Errorf("Up = %v, want the deploy to go on", err)
 			}
-			if slices.Contains(ex.calls, "up") {
-				t.Error("up ran after the check failed")
+			if !slices.Equal(ex.calls, []string{"config", "up"}) {
+				t.Errorf("compose runs = %q, want config, up", ex.calls)
+			}
+			if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "stack=web") {
+				t.Errorf("logs = %q, want a warning", logs.String())
 			}
 		})
 	}
@@ -217,14 +237,19 @@ func TestSelfID(t *testing.T) {
 	tests := []struct {
 		name  string
 		files map[string]string
-		want  string
+		host  string
+		want  Self
 	}{
-		{"docker", map[string]string{"/proc/self/mountinfo": container, "/.dockerenv": ""}, id},
-		{"podman", map[string]string{"/proc/self/mountinfo": podman}, id},
-		{"host with containers", map[string]string{"/proc/self/mountinfo": host}, ""},
-		{"no mountinfo", map[string]string{}, ""},
-		{"hostname fallback", map[string]string{"/proc/self/mountinfo": host, "/.dockerenv": ""}, "nudge-1"},
-		{"podman marker", map[string]string{"/run/.containerenv": ""}, "nudge-1"},
+		{"docker", map[string]string{"/proc/self/mountinfo": container, "/.dockerenv": ""}, "nudge-1", Self{ID: id, Hostname: "nudge-1"}},
+		{"podman", map[string]string{"/proc/self/mountinfo": podman}, "3f4e0b8c0d1e", Self{ID: id, Hostname: "3f4e0b8c0d1e"}},
+		{"host with containers", map[string]string{"/proc/self/mountinfo": host}, "3f4e0b8c0d1e", Self{}},
+		{"no mountinfo", map[string]string{}, "3f4e0b8c0d1e", Self{}},
+		{"short ID hostname", map[string]string{"/proc/self/mountinfo": host, "/.dockerenv": ""}, "3f4e0b8c0d1e\n",
+			Self{ID: "3f4e0b8c0d1e", Hostname: "3f4e0b8c0d1e"}},
+		{"podman marker", map[string]string{"/run/.containerenv": ""}, "3f4e0b8c0d1e", Self{ID: "3f4e0b8c0d1e", Hostname: "3f4e0b8c0d1e"}},
+		{"hostname that is no ID", map[string]string{"/.dockerenv": ""}, "nudge-1", Self{}},
+		{"hostname that is a name", map[string]string{"/.dockerenv": ""}, "web", Self{}},
+		{"hostname with upper case", map[string]string{"/.dockerenv": ""}, "3F4E0B8C0D1E", Self{}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -235,8 +260,8 @@ func TestSelfID(t *testing.T) {
 				}
 				return nil, fs.ErrNotExist
 			}
-			if got := SelfID(read, func() (string, error) { return "nudge-1\n", nil }); got != tt.want {
-				t.Errorf("SelfID = %q, want %q", got, tt.want)
+			if got := SelfID(read, func() (string, error) { return tt.host, nil }); got != tt.want {
+				t.Errorf("SelfID = %+v, want %+v", got, tt.want)
 			}
 		})
 	}
@@ -245,31 +270,36 @@ func TestSelfID(t *testing.T) {
 func TestContainerMounts(t *testing.T) {
 	t.Parallel()
 	fake := &dockertest.Fake{}
-	fake.ContainerDetails = map[string]container.InspectResponse{"self": {Mounts: []container.MountPoint{
-		{Type: "volume", Name: "nudge-data", Source: "/var/lib/docker/volumes/nudge-data/_data", Destination: "/data"},
-		{Type: "bind", Source: "/var/run/docker.sock", Destination: "/var/run/docker.sock"},
-	}}}
+	fake.ContainerDetails = map[string]container.InspectResponse{"self": {
+		Config: &container.Config{Hostname: "nudge-1"},
+		Mounts: []container.MountPoint{
+			{Type: "volume", Name: "nudge-data", Source: "/var/lib/docker/volumes/nudge-data/_data", Destination: "/data"},
+			{Type: "bind", Source: "/var/run/docker.sock", Destination: "/var/run/docker.sock"},
+		},
+	}, "noconfig": {}}
 	connectErr := errors.New("no client")
 	tests := []struct {
 		name    string
-		id      string
+		self    Self
 		connect error
 		want    []Mount
 		in      bool
 		err     error
 	}{
-		{name: "mounts", id: "self", in: true, want: []Mount{
+		{name: "mounts", self: Self{ID: "self", Hostname: "nudge-1"}, in: true, want: []Mount{
 			{Type: "volume", Name: "nudge-data", Source: "/var/lib/docker/volumes/nudge-data/_data", Destination: "/data"},
 			{Type: "bind", Source: "/var/run/docker.sock", Destination: "/var/run/docker.sock"},
 		}},
-		{name: "not in a container", id: ""},
-		{name: "unknown to the daemon", id: "other"},
-		{name: "no client", id: "self", connect: connectErr, err: connectErr},
+		{name: "not in a container"},
+		{name: "unknown to the daemon", self: Self{ID: "other", Hostname: "other"}},
+		{name: "another container's hostname", self: Self{ID: "self", Hostname: "3f4e0b8c0d1e"}},
+		{name: "no config", self: Self{ID: "noconfig", Hostname: "noconfig"}},
+		{name: "no client", self: Self{ID: "self", Hostname: "nudge-1"}, connect: connectErr, err: connectErr},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			mounts := ContainerMounts(tt.id, func() (Inspector, error) {
+			mounts := ContainerMounts(tt.self, func() (Inspector, error) {
 				if tt.connect != nil {
 					return nil, tt.connect
 				}

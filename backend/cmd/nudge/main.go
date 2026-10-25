@@ -215,7 +215,7 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 			Web:        web.Handler(web.Dist()),
 
 			StacksDir:   cfg.StacksDir,
-			StackRunner: stackRunner(cfg, envs),
+			StackRunner: stackRunner(cfg, envs, log),
 			// Drafts are checked next to the stacks, on the data volume.
 			StackChecker: stacks.NewChecker(stacks.CheckerOptions{TempDir: cfg.StacksDir, Compose: cfg.Compose}).Check,
 
@@ -296,7 +296,7 @@ func runAgent(ctx context.Context, cfg config.Agent, log *slog.Logger) error {
 
 // stackRunner deploys the local environment's stacks with compose here, and an agent
 // environment's through its agent's control service.
-func stackRunner(cfg config.Server, envs *environments.Service) func(environments.Environment) stacks.Runner {
+func stackRunner(cfg config.Server, envs *environments.Service, log *slog.Logger) func(environments.Environment) stacks.Runner {
 	// Up checks a local stack's binds against the mounts of nudge's own container.
 	self := stacks.SelfID(os.ReadFile, os.Hostname)
 	return func(env environments.Environment) stacks.Runner {
@@ -307,6 +307,7 @@ func stackRunner(cfg config.Server, envs *environments.Service) func(environment
 			Dir:     stacks.NewDir(filepath.Join(cfg.StacksDir, strconv.FormatInt(env.ID, 10))),
 			Compose: cfg.Compose, DockerHost: cfg.DockerHost,
 			Mounts: stacks.ContainerMounts(self, func() (stacks.Inspector, error) { return envs.Client(env) }),
+			Log:    log.With("env", env.ID),
 		})
 	}
 }

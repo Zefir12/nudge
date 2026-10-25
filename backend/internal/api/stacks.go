@@ -414,7 +414,9 @@ func (s *server) runnerError(w http.ResponseWriter, r *http.Request, env environ
 	var bind *stacks.BindError
 	switch {
 	case errors.As(err, &bind):
-		// Names paths and mounts of nudge's own container, for its admin to fix.
+		// Names paths and mounts of nudge's own container so the fix is clear. Every
+		// authenticated user sees it; there are no roles yet, so that's everyone who
+		// can deploy (revisit when roles exist).
 		s.writeError(w, http.StatusConflict, bind.Error())
 	case errors.Is(err, stacks.ErrNoCompose):
 		s.log.Error(msg, "env", env.ID, "err", err)

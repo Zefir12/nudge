@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"sync"
@@ -54,6 +55,8 @@ type LocalOptions struct {
 	// whose binds in its directory the daemon would take from a different host path
 	// (a *BindError).
 	Mounts MountsFunc
+	// Log gets the bind check's warnings; nil discards them.
+	Log *slog.Logger
 }
 
 // Local runs compose here, on stacks in a directory of this machine.
@@ -63,11 +66,15 @@ type Local struct {
 	dockerHost string
 	exec       ExecFunc
 	mounts     MountsFunc
+	log        *slog.Logger
 }
 
 // NewLocal returns a runner for the stacks in opts.Dir.
 func NewLocal(opts LocalOptions) *Local {
-	l := &Local{dir: opts.Dir, compose: opts.Compose, dockerHost: opts.DockerHost, exec: opts.Exec, mounts: opts.Mounts}
+	l := &Local{dir: opts.Dir, compose: opts.Compose, dockerHost: opts.DockerHost, exec: opts.Exec, mounts: opts.Mounts, log: opts.Log}
+	if l.log == nil {
+		l.log = slog.New(slog.DiscardHandler)
+	}
 	if l.compose == "" {
 		l.compose = DefaultCompose
 	}

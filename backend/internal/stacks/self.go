@@ -18,24 +18,40 @@ var containerMarkers = []string{"/.dockerenv", "/run/.containerenv"}
 // the runtime mounts the container's /etc/hostname from .../containers/<id>/.
 var containerPath = regexp.MustCompile(`containers/([0-9a-f]{64})/`)
 
-// SelfID returns the ID of the container this process runs in, or its hostname (which
-// Docker sets to the short ID) if the ID can't be found; "" outside a container.
-// readFile and hostname are os.ReadFile and os.Hostname outside tests.
-func SelfID(readFile func(string) ([]byte, error), hostname func() (string, error)) string {
+// shortID is a hostname Docker set to the container's short ID.
+var shortID = regexp.MustCompile(`^[0-9a-f]{12}$`)
+
+// Self is the container this process runs in; a zero Self is none.
+type Self struct {
+	// ID is the container's ID, or its short ID.
+	ID string
+	// Hostname is this process's hostname, which the container's must match.
+	Hostname string
+}
+
+// SelfID returns the container this process runs in: the ID from mountinfo, or else, if
+// a runtime's marker file is there, the hostname when it looks like Docker's short ID
+// (a hostname set with --hostname could name another container). Zero outside a
+// container. readFile and hostname are os.ReadFile and os.Hostname outside tests.
+func SelfID(readFile func(string) ([]byte, error), hostname func() (string, error)) Self {
+	host := ""
+	if h, err := hostname(); err == nil {
+		host = strings.TrimSpace(h)
+	}
 	if info, err := readFile("/proc/self/mountinfo"); err == nil {
 		if id := mountinfoID(string(info)); id != "" {
-			return id
+			return Self{ID: id, Hostname: host}
 		}
+	}
+	if !shortID.MatchString(host) {
+		return Self{}
 	}
 	for _, f := range containerMarkers {
-		if _, err := readFile(f); err != nil {
-			continue
-		}
-		if h, err := hostname(); err == nil && strings.TrimSpace(h) != "" {
-			return strings.TrimSpace(h)
+		if _, err := readFile(f); err == nil {
+			return Self{ID: host, Hostname: host}
 		}
 	}
-	return ""
+	return Self{}
 }
 
 // Inspector is the Docker call ContainerMounts makes.
@@ -43,10 +59,12 @@ type Inspector interface {
 	ContainerInspect(ctx context.Context, id string, opts client.ContainerInspectOptions) (client.ContainerInspectResult, error)
 }
 
-// ContainerMounts returns the MountsFunc of container id (SelfID), inspected with the
-// client connect returns. An empty id, or one the daemon doesn't know (nudge runs in a
-// container of another daemon), is no container.
-func ContainerMounts(id string, connect func() (Inspector, error)) MountsFunc {
+// ContainerMounts returns the MountsFunc of container self (SelfID), inspected with the
+// client connect returns. A zero self, one the daemon doesn't know (nudge runs in a
+// container of another daemon) or one with another hostname (not nudge's container) is
+// no container.
+func ContainerMounts(self Self, connect func() (Inspector, error)) MountsFunc {
+	id := self.ID
 	return func(ctx context.Context) ([]Mount, bool, error) {
 		if id == "" {
 			return nil, false, nil
@@ -61,6 +79,9 @@ func ContainerMounts(id string, connect func() (Inspector, error)) MountsFunc {
 		}
 		if err != nil {
 			return nil, false, fmt.Errorf("inspect container %s: %w", id, err)
+		}
+		if cfg := res.Container.Config; cfg == nil || cfg.Hostname != self.Hostname {
+			return nil, false, nil
 		}
 		mounts := make([]Mount, 0, len(res.Container.Mounts))
 		for _, m := range res.Container.Mounts {

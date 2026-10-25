@@ -38,9 +38,10 @@ directory **at the same path on the host and in the container**:
 With the default (inside the `/data` volume) stacks that use only named volumes work,
 but relative bind mounts would get an empty directory on the host, so deploying such a
 stack fails with `409`: before `up`, nudge reads the project with `docker-compose config`
-and inspects its own container, and refuses a bind source (or `file:` secret or config)
-in the stack's directory unless that path is bind-mounted into nudge from the same path
-on the host. Running outside a container, nothing is checked. compose gets only
+and inspects its own container, and refuses a bind source (or `file:` secret or config
+a service uses) under the stacks directory unless that path is bind-mounted into nudge
+from the same path on the host. Running outside a container, nothing is checked; if the
+check itself fails (compose or the daemon errs), nudge logs a warning and deploys. compose gets only
 `DOCKER_HOST`, `HOME` and `PATH`, none of nudge's own environment. Stacks of agent
 environments are deployed by the agent on its host (docs/config/agent.md, Stacks); the
 server keeps the source files here either way.
