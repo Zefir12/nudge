@@ -128,6 +128,55 @@ func TestCreateValidation(t *testing.T) {
 	}
 }
 
+func TestUpdateNeedsPasswordForNewTarget(t *testing.T) {
+	t.Parallel()
+	base := Input{Name: "Lan", Address: "registry.lan:5000", Username: "bot", Kind: Forgejo, Owners: []string{"zefir"}}
+	tests := []struct {
+		name    string
+		change  func(in *Input)
+		wantErr bool
+	}{
+		{name: "nothing changes", change: func(*Input) {}},
+		{name: "name changes", change: func(in *Input) { in.Name = "Other" }},
+		{name: "kind and owners change", change: func(in *Input) { in.Kind, in.Owners = Generic, nil }},
+		{name: "same address, other spelling", change: func(in *Input) { in.Address = "https://Registry.LAN:5000/" }},
+		{name: "address changes", change: func(in *Input) { in.Address = "evil.example.com" }, wantErr: true},
+		{name: "username changes", change: func(in *Input) { in.Username = "bot2" }, wantErr: true},
+		{name: "plain_http changes", change: func(in *Input) { in.PlainHTTP = false }, wantErr: true},
+		{name: "address changes with a password", change: func(in *Input) { in.Address, in.Password = "evil.example.com", ptr("new") }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s := newTestService(t)
+			ctx := context.Background()
+			create := base
+			create.Password, create.PlainHTTP = ptr("s3cret"), true
+			r, err := s.Create(ctx, create)
+			if err != nil {
+				t.Fatal(err)
+			}
+			in := base
+			in.PlainHTTP = true
+			tt.change(&in)
+			_, err = s.Update(ctx, r.ID, in)
+			var inputErr *InputError
+			if tt.wantErr {
+				if !errors.As(err, &inputErr) || inputErr.Msg != "password required when address, username or plain_http changes" {
+					t.Fatalf("err = %v, want the password-required InputError", err)
+				}
+				if got, _, _ := s.Credentials(ctx, r.ID); got.Address != "registry.lan:5000" || got.Username != "bot" || !got.PlainHTTP {
+					t.Errorf("refused update changed the registry: %+v", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestKindAndCredentials(t *testing.T) {
 	t.Parallel()
 	s := newTestService(t)
@@ -148,7 +197,7 @@ func TestKindAndCredentials(t *testing.T) {
 		t.Errorf("Credentials(missing) err = %v", err)
 	}
 	// A PUT without a kind makes the registry generic again.
-	r, err = s.Update(ctx, r.ID, Input{Name: "Forge", Address: "git.example.com", Username: "bot"})
+	r, err = s.Update(ctx, r.ID, Input{Name: "Forge", Address: "git.example.com", Username: "bot", Password: ptr("tok")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,10 +236,10 @@ func TestCRUDAndAuth(t *testing.T) {
 	}
 
 	// Update without a password keeps it.
-	if _, err := s.Update(ctx, r.ID, Input{Name: "GitHub", Address: "ghcr.io", Username: "bot2"}); err != nil {
+	if _, err := s.Update(ctx, r.ID, Input{Name: "GitHub", Address: "ghcr.io", Username: "bot"}); err != nil {
 		t.Fatal(err)
 	}
-	if a, _, _ := s.AuthFor(ctx, "ghcr.io/x"); a.Username != "bot2" || a.Password != "s3cret" {
+	if a, _, _ := s.AuthFor(ctx, "ghcr.io/x"); a.Username != "bot" || a.Password != "s3cret" {
 		t.Errorf("after update without password: %+v", a)
 	}
 	if _, err := s.Update(ctx, r.ID, Input{Name: "GitHub", Address: "ghcr.io", Username: "bot2", Password: ptr("new")}); err != nil {

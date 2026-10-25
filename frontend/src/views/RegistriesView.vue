@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 
 import {
   createRegistry,
@@ -39,10 +39,23 @@ function onEdit(r: Registry) {
   error.value = '';
 }
 
+// needsPassword: the stored password only goes to the host and user it was saved for,
+// so an edit that changes either must give it again (the API refuses otherwise).
+const needsPassword = computed(() => {
+  const old = editing.value;
+  if (!old) return true;
+  const f = form.value;
+  return f.address.trim() !== old.address || f.username.trim() !== old.username;
+});
+
 async function onSubmit() {
+  const f = form.value;
+  if (editing.value && needsPassword.value && !f.password) {
+    error.value = 'Enter the password again: the address or username changed.';
+    return;
+  }
   busy.value = true;
   error.value = '';
-  const f = form.value;
   const input: RegistryInput = {
     name: f.name.trim(),
     address: f.address.trim(),
@@ -113,8 +126,8 @@ onMounted(load);
           name="password"
           type="password"
           autocomplete="new-password"
-          :placeholder="editing ? 'unchanged' : ''"
-          :required="!editing"
+          :placeholder="editing && !needsPassword ? 'unchanged' : ''"
+          :required="needsPassword"
         />
       </label>
       <div class="buttons">

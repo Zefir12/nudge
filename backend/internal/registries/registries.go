@@ -53,6 +53,10 @@ var (
 	ErrTaken = errors.New("a registry with that name or address already exists")
 )
 
+// ErrPasswordRequired means an update changes where the credentials go without giving
+// a password, which would send the stored one to the new target.
+var ErrPasswordRequired error = &InputError{Msg: "password required when address, username or plain_http changes"}
+
 // InputError is a validation error whose message can be shown to the user.
 type InputError struct{ Msg string }
 
@@ -197,12 +201,20 @@ func (s *Service) Update(ctx context.Context, id int64, in Input) (Registry, err
 		return Registry{}, fmt.Errorf("update registry: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	var exists bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM registries WHERE id = ?)`, id).Scan(&exists); err != nil {
+	var oldAddress, oldUsername string
+	var oldPlainHTTP bool
+	err = tx.QueryRowContext(ctx, `SELECT address, username, plain_http FROM registries WHERE id = ?`, id).
+		Scan(&oldAddress, &oldUsername, &oldPlainHTTP)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Registry{}, ErrNotFound
+	}
+	if err != nil {
 		return Registry{}, fmt.Errorf("update registry: %w", err)
 	}
-	if !exists {
-		return Registry{}, ErrNotFound
+	// The stored password only goes where it went before: pointing the registry
+	// elsewhere (or over plain HTTP) without a new one would hand it to that host.
+	if in.Password == nil && (address != oldAddress || in.Username != oldUsername || in.PlainHTTP != oldPlainHTTP) {
+		return Registry{}, ErrPasswordRequired
 	}
 	var taken bool
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM registries WHERE id != ? AND (name = ? OR address = ?))`,

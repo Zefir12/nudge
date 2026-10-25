@@ -69,23 +69,60 @@ describe('RegistriesView', () => {
       'GET /registries': { body: [forge] },
       'PUT /registries/1': (init) => {
         expect(JSON.parse(String(init?.body))).toEqual({
-          name: 'GitHub',
+          name: 'GitHub CR',
           address: 'ghcr.io',
-          username: 'bot2',
+          username: 'bot',
           kind: 'forgejo',
           owners: ['zefir'],
           plain_http: true,
         });
-        return { body: { ...forge, username: 'bot2' } };
+        return { body: { ...forge, name: 'GitHub CR' } };
       },
     });
     const wrapper = mount(RegistriesView);
     await flushPromises();
     await button(wrapper, 'Edit')?.trigger('click');
     expect(wrapper.text()).toContain('Edit GitHub');
-    await wrapper.find('input[name=username]').setValue('bot2');
+    expect(wrapper.find('input[name=password]').attributes('required')).toBeUndefined();
+    await wrapper.find('input[name=name]').setValue('GitHub CR');
     await wrapper.find('form').trigger('submit');
     await flushPromises();
+    expect(wrapper.text()).toContain('Add a registry');
+  });
+
+  it('asks for the password again when the username or address changes', async () => {
+    const puts: unknown[] = [];
+    stubApi({
+      'GET /registries': { body: [ghcr] },
+      'PUT /registries/1': (init) => {
+        puts.push(JSON.parse(String(init?.body)));
+        return { body: { ...ghcr, username: 'bot2' } };
+      },
+    });
+    const wrapper = mount(RegistriesView);
+    await flushPromises();
+    await button(wrapper, 'Edit')?.trigger('click');
+    await wrapper.find('input[name=username]').setValue('bot2');
+    expect(wrapper.find('input[name=password]').attributes('required')).toBeDefined();
+    await wrapper.find('form').trigger('submit');
+    await flushPromises();
+    expect(wrapper.find('[role=alert]').text()).toContain('Enter the password again');
+    expect(puts).toEqual([]);
+
+    await wrapper.find('input[name=password]').setValue('new');
+    await wrapper.find('form').trigger('submit');
+    await flushPromises();
+    expect(puts).toEqual([
+      {
+        name: 'GitHub',
+        address: 'ghcr.io',
+        username: 'bot2',
+        password: 'new',
+        kind: 'generic',
+        owners: [],
+        plain_http: false,
+      },
+    ]);
     expect(wrapper.text()).toContain('Add a registry');
   });
 
