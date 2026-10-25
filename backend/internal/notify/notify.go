@@ -1,7 +1,9 @@
 // Package notify sends notifications to webhooks: image updates, failed containers and
-// offline agents. Each notification is posted as JSON to every enabled webhook by one
-// worker, so a slow target delays the others but never a caller. A problem is sent once
-// per window (keys in notify_sent), so a crash loop or a flapping agent doesn't spam.
+// offline agents, and their recoveries. One worker posts each notification as JSON to
+// every enabled webhook that receives its event, a few targets at once, so a slow target
+// delays the others but never a caller. A problem is sent once per window (keys in
+// notify_sent), so a crash loop or a flapping agent doesn't spam; its recovery is sent
+// only if the problem was, and ends the window.
 // Webhook URLs and header values are sealed with a secretbox.Box: chat webhooks put their
 // token in the URL, so neither leaves the package except in a delivery.
 package notify
@@ -16,6 +18,8 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
@@ -28,16 +32,23 @@ const (
 	EventTest            = "test"
 	EventUpdateAvailable = "update.available"
 	EventUnhealthy       = "container.unhealthy"
+	EventHealthy         = "container.healthy"
 	EventExited          = "container.exited"
 	EventAgentOffline    = "agent.offline"
+	EventAgentOnline     = "agent.online"
 )
 
 // How long a problem stays quiet after its notification.
 const (
 	// UpdateWindow covers one registry digest of an image: in practice once.
 	UpdateWindow = 90 * 24 * time.Hour
-	// ProblemWindow covers one container's failures and one agent being offline.
+	// ProblemWindow covers one container's failures.
 	ProblemWindow = time.Hour
+	// OfflineWindow is how often an agent that stays offline is notified again.
+	OfflineWindow = 24 * time.Hour
+	// RecoveryWindow is how long after its window a problem can still recover: a
+	// container unhealthy for hours gets no new notice, but its recovery is still sent.
+	RecoveryWindow = 24 * time.Hour
 )
 
 const (
@@ -47,6 +58,8 @@ const (
 	Attempts = 3
 	// RetryDelay is the wait before the second attempt, doubled for each further one.
 	RetryDelay = 5 * time.Second
+	// MaxDeliveries bounds the targets one notification is posted to at once.
+	MaxDeliveries = 4
 
 	sendTimeout = 10 * time.Second
 	pruneEvery  = time.Hour
@@ -200,6 +213,29 @@ func (s *Service) release(ctx context.Context, keys []string) {
 	}
 }
 
+// Recover queues m, a recovery, if the problem notification under key was sent and its
+// window ended at most RecoveryWindow ago; it forgets key, so the next problem is sent at
+// once. It reports whether m was queued. A problem still waiting for delivery counts as
+// sent: if no webhook gets it after all, its recovery may arrive alone.
+func (s *Service) Recover(ctx context.Context, key string, m Message) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM notify_sent WHERE key = ? AND expires_at > ?`,
+		key, s.clock.Now().Add(-RecoveryWindow).UnixMilli())
+	if err != nil {
+		return false, fmt.Errorf("recovery %s: %w", key, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("recovery %s: %w", key, err)
+	}
+	if n == 0 {
+		return false, nil
+	}
+	if err := s.enqueue(ctx, m, nil); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // claim records that key is sent now and reports whether its last send has expired.
 func (s *Service) claim(ctx context.Context, key string, window time.Duration) (bool, error) {
 	now := s.clock.Now()
@@ -216,9 +252,9 @@ func (s *Service) claim(ctx context.Context, key string, window time.Duration) (
 	return n == 1, nil
 }
 
-// Prune forgets the sends whose window has passed.
+// Prune forgets the sends whose window and RecoveryWindow have passed.
 func (s *Service) Prune(ctx context.Context) error {
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM notify_sent WHERE expires_at <= ?`, s.clock.Now().UnixMilli()); err != nil {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM notify_sent WHERE expires_at <= ?`, s.clock.Now().Add(-RecoveryWindow).UnixMilli()); err != nil {
 		return fmt.Errorf("prune notifications: %w", err)
 	}
 	return nil
@@ -249,10 +285,10 @@ func (s *Service) deliver(ctx context.Context, q queued) {
 	}
 }
 
-// deliverAll posts m to every enabled webhook, retrying each a few times, and reports
-// whether any of them got it.
+// deliverAll posts m to every enabled webhook that receives its event, MaxDeliveries at
+// once, and reports whether any of them got it.
 func (s *Service) deliverAll(ctx context.Context, m Message) bool {
-	targets, err := s.targets(ctx, 0)
+	targets, err := s.targets(ctx, 0, m.Event)
 	if err != nil {
 		s.log.Warn("notification not sent", "event", m.Event, "err", err)
 		return false
@@ -262,36 +298,49 @@ func (s *Service) deliverAll(ctx context.Context, m Message) bool {
 		s.log.Warn("notification not sent", "event", m.Event, "err", err)
 		return false
 	}
-	delivered := false
+	var delivered atomic.Bool
+	var wg sync.WaitGroup
+	slots := make(chan struct{}, MaxDeliveries)
 	for _, t := range targets {
-		delay := RetryDelay
-		for attempt := 1; ; attempt++ {
-			err := s.post(ctx, t, m.Event, body)
-			if err == nil {
-				delivered = true
-				break
+		slots <- struct{}{}
+		wg.Go(func() {
+			defer func() { <-slots }()
+			if s.deliverOne(ctx, t, m.Event, body) {
+				delivered.Store(true)
 			}
-			if ctx.Err() != nil {
-				return delivered
-			}
-			if attempt == Attempts || !err.retry {
-				s.log.Warn("webhook delivery failed", "webhook", t.id, "event", m.Event, "err", err)
-				break
-			}
-			select {
-			case <-ctx.Done():
-				return delivered
-			case <-s.clock.After(delay):
-			}
-			delay *= 2
-		}
+		})
 	}
-	return delivered
+	wg.Wait()
+	return delivered.Load()
+}
+
+// deliverOne posts body to t, retrying a few times, and reports whether t got it.
+func (s *Service) deliverOne(ctx context.Context, t target, event string, body []byte) bool {
+	delay := RetryDelay
+	for attempt := 1; ; attempt++ {
+		err := s.post(ctx, t, event, body)
+		if err == nil {
+			return true
+		}
+		if ctx.Err() != nil {
+			return false
+		}
+		if attempt == Attempts || !err.retry {
+			s.log.Warn("webhook delivery failed", "webhook", t.id, "event", event, "err", err)
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-s.clock.After(delay):
+		}
+		delay *= 2
+	}
 }
 
 // Test posts a test notification to webhook id now and returns why it failed, if it did.
 func (s *Service) Test(ctx context.Context, id int64) error {
-	targets, err := s.targets(ctx, id)
+	targets, err := s.targets(ctx, id, "")
 	if err != nil {
 		return err
 	}

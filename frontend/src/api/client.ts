@@ -227,21 +227,43 @@ export interface Webhook {
   endpoint: string;
   header_name: string;
   enabled: boolean;
+  // events are the notifications it receives (WebhookEvent).
+  events: string[];
   last_sent_at: string | null;
   last_error: string;
   created_at: string;
   updated_at: string;
 }
 
-// WebhookInput creates or updates a webhook; on update a missing url or header_value
-// keeps the stored one, and an empty header_name sends no header.
+// WebhookInput creates or updates a webhook; on update a missing url, header_value or
+// events keeps the stored one, and an empty header_name sends no header.
 export interface WebhookInput {
   name: string;
   url?: string;
   header_name: string;
   header_value?: string;
   enabled: boolean;
+  events?: string[];
 }
+
+// webhookEvents are the events a webhook can receive, in the API's order; recoveries
+// are sent only after their problem was.
+export const webhookEvents = [
+  { event: 'update.available', label: 'Image update available' },
+  { event: 'container.unhealthy', label: 'Container unhealthy' },
+  { event: 'container.healthy', label: 'Container healthy again' },
+  { event: 'container.exited', label: 'Container exited with an error' },
+  { event: 'agent.offline', label: 'Agent offline' },
+  { event: 'agent.online', label: 'Agent back online' },
+] as const;
+
+// defaultWebhookEvents are a new webhook's events: the problems, without the recoveries.
+export const defaultWebhookEvents = [
+  'update.available',
+  'container.unhealthy',
+  'container.exited',
+  'agent.offline',
+];
 
 // WebhookTest is the outcome of a test notification.
 export interface WebhookTest {

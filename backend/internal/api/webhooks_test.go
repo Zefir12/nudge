@@ -42,7 +42,8 @@ func TestWebhooks(t *testing.T) {
 		{name: "empty list", method: "GET", path: "/api/v1/webhooks", wantCode: 200, wantBody: "[]"},
 		{name: "create", method: "POST", path: "/api/v1/webhooks", wantCode: 201,
 			body: `{"name":"chat","url":"` + target.URL + `/hooks/secret-path","header_name":"x-token","header_value":"hunter2","enabled":true}`,
-			wantBody: `{"id":1,"name":"chat","endpoint":"` + target.URL + `","header_name":"X-Token","enabled":true,"last_sent_at":null,"last_error":"",` +
+			wantBody: `{"id":1,"name":"chat","endpoint":"` + target.URL + `","header_name":"X-Token","enabled":true,` +
+				`"events":["update.available","container.unhealthy","container.exited","agent.offline"],"last_sent_at":null,"last_error":"",` +
 				`"created_at":"2023-11-14T22:13:20Z","updated_at":"2023-11-14T22:13:20Z"}`},
 		{name: "create taken", method: "POST", path: "/api/v1/webhooks", wantCode: 409,
 			body: `{"name":"chat","url":"https://x.example"}`, wantBody: `{"error":"a webhook with that name already exists"}`},
@@ -50,6 +51,8 @@ func TestWebhooks(t *testing.T) {
 			body: `{"name":"x"}`, wantBody: `{"error":"url is required"}`},
 		{name: "create bad url", method: "POST", path: "/api/v1/webhooks", wantCode: 400,
 			body: `{"name":"x","url":"file:///etc/passwd"}`, wantBody: "~url must be"},
+		{name: "create bad events", method: "POST", path: "/api/v1/webhooks", wantCode: 400,
+			body: `{"name":"x","url":"https://x.example","events":[]}`, wantBody: `{"error":"events must name at least one event"}`},
 		{name: "create malformed", method: "POST", path: "/api/v1/webhooks", body: `{`, wantCode: 400},
 		{name: "get", method: "GET", path: "/api/v1/webhooks/1", wantCode: 200, wantBody: `~"header_name":"X-Token"`},
 		{name: "get missing", method: "GET", path: "/api/v1/webhooks/2", wantCode: 404, wantBody: `{"error":"webhook not found"}`},
@@ -58,6 +61,8 @@ func TestWebhooks(t *testing.T) {
 		{name: "delivery recorded", method: "GET", path: "/api/v1/webhooks/1", wantCode: 200, wantBody: `~"last_sent_at":"2023-11-14T22:13:20Z","last_error":""`},
 		{name: "update keeps secrets", method: "PUT", path: "/api/v1/webhooks/1", wantCode: 200,
 			body: `{"name":"chat2","header_name":"X-Token","enabled":false}`, wantBody: `~"name":"chat2","endpoint":"` + target.URL + `","header_name":"X-Token","enabled":false`},
+		{name: "update events", method: "PUT", path: "/api/v1/webhooks/1", wantCode: 200,
+			body: `{"name":"chat2","header_name":"X-Token","events":["agent.online","agent.offline"]}`, wantBody: `~"events":["agent.offline","agent.online"]`},
 		{name: "test kept secrets", method: "POST", path: "/api/v1/webhooks/1/test", wantCode: 200, wantBody: `{"ok":true}`},
 		{name: "secret stays with its host", method: "PUT", path: "/api/v1/webhooks/1", wantCode: 400,
 			body: `{"name":"chat2","url":"https://evil.example/","header_name":"X-Token"}`, wantBody: "~header value is required"},

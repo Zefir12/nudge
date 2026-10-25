@@ -7,6 +7,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -127,6 +129,8 @@ func TestCreateValidation(t *testing.T) {
 		{"header without value", Input{Name: "a", URL: ptr("https://x.example"), HeaderName: "X-Token"}, "header value is required"},
 		{"empty header value", Input{Name: "a", URL: ptr("https://x.example"), HeaderName: "X-Token", HeaderValue: ptr("")}, "header value must be"},
 		{"header value newline", Input{Name: "a", URL: ptr("https://x.example"), HeaderName: "X-Token", HeaderValue: ptr("a\r\nB: c")}, "header value must be"},
+		{"no events", Input{Name: "a", URL: ptr("https://x.example"), Events: []string{}}, "at least one event"},
+		{"unknown event", Input{Name: "a", URL: ptr("https://x.example"), Events: []string{EventExited, "test"}}, `unknown event "test"`},
 	}
 	s, _ := newTestService(t)
 	for _, tt := range tests {
@@ -171,7 +175,7 @@ func TestWebhookCRUD(t *testing.T) {
 	if w.Name != "chat2" || w.Endpoint != "https://hooks.example.com" || w.Enabled {
 		t.Errorf("updated = %+v", w)
 	}
-	targets, err := s.targets(ctx, w.ID)
+	targets, err := s.targets(ctx, w.ID, "")
 	if err != nil || len(targets) != 1 {
 		t.Fatalf("targets = %v, %v", targets, err)
 	}
@@ -191,11 +195,11 @@ func TestWebhookCRUD(t *testing.T) {
 	if w, err = s.Update(ctx, w.ID, Input{Name: "chat2", URL: ptr("https://hooks.example.com/T1/new"), HeaderName: "X-Token"}); err != nil || w.Enabled {
 		t.Errorf("new path on the same host, enabled kept: %+v, %v", w, err)
 	}
-	if targets, _ = s.targets(ctx, w.ID); targets[0].url != "https://hooks.example.com/T1/new" || targets[0].headerValue != "s3cret" {
+	if targets, _ = s.targets(ctx, w.ID, ""); targets[0].url != "https://hooks.example.com/T1/new" || targets[0].headerValue != "s3cret" {
 		t.Errorf("target = %+v", targets[0])
 	}
 	// Disabled targets get no notifications.
-	if all, err := s.targets(ctx, 0); err != nil || len(all) != 0 {
+	if all, err := s.targets(ctx, 0, EventExited); err != nil || len(all) != 0 {
 		t.Errorf("enabled targets = %v, %v", all, err)
 	}
 
@@ -410,7 +414,15 @@ func TestSendDeduplicates(t *testing.T) {
 	if err := s.Prune(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// An expired key is kept for its recovery until RecoveryWindow has passed too.
 	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM notify_sent`).Scan(&n); err != nil || n != 1 {
+		t.Errorf("rows after the window = %d, %v", n, err)
+	}
+	clock.advance(RecoveryWindow)
+	if err := s.Prune(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM notify_sent`).Scan(&n); err != nil || n != 0 {
 		t.Errorf("rows after prune = %d, %v", n, err)
 	}
@@ -545,5 +557,148 @@ func TestMessageJSON(t *testing.T) {
 		`"container":{"id":"abc","name":"web","image":"nginx","exit_code":1}}`
 	if string(b) != want {
 		t.Errorf("json = %s\nwant   %s", b, want)
+	}
+}
+
+func TestWebhookEvents(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, _ := newTestService(t)
+	problems, recoveries := newHook(t, http.StatusOK), newHook(t, http.StatusOK)
+	p, err := s.Create(ctx, Input{Name: "problems", URL: ptr(problems.URL), Enabled: ptr(true)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(p.Events, DefaultEvents) {
+		t.Errorf("default events = %v", p.Events)
+	}
+	r, err := s.Create(ctx, Input{Name: "recoveries", URL: ptr(recoveries.URL), Enabled: ptr(true), Events: []string{EventAgentOnline, EventHealthy, EventHealthy}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{EventHealthy, EventAgentOnline}; !slices.Equal(r.Events, want) {
+		t.Errorf("events = %v, want %v", r.Events, want)
+	}
+	s.deliverAll(ctx, Message{Event: EventHealthy})
+	s.deliverAll(ctx, Message{Event: EventExited})
+	if _, got := problems.received(); len(got) != 1 || got[0].Event != EventExited {
+		t.Errorf("problems got %+v", got)
+	}
+	if _, got := recoveries.received(); len(got) != 1 || got[0].Event != EventHealthy {
+		t.Errorf("recoveries got %+v", got)
+	}
+	// A test reaches a webhook whatever its events.
+	if err := s.Test(ctx, r.ID); err != nil {
+		t.Errorf("test: %v", err)
+	}
+
+	// Update keeps the events unless it names them.
+	if r, err = s.Update(ctx, r.ID, Input{Name: "recoveries"}); err != nil || !slices.Equal(r.Events, []string{EventHealthy, EventAgentOnline}) {
+		t.Errorf("update without events = %v, %v", r.Events, err)
+	}
+	if r, err = s.Update(ctx, r.ID, Input{Name: "recoveries", Events: []string{EventAgentOffline}}); err != nil || !slices.Equal(r.Events, []string{EventAgentOffline}) {
+		t.Errorf("update events = %v, %v", r.Events, err)
+	}
+
+	// Webhooks from before the events column keep today's events.
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO webhooks (name, endpoint, url_enc, header_name, enabled, created_at, updated_at)
+		VALUES ('old', 'https://x.example', x'00', '', 0, 0, 0)`); err != nil {
+		t.Fatal(err)
+	}
+	list, err := s.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if list[0].Name != "old" || !slices.Equal(list[0].Events, DefaultEvents) {
+		t.Errorf("old webhook = %+v", list[0])
+	}
+}
+
+func TestRecover(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, clock := newTestService(t)
+	recovery := Message{Event: EventHealthy, Text: "healthy"}
+	recoverWeb := func() bool {
+		t.Helper()
+		ok, err := s.Recover(ctx, "unhealthy/1/web", recovery)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	if recoverWeb() {
+		t.Error("recovery without a problem was sent")
+	}
+	if ok, err := s.Send(ctx, "unhealthy/1/web", ProblemWindow, Message{Event: EventUnhealthy}); !ok || err != nil {
+		t.Fatalf("send = %v, %v", ok, err)
+	}
+	<-s.queue
+	if !recoverWeb() {
+		t.Fatal("recovery after a problem was dropped")
+	}
+	if q := <-s.queue; q.m.Event != EventHealthy || len(q.keys) != 0 {
+		t.Errorf("queued %+v", q)
+	}
+	if recoverWeb() {
+		t.Error("second recovery was sent")
+	}
+	// The recovery ended the window: the next problem is sent at once.
+	if ok, err := s.Send(ctx, "unhealthy/1/web", ProblemWindow, Message{Event: EventUnhealthy}); !ok || err != nil {
+		t.Errorf("send after recovery = %v, %v", ok, err)
+	}
+	<-s.queue
+	// A problem that lasts past its window still recovers, for RecoveryWindow.
+	clock.advance(ProblemWindow + RecoveryWindow - time.Second)
+	if !recoverWeb() {
+		t.Error("recovery of a long problem was dropped")
+	}
+	<-s.queue
+	if _, err := s.Send(ctx, "unhealthy/1/web", ProblemWindow, Message{Event: EventUnhealthy}); err != nil {
+		t.Fatal(err)
+	}
+	<-s.queue
+	clock.advance(ProblemWindow + RecoveryWindow)
+	if recoverWeb() {
+		t.Error("recovery after the recovery window was sent")
+	}
+}
+
+// A notification is posted to MaxDeliveries targets at once.
+func TestDeliverConcurrently(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, _ := newTestService(t)
+	arrived, release := make(chan struct{}, MaxDeliveries+1), make(chan struct{})
+	h := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		arrived <- struct{}{}
+		<-release
+	}))
+	t.Cleanup(h.Close)
+	for i := range MaxDeliveries + 1 {
+		if _, err := s.Create(ctx, Input{Name: strconv.Itoa(i), URL: ptr(h.URL), Enabled: ptr(true)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	done := make(chan bool)
+	go func() { done <- s.deliverAll(ctx, Message{Event: EventExited}) }()
+	for range MaxDeliveries {
+		select {
+		case <-arrived:
+		case <-time.After(5 * time.Second):
+			t.Fatal("deliveries aren't concurrent")
+		}
+	}
+	select {
+	case <-arrived:
+		t.Error("more than MaxDeliveries deliveries at once")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if !<-done {
+		t.Error("not delivered")
+	}
+	if len(arrived) != 1 {
+		t.Errorf("last delivery: %d arrived, want 1", len(arrived))
 	}
 }

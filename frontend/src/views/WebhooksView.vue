@@ -3,10 +3,12 @@ import { onMounted, ref } from 'vue';
 
 import {
   createWebhook,
+  defaultWebhookEvents,
   deleteWebhook,
   listWebhooks,
   testWebhook,
   updateWebhook,
+  webhookEvents,
   type Webhook,
   type WebhookInput,
 } from '../api/client';
@@ -17,7 +19,15 @@ const error = ref('');
 const busy = ref(false);
 // editing is the webhook the form changes, null when it adds one.
 const editing = ref<Webhook | null>(null);
-const form = ref({ name: '', url: '', headerName: '', headerValue: '', enabled: true });
+const blank = () => ({
+  name: '',
+  url: '',
+  headerName: '',
+  headerValue: '',
+  enabled: true,
+  events: [...defaultWebhookEvents],
+});
+const form = ref(blank());
 // tested is the outcome of the last test, by webhook id.
 const tested = ref<Record<number, { ok: boolean; text: string }>>({});
 
@@ -33,12 +43,19 @@ async function load() {
 
 function reset() {
   editing.value = null;
-  form.value = { name: '', url: '', headerName: '', headerValue: '', enabled: true };
+  form.value = blank();
 }
 
 function onEdit(w: Webhook) {
   editing.value = w;
-  form.value = { name: w.name, url: '', headerName: w.header_name, headerValue: '', enabled: w.enabled };
+  form.value = {
+    name: w.name,
+    url: '',
+    headerName: w.header_name,
+    headerValue: '',
+    enabled: w.enabled,
+    events: [...w.events],
+  };
   error.value = '';
 }
 
@@ -46,7 +63,12 @@ async function onSubmit() {
   busy.value = true;
   error.value = '';
   const f = form.value;
-  const input: WebhookInput = { name: f.name.trim(), header_name: f.headerName.trim(), enabled: f.enabled };
+  const input: WebhookInput = {
+    name: f.name.trim(),
+    header_name: f.headerName.trim(),
+    enabled: f.enabled,
+    events: f.events,
+  };
   // On edit an empty URL or header value keeps the stored one.
   if (f.url.trim()) input.url = f.url.trim();
   if (input.header_name && f.headerValue) input.header_value = f.headerValue;
@@ -93,9 +115,10 @@ onMounted(load);
 <template>
   <h1>Notifications</h1>
   <p class="muted">
-    Enabled webhooks get a JSON POST when an image update is found, a container exits with an error or turns
-    unhealthy, or an agent stays offline. One problem is sent at most once an hour, each update once. URLs and
-    header values are stored encrypted and never shown again.
+    Enabled webhooks get a JSON POST for the events they pick: an image update is found, a container exits
+    with an error or turns unhealthy, an agent stays offline, and optionally when a notified container or
+    agent recovers. One container problem is sent at most once an hour, an offline agent once a day, each
+    update once. URLs and header values are stored encrypted and never shown again.
   </p>
 
   <section class="card">
@@ -142,8 +165,17 @@ onMounted(load);
         <input v-model="form.enabled" name="enabled" type="checkbox" />
         Enabled
       </label>
+      <fieldset class="events">
+        <legend>Events</legend>
+        <label v-for="e in webhookEvents" :key="e.event" class="check">
+          <input v-model="form.events" name="events" type="checkbox" :value="e.event" />
+          {{ e.label }}
+        </label>
+      </fieldset>
       <div class="buttons">
-        <button type="submit" class="primary" :disabled="busy">{{ editing ? 'Save' : 'Add' }}</button>
+        <button type="submit" class="primary" :disabled="busy || form.events.length === 0">
+          {{ editing ? 'Save' : 'Add' }}
+        </button>
         <button v-if="editing" type="button" @click="reset">Cancel</button>
       </div>
     </form>
@@ -222,6 +254,21 @@ onMounted(load);
 .webhook .check {
   flex-direction: row;
   align-items: center;
+}
+
+.webhook .events {
+  flex: 1 1 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.webhook .events label {
+  font-weight: normal;
 }
 
 .on {
