@@ -11,11 +11,15 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/config"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/registries"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/secretbox"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/stacks"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/store"
 )
@@ -290,8 +294,81 @@ func TestServeCreatesLocalEnvironment(t *testing.T) {
 
 func TestStackRunner(t *testing.T) {
 	t.Parallel()
-	runner := stackRunner(config.Server{StacksDir: t.TempDir(), Compose: "/bin/compose", DockerHost: "unix:///docker.sock"}, nil, slog.New(slog.DiscardHandler))
+	runner := stackRunner(config.Server{StacksDir: t.TempDir(), Compose: "/bin/compose", DockerHost: "unix:///docker.sock"}, nil, nil, slog.New(slog.DiscardHandler))
 	if _, ok := runner(environments.Environment{ID: 1, Kind: environments.KindLocal}).(*stacks.Local); !ok {
 		t.Error("the local environment's runner isn't a stacks.Local")
+	}
+}
+
+func TestCleanComposeConfigs(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		stale   []string
+		wantLog bool
+	}{
+		{"nothing left", nil, false},
+		{"stale configs", []string{"nudge-compose-1", "nudge-compose-2"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := composeConfigDir(t.TempDir())
+			for _, name := range tt.stale {
+				if err := os.MkdirAll(filepath.Join(dir, name), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var buf bytes.Buffer
+			if err := cleanComposeConfigs(dir, slog.New(slog.NewTextHandler(&buf, nil))); err != nil {
+				t.Fatal(err)
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil || len(entries) != 0 {
+				t.Errorf("left %v, %v", entries, err)
+			}
+			if logged := strings.Contains(buf.String(), "count="+strconv.Itoa(len(tt.stale))); logged != tt.wantLog {
+				t.Errorf("log %q, want a count: %v", buf.String(), tt.wantLog)
+			}
+		})
+	}
+}
+
+func TestStackCredentials(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st, err := store.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	box, err := secretbox.New(bytes.Repeat([]byte{1}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	regs := registries.New(registries.Options{DB: st.DB(), Box: box})
+	pw := "gh-pass"
+	if _, err := regs.Create(ctx, registries.Input{Name: "GitHub", Address: "ghcr.io", Username: "bot", Password: &pw}); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name  string
+		files stacks.Files
+		want  []stacks.Credential
+	}{
+		{"named in compose", stacks.Files{Compose: "services:\n  a:\n    image: ghcr.io/org/a\n"},
+			[]stacks.Credential{{Address: "ghcr.io", Username: "bot", Password: "gh-pass"}}},
+		{"named in .env", stacks.Files{Compose: "services: {}\n", Env: "IMAGE=ghcr.io/org/a\n"},
+			[]stacks.Credential{{Address: "ghcr.io", Username: "bot", Password: "gh-pass"}}},
+		{"not named", stacks.Files{Compose: "services:\n  a:\n    image: nginx\n"}, []stacks.Credential{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := stackCredentials(regs)(ctx, tt.files)
+			if err != nil || !slices.Equal(got, tt.want) {
+				t.Errorf("credentials = %v, %v; want %v", got, err, tt.want)
+			}
+		})
 	}
 }

@@ -31,6 +31,18 @@ const maxEventSize = 1 << 20
 // ErrBusy means the agent is already changing or deploying the stack.
 var ErrBusy = errors.New("the stack is being changed on the agent")
 
+// ErrOldAgent means the agent refused an up with registry credentials: it was built
+// before them.
+var ErrOldAgent = errors.New("the agent is too old for registry credentials; update it")
+
+// statusError is an error answer of the control service.
+type statusError struct {
+	code int
+	msg  string
+}
+
+func (e *statusError) Error() string { return fmt.Sprintf("agent answered %d: %s", e.code, e.msg) }
+
 // controlEvent is one line of a control output stream: an output line, then the exit code
 // or an error.
 type controlEvent struct {
@@ -58,9 +70,11 @@ type control struct {
 // NewControl returns the agent's control service, which syncs, deploys and removes the
 // stacks of runner:
 //   - PUT /v1/stacks/{name} {"compose": "...", "env": "..."} writes the files (204)
-//   - POST /v1/stacks/{name}/up {"pull": bool} and POST /v1/stacks/{name}/down
-//     {"volumes": bool} run compose and stream JSON lines {"stream", "line"}, then
-//     {"exit_code": N} or {"error": "..."}; cancelling the request kills compose
+//   - POST /v1/stacks/{name}/up {"pull": bool, "credentials": [{"address", "username",
+//     "password"}]} and POST /v1/stacks/{name}/down {"volumes": bool} run compose (up with
+//     the registry credentials, see writeDockerConfig) and stream JSON lines
+//     {"stream", "line"}, then {"exit_code": N} or {"error": "..."}; cancelling the
+//     request kills compose
 //   - DELETE /v1/stacks/{name} removes the files (204)
 //
 // Errors are JSON {"error": "..."}: 400 bad request, 404 no such stack, 409 the stack is
@@ -153,15 +167,21 @@ func (c *control) remove(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// upRequest is the body of POST /v1/stacks/{name}/up. Credentials are left out when
+// there are none, so an agent built before them still deploys public images.
+type upRequest struct {
+	Pull        bool         `json:"pull"`
+	Credentials []Credential `json:"credentials,omitempty"`
+}
+
 func (c *control) up(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Pull bool `json:"pull"`
-	}
+	var req upRequest
 	name, ok := c.begin(w, r, &req)
 	if !ok {
 		return
 	}
 	defer c.end(name)
+	r = r.WithContext(withCredentials(r.Context(), req.Credentials))
 	c.stream(w, r, "up", name, func(ctx context.Context, out func(Line)) (int, error) {
 		return c.runner.Up(ctx, name, req.Pull, out)
 	})
@@ -229,6 +249,9 @@ type DialFunc func(ctx context.Context) (net.Conn, error)
 // Remote deploys stacks through an agent's control service.
 type Remote struct {
 	client *http.Client
+	// dir has the server's copy of the stacks, which credentials picks from.
+	dir         Dir
+	credentials CredentialFunc
 }
 
 var _ Runner = (*Remote)(nil)
@@ -262,9 +285,33 @@ func (rm *Remote) Remove(ctx context.Context, name string) error {
 	return nil
 }
 
-// Up runs compose up on the agent.
+// WithCredentials makes rm send compose up the registry credentials creds finds for the
+// server's copy of the stack in dir, and returns rm.
+func (rm *Remote) WithCredentials(dir Dir, creds CredentialFunc) *Remote {
+	rm.dir, rm.credentials = dir, creds
+	return rm
+}
+
+// Up runs compose up on the agent, with the registry credentials it may need.
 func (rm *Remote) Up(ctx context.Context, name string, pull bool, out func(Line)) (int, error) {
-	return rm.run(ctx, name, "up", map[string]bool{"pull": pull}, out)
+	req := upRequest{Pull: pull}
+	if rm.credentials != nil {
+		f, err := rm.dir.Read(name)
+		if err != nil {
+			return 0, fmt.Errorf("compose up %s: %w", name, err)
+		}
+		if req.Credentials, err = rm.credentials(ctx, f); err != nil {
+			return 0, fmt.Errorf("compose up %s: registry credentials: %w", name, err)
+		}
+	}
+	code, err := rm.run(ctx, name, "up", req, out)
+	var se *statusError
+	if len(req.Credentials) > 0 && errors.As(err, &se) && se.code == http.StatusBadRequest {
+		// The server's request is otherwise valid: an agent from before credentials
+		// refuses the unknown field.
+		return 0, fmt.Errorf("compose up %s: %w", name, ErrOldAgent)
+	}
+	return code, err
 }
 
 // Down runs compose down on the agent.
@@ -360,5 +407,5 @@ func (rm *Remote) do(ctx context.Context, method, name, suffix string, body any)
 	if msg == "" {
 		msg = resp.Status
 	}
-	return nil, fmt.Errorf("agent answered %d: %s", resp.StatusCode, msg)
+	return nil, &statusError{code: resp.StatusCode, msg: msg}
 }

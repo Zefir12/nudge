@@ -19,7 +19,7 @@ It also shows the same agent as a compose file:
 |---|---|---|---|
 | `-server` | `NUDGE_SERVER_URL` | (required) | the server's public URL |
 | `-join-token` | `NUDGE_JOIN_TOKEN` | | one-time token from "Add environment"; needed only on the first connect |
-| `-data` | `NUDGE_DATA` | `/data` | stores `agent.json` (agent ID and secret) |
+| `-data` | `NUDGE_DATA` | `/data` | stores `agent.json` (agent ID and secret) and, in `compose-config/`, the short-lived registry logins of a stack deploy |
 | `-insecure` | `NUDGE_INSECURE` | `false` | allow `http://` server URLs (testing only) |
 | `-log-level` | `NUDGE_LOG_LEVEL` | `info` | as for the server |
 | `-docker-host` | `DOCKER_HOST` | `unix:///var/run/docker.sock` | the Docker API the agent serves, `unix://` or `tcp://` |
