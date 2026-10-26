@@ -15,6 +15,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/audit"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/deployhooks"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/deployments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/events"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/notify"
@@ -57,6 +58,8 @@ type Options struct {
 	Webhooks *notify.Service
 	// DeployHooks are the deploy webhooks; nil means they aren't available.
 	DeployHooks *deployhooks.Service
+	// Deployments are the deployments; nil means they aren't available.
+	Deployments *deployments.Service
 	// Events is the Docker events hub, shared with the notification watcher; nil means
 	// the API makes its own.
 	Events *events.Hub
@@ -95,14 +98,15 @@ var publicRoutes = map[string]bool{
 // that would outlive the token's revocation, so a leaked token can't leave a way back in.
 // The refusal is audited with the token's name.
 var sessionOnlyRoutes = map[string]bool{
-	"POST /api/v1/tokens": true,
+	"POST /api/v1/tokens":                    true,
+	"POST /api/v1/deployments/{name}/tokens": true,
 }
 
 // New returns the server's root handler: the API plus the web UI.
 func New(opts Options) http.Handler {
 	s := &server{
 		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries, audit: opts.Audit, updates: opts.Updates,
-		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, registryClient: opts.RegistryClient, isAdmin: opts.Admin,
+		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, deployments: opts.Deployments, registryClient: opts.RegistryClient, isAdmin: opts.Admin,
 		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, recreating: map[string]bool{},
 		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{},
 		checks: make(chan struct{}, maxStackChecks),
@@ -205,6 +209,20 @@ func New(opts Options) http.Handler {
 	api.HandleFunc("POST /api/v1/environments/{env}/webhooks/{id}/secret", s.rotateDeployHookSecret)
 	api.HandleFunc("GET /api/v1/environments/{env}/webhooks/{id}/runs", s.listDeployHookRuns)
 	api.HandleFunc("POST /api/v1/hooks/{id}", s.triggerDeployHook)
+	api.HandleFunc("GET /api/v1/deployments", s.listDeployments)
+	api.HandleFunc("POST /api/v1/deployments", s.createDeployment)
+	api.HandleFunc("GET /api/v1/deployments/{name}", s.getDeployment)
+	api.HandleFunc("PATCH /api/v1/deployments/{name}", s.changeDeployment)
+	api.HandleFunc("DELETE /api/v1/deployments/{name}", s.deleteDeployment)
+	api.HandleFunc("GET /api/v1/deployments/{name}/members", s.listDeploymentMembers)
+	api.HandleFunc("POST /api/v1/deployments/{name}/members", s.setDeploymentMember)
+	api.HandleFunc("DELETE /api/v1/deployments/{name}/members/{user}", s.removeDeploymentMember)
+	api.HandleFunc("GET /api/v1/deployments/{name}/tokens", s.listDeployTokens)
+	api.HandleFunc("POST /api/v1/deployments/{name}/tokens", s.createDeployToken)
+	api.HandleFunc("DELETE /api/v1/deployments/{name}/tokens/{id}", s.deleteDeployToken)
+	api.HandleFunc("POST /api/v1/deployments/{name}/deploys", s.startDeploymentRun)
+	api.HandleFunc("GET /api/v1/deployments/{name}/deploys", s.listDeploymentRuns)
+	api.HandleFunc("GET /api/v1/deployments/{name}/deploys/{run}", s.getDeploymentRun)
 	api.HandleFunc("/api/", s.notFound)
 
 	// tokenRefused answers the session-only routes for token requests, through a mux so
@@ -213,6 +231,8 @@ func New(opts Options) http.Handler {
 	for pattern := range sessionOnlyRoutes {
 		s.tokenRefused.HandleFunc(pattern, s.refuseToken)
 	}
+
+	s.deployTokens = s.deployTokenRoutes()
 
 	mux := http.NewServeMux()
 	mux.Handle("/api/", s.protect(api))
@@ -236,6 +256,9 @@ type server struct {
 	webhooks *notify.Service
 	// deployHooks are the deploy webhooks.
 	deployHooks *deployhooks.Service
+	deployments *deployments.Service
+	// deployTokens serves the requests that carry a deploy token.
+	deployTokens *http.ServeMux
 	// done ends at shutdown (Options.Context).
 	done context.Context
 	// events fans each environment's Docker events out to the clients watching it.
@@ -281,6 +304,11 @@ func (s *server) protect(api *http.ServeMux) http.Handler {
 		return s.auth.TokenUser(r.Context(), token)
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isDeployToken(r) {
+			// Its own routes, which check the token themselves; it reaches nothing else.
+			s.serveAudited(s.deployTokens, w, r)
+			return
+		}
 		if r.Header.Get("Authorization") != "" {
 			withToken.ServeHTTP(w, r)
 			return

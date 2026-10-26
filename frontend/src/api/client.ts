@@ -1130,3 +1130,97 @@ export const rotateDeployHook = (env: string, id: string) =>
   apiFetch<DeployHookWithSecret>(hooksPath(env, `/${enc(id)}/secret`), post({}));
 export const listDeployHookRuns = (env: string, id: string) =>
   apiFetch<DeployHookRun[]>(hooksPath(env, `/${enc(id)}/runs`));
+
+// Deployments: a stack CI deploys through, with members and deploy tokens of its own.
+export type DeploymentAction = 'view' | 'deploy' | 'edit' | 'manage_tokens' | 'manage_members' | 'delete';
+export type DeploymentRole = 'viewer' | 'deployer' | 'maintainer' | 'owner';
+
+export interface Deployment {
+  name: string;
+  environment: number;
+  stack: string;
+  description: string;
+  // variables are the stack's .env variables a deploy may set.
+  variables: string[];
+  created_at: string;
+  updated_at: string;
+  // role is the caller's ('' for an admin who isn't a member); can what it may do.
+  role: DeploymentRole | '';
+  can: DeploymentAction[];
+}
+
+export interface DeploymentInput {
+  name: string;
+  environment: number;
+  stack: string;
+  description: string;
+  variables: string[];
+}
+
+export interface DeploymentMember {
+  user_id: number;
+  username: string;
+  role: DeploymentRole;
+}
+
+export type DeployScope = 'deploy' | 'runs:read';
+
+export interface DeployToken {
+  id: number;
+  name: string;
+  prefix: string;
+  scopes: DeployScope[];
+  created_by: string;
+  created_at: string;
+  expires_at: string | null;
+  last_used_at: string | null;
+}
+
+export interface CreatedDeployToken extends DeployToken {
+  // token is shown only this once.
+  token: string;
+}
+
+export interface DeploymentRun {
+  id: number;
+  actor: string;
+  actor_kind: 'user' | 'token';
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'superseded' | 'rolled_back';
+  variables: Record<string, string>;
+  previous: Record<string, string>;
+  queued_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  image_before: string;
+  image_after: string;
+  error: string;
+}
+
+const depPath = (name: string, rest = '') => `/deployments/${enc(name)}${rest}`;
+
+export const listDeployments = () => apiFetch<Deployment[]>('/deployments');
+export const getDeployment = (name: string) => apiFetch<Deployment>(depPath(name));
+export const createDeployment = (d: DeploymentInput) => apiFetch<Deployment>('/deployments', post(d));
+export const changeDeployment = (name: string, change: { description?: string; variables?: string[] }) =>
+  apiFetch<Deployment>(depPath(name), { method: 'PATCH', body: JSON.stringify(change) });
+export const deleteDeployment = (name: string) => apiFetch<void>(depPath(name), { method: 'DELETE' });
+
+export const listDeploymentMembers = (name: string) =>
+  apiFetch<DeploymentMember[]>(depPath(name, '/members'));
+export const setDeploymentMember = (name: string, username: string, role: DeploymentRole) =>
+  apiFetch<DeploymentMember>(depPath(name, '/members'), post({ username, role }));
+export const removeDeploymentMember = (name: string, userID: number) =>
+  apiFetch<void>(depPath(name, `/members/${userID}`), { method: 'DELETE' });
+
+export const listDeployTokens = (name: string) => apiFetch<DeployToken[]>(depPath(name, '/tokens'));
+export const createDeployToken = (
+  name: string,
+  token: { name: string; scopes: DeployScope[]; expires_at?: string },
+) => apiFetch<CreatedDeployToken>(depPath(name, '/tokens'), post(token));
+export const deleteDeployToken = (name: string, id: number) =>
+  apiFetch<void>(depPath(name, `/tokens/${id}`), { method: 'DELETE' });
+
+export const listDeploymentRuns = (name: string) => apiFetch<DeploymentRun[]>(depPath(name, '/deploys'));
+// deploy queues a run and answers it at once (queued or running).
+export const deploy = (name: string, variables: Record<string, string>) =>
+  apiFetch<DeploymentRun>(depPath(name, '/deploys'), post({ variables }));

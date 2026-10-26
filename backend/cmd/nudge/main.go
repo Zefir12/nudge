@@ -28,6 +28,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/certs"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/config"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/deployhooks"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/deployments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/events"
@@ -206,6 +207,11 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 	if err := deployHooks.FailStale(context.WithoutCancel(ctx)); err != nil {
 		return err
 	}
+	deps := deployments.New(deployments.Options{Context: ctx, DB: st.DB(), Log: log})
+	defer deps.Close()
+	if err := deps.FailStale(context.WithoutCancel(ctx)); err != nil {
+		return err
+	}
 	upd := updates.New(updates.Options{DB: st.DB(), Log: log, Envs: envs, Auth: regs.AuthFor, Checked: hooks.UpdatesChecked})
 	if cfg.UpdateCheckInterval > 0 {
 		// The first check waits for agents to reconnect after a restart.
@@ -235,6 +241,7 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 			Updates:     upd,
 			Webhooks:    hooks,
 			DeployHooks: deployHooks,
+			Deployments: deps,
 			Events:      hub,
 			Web:         web.Handler(web.Dist()),
 

@@ -445,6 +445,12 @@ var (
 // startStack claims stack name of env for one change at a time and syncs its files to
 // the environment's runner. The caller defers unlock.
 func (s *server) startStack(ctx context.Context, env environments.Environment, name string) (stacks.Runner, func(), error) {
+	return s.startStackEdit(ctx, env, name, nil)
+}
+
+// startStackEdit is startStack with edit, if not nil, changing the stack's files once it
+// is claimed and before they sync; the change is written to the stacks directory.
+func (s *server) startStackEdit(ctx context.Context, env environments.Environment, name string, edit func(stacks.Files) stacks.Files) (stacks.Runner, func(), error) {
 	runner := s.stackRunner(env)
 	if runner == nil {
 		return nil, nil, errNoStackRunner
@@ -462,6 +468,13 @@ func (s *server) startStack(ctx context.Context, env environments.Environment, n
 	if err != nil {
 		unlock()
 		return nil, nil, &internalFailure{msg: "read stack", err: err}
+	}
+	if edit != nil {
+		f = edit(f)
+		if err := s.stackDir(env.ID).Update(name, f); err != nil {
+			unlock()
+			return nil, nil, &internalFailure{msg: "write stack", err: err}
+		}
 	}
 	if err := runner.Sync(ctx, name, f); err != nil {
 		unlock()

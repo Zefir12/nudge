@@ -82,6 +82,20 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | POST | `/api/v1/environments/{env}/webhooks/{id}/secret` | session | new secret for a deploy webhook; the old one stops working at once |
 | GET | `/api/v1/environments/{env}/webhooks/{id}/runs` | session | a deploy webhook's runs, newest first |
 | POST | `/api/v1/hooks/{id}` | public (webhook secret) | trigger a deploy webhook: pull and redeploy its target; see Webhooks |
+| GET | `/api/v1/deployments` | session | the deployments you may view (`?environment=` narrows), by name; see Deployments |
+| POST | `/api/v1/deployments` | session | create a deployment on a stack; `201`, you become its owner |
+| GET | `/api/v1/deployments/{name}` | session | one deployment, with your `role` and what you `can` do |
+| PATCH | `/api/v1/deployments/{name}` | session | change `description` or `variables` (maintainer) |
+| DELETE | `/api/v1/deployments/{name}` | session | delete a deployment with its tokens and runs (owner); the stack stays; `204` |
+| GET | `/api/v1/deployments/{name}/members` | session | members and their roles |
+| POST | `/api/v1/deployments/{name}/members` | session | `{"username", "role"}` adds a member or changes their role (owner) |
+| DELETE | `/api/v1/deployments/{name}/members/{user}` | session | remove a member by user id (owner); `204` |
+| GET | `/api/v1/deployments/{name}/tokens` | session | deploy tokens, without their values (maintainer) |
+| POST | `/api/v1/deployments/{name}/tokens` | session only | create a deploy token `{"name", "scopes", "expires_at"}`; `201` with its value, shown once |
+| DELETE | `/api/v1/deployments/{name}/tokens/{id}` | session | revoke a deploy token; `204` |
+| POST | `/api/v1/deployments/{name}/deploys` | session or deploy token (`deploy`) | queue a run `{"variables": {...}}`; `?wait=1` waits for it; see Deployments |
+| GET | `/api/v1/deployments/{name}/deploys` | session or deploy token (`runs:read`) | runs, newest first (the last 100) |
+| GET | `/api/v1/deployments/{name}/deploys/{run}` | session or deploy token (`runs:read`) | one run |
 
 "session" means a session cookie or an API token.
 
@@ -771,6 +785,47 @@ webhook, Forgejo): target URL = the webhook's `url`, HTTP method `POST`, content
 trigger on "Custom events" with "Package" to redeploy when a new image version is
 published; set `tag_filter` (say `latest` or `1.*`) so other tags of the package are
 skipped. A native webhook can't wait, so it gets `202`; the runs show the outcome.
+
+### Deployments
+
+A deployment is a stack in an environment that CI deploys through. Names are 1 to 63
+lowercase letters, digits and dashes, unique across all users (a taken name answers `409`
+even when you can't see that deployment); at most 1000 deployments.
+
+- **Roles.** Each member has a role: `viewer` (reads the deployment, its runs and
+  members), `deployer` (also deploys), `maintainer` (also edits it and manages deploy
+  tokens), `owner` (also manages members and deletes it). Admins may do everything. The
+  creator is the first owner, and a deployment always keeps one (`409` otherwise). A
+  deployment you can't view answers `404`; one you can view but not change, `403`.
+  `GET` answers `can`, the actions you may do: `view`, `deploy`, `edit`,
+  `manage_tokens`, `manage_members`, `delete`.
+- **Variables.** `variables` lists the stack's `.env` variables a deploy may set
+  (uppercase letters, digits and `_`, at most 20). The compose file uses them, such as
+  `image: ${API_IMAGE}`, so CI pins the exact image it built. A deploy's values may hold
+  only letters, digits and `._:/@+=-` (no `$`, quotes, spaces or line breaks), at most 512
+  bytes; another variable answers `400`. A run replaces the variables' lines in `.env`
+  (adding the ones it lacks) and keeps the rest of the file; a failed run puts the file
+  back as it was.
+- **Deploy tokens** (`nudge_dt_…`, stored hashed, shown once) work only on their
+  deployment's three `deploys` routes, for their scopes: `deploy` (start runs) and
+  `runs:read`. Any other route answers `403`, another deployment `401`; failed checks
+  count against the login limit per IP. A token acts for its creator and stops working
+  (`403`) when the creator may no longer deploy (or view, for `runs:read`). Creating one
+  needs a session, not an API token. `expires_at` (RFC 3339, in the future) is optional.
+- **Runs.** `POST .../deploys` with `{"variables": {"API_IMAGE": "registry/app@sha256:…"}}`
+  (body optional) pulls the stack's images and brings it up, like a stack update, as the
+  caller (a token's creator, for the update history). Runs of a deployment go one at a
+  time; one request waits behind the running one, and a newer request replaces it: the
+  replaced run ends `superseded` and its variables go into the newer run (the newer
+  value wins). Without `?wait=1` the answer is `202` with the run. With it, the run once
+  it ends: `200` `succeeded`, `502` `failed`, `409` `superseded`, or `202` if it still runs
+  after 10 minutes. A run:
+  `{"id", "actor", "actor_kind": "user"|"token", "status", "variables", "previous",
+  "queued_at", "started_at", "finished_at", "image_before", "image_after", "error"}`.
+  `status` is `queued`, `running`, `succeeded`, `failed`, `superseded` or `rolled_back`;
+  `image_before`/`image_after` list the changed services as `service=ID`. `previous` (the
+  values a run replaced) is shown to maintainers and owners only, `{}` otherwise.
+  `error` is nudge's own words, never the daemon's.
 
 ### Audit log
 Every `POST`, `PUT`, `PATCH` and `DELETE` that reaches a route is recorded after it is

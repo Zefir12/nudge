@@ -24,6 +24,8 @@ const sectionOf: Record<string, { label: string; list: string }> = {
   stack: { label: 'Stacks', list: 'stacks' },
   events: { label: 'Events', list: 'events' },
   environments: { label: 'Environments', list: 'environments' },
+  deployments: { label: 'Deployments', list: 'deployments' },
+  deployment: { label: 'Deployments', list: 'deployments' },
   registries: { label: 'Registries', list: 'registries' },
   registry: { label: 'Registries', list: 'registries' },
   'registry-repository': { label: 'Registries', list: 'registries' },
