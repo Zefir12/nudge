@@ -3,15 +3,16 @@ import { computed, watch } from 'vue';
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router';
 
 import { logout } from './api/client';
+import AppBreadcrumbs from './components/AppBreadcrumbs.vue';
+import AppSidebar from './components/AppSidebar.vue';
 import BrandLogo from './components/BrandLogo.vue';
-import EnvSwitcher from './components/EnvSwitcher.vue';
 import { lastEnvironment, rememberEnvironment } from './environments';
 import { apiError, currentUser } from './session';
 
 const route = useRoute();
 const router = useRouter();
 
-// The environment links follow the open environment, or the one used last.
+// The environment part of the sidebar follows the open environment, or the one used last.
 const env = computed(() => (typeof route.params.env === 'string' ? route.params.env : lastEnvironment()));
 watch(
   () => route.params.env,
@@ -20,15 +21,6 @@ watch(
   },
   { immediate: true },
 );
-
-const sections = [
-  { name: 'stacks', label: 'Stacks' },
-  { name: 'containers', label: 'Containers' },
-  { name: 'images', label: 'Images' },
-  { name: 'volumes', label: 'Volumes' },
-  { name: 'networks', label: 'Networks' },
-  { name: 'events', label: 'Events' },
-];
 
 async function onLogout() {
   try {
@@ -52,123 +44,89 @@ async function onLogout() {
   <!-- Nothing until the first navigation resolves, so the guard decides the layout. -->
   <template v-else-if="route.matched.length === 0" />
   <RouterView v-else-if="route.meta.public" />
-  <div v-else class="layout">
-    <aside class="sidebar">
+  <div v-else class="shell">
+    <header class="topbar">
       <RouterLink to="/" class="brand"><BrandLogo /></RouterLink>
-      <EnvSwitcher />
-      <nav>
-        <template v-if="env">
-          <RouterLink :to="{ name: 'env', params: { env } }">Dashboard</RouterLink>
-          <!-- Active on a list and on its detail and form pages (stack, stack-new). -->
-          <RouterLink
-            v-for="s in sections"
-            :key="s.name"
-            :to="{ name: s.name, params: { env } }"
-            :class="{ active: String(route.name ?? '').startsWith(s.name.slice(0, -1)) }"
-          >
-            {{ s.label }}
-          </RouterLink>
-        </template>
-        <RouterLink v-else to="/">Dashboard</RouterLink>
-        <RouterLink to="/environments">Environments</RouterLink>
-        <RouterLink to="/registries">Registries</RouterLink>
-        <RouterLink to="/webhooks">Notifications</RouterLink>
-        <RouterLink to="/tokens">API tokens</RouterLink>
-        <RouterLink to="/audit">Audit log</RouterLink>
-      </nav>
-      <div v-if="currentUser" class="account">
-        <span class="muted">{{ currentUser.username }}</span>
-        <button type="button" @click="onLogout">Log out</button>
-      </div>
-    </aside>
-    <main class="content">
-      <RouterView />
-    </main>
+      <AppBreadcrumbs />
+    </header>
+    <div class="layout">
+      <AppSidebar :env="env" @logout="onLogout" />
+      <main class="content">
+        <RouterView />
+      </main>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.layout {
-  display: grid;
-  grid-template-columns: 220px 1fr;
+.shell {
   min-height: 100vh;
 }
 
-.sidebar {
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
   display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
-  padding: 1.25rem 1rem;
-  background: var(--surface);
-  border-right: 1px solid var(--border);
+  align-items: center;
+  gap: 1rem;
+  height: 56px;
+  padding: 0 1.25rem;
+  background: var(--topbar);
+  backdrop-filter: blur(10px);
+}
+
+/* A hairline that fades out at both ends. */
+.topbar::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent-border), transparent);
 }
 
 .brand {
-  --logo-height: 1.75rem;
+  --logo-height: 1.5rem;
 
-  align-self: flex-start;
-  padding: 0.25rem 0.5rem;
+  flex-shrink: 0;
+  width: calc(248px - 1.25rem - 1rem);
 }
 
-nav {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
+.layout {
+  display: grid;
+  grid-template-columns: 248px minmax(0, 1fr);
+  min-height: calc(100vh - 56px);
 }
 
-nav a {
-  padding: 0.5rem 0.75rem;
-  border-radius: var(--radius);
-  color: var(--text);
-  text-decoration: none;
-}
-
-nav a.router-link-exact-active,
-nav a.active {
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
-.account {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  margin-top: auto;
+.layout > :first-child {
+  position: sticky;
+  top: 56px;
+  height: calc(100vh - 56px);
+  overflow-y: auto;
 }
 
 .content {
-  padding: 1.5rem 2rem;
+  padding: 2.25rem 2.5rem 3.5rem;
 }
 
 @media (max-width: 720px) {
+  .brand {
+    width: auto;
+  }
+
   .layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
-  .sidebar {
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.75rem 1rem;
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-  }
-
-  nav {
-    flex-direction: row;
-    flex-wrap: wrap;
-    order: 3;
-    width: 100%;
-  }
-
-  .account {
-    margin-top: 0;
-    margin-left: auto;
+  .layout > :first-child {
+    position: static;
+    height: auto;
   }
 
   .content {
-    padding: 1rem;
+    padding: 1.25rem 1rem 2rem;
   }
 }
 </style>

@@ -1,4 +1,4 @@
-<!-- The nudge lockup (docs/brand/); colours come from CSS so it follows the colour scheme. -->
+<!-- The nudge lockup (docs/brand/); colours come from the theme tokens in style.css. -->
 <template>
   <svg
     xmlns="http://www.w3.org/2000/svg"
@@ -51,28 +51,14 @@
 }
 
 .mark {
-  stroke: #3b8bf0;
+  stroke: var(--accent);
 }
 
 .shadow {
-  stroke: #c9dcf6;
+  stroke: var(--accent-border);
 }
 
 .text {
-  fill: #10233f;
-}
-
-@media (prefers-color-scheme: dark) {
-  .mark {
-    stroke: #6fa6ff;
-  }
-
-  .shadow {
-    stroke: #2d4e86;
-  }
-
-  .text {
-    fill: #eaf2ff;
-  }
+  fill: var(--text);
 }
 </style>
