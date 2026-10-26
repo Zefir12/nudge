@@ -18,7 +18,8 @@ docker run -d --name nudge --restart unless-stopped \
 
 Open http://localhost:8080. Or use [deploy/compose.yml](deploy/compose.yml).
 No `--privileged` is needed: the socket is all it uses. The socket gives root on the host,
-so keep nudge behind TLS and don't expose it to the internet without auth (phase 1).
+so keep nudge behind TLS: its own (`NUDGE_TLS_*`) or a reverse proxy's (see
+[docs/config/server.md](docs/config/server.md#reverse-proxy)).
 
 ## Configuration
 
@@ -28,7 +29,20 @@ Flags with `NUDGE_*` environment variable fallbacks; the defaults work in the im
 |---|---|---|
 | `NUDGE_ADDR` | `:8080` | listen address |
 | `NUDGE_DATA` | `/data` | data directory |
+| `NUDGE_STACKS_DIR` | `<data>/stacks` | compose stacks; mount it at the same path on the host |
+| `NUDGE_COMPOSE` | `/usr/local/bin/docker-compose` | docker-compose binary for stacks |
 | `NUDGE_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
+| `NUDGE_ADMIN_PASSWORD` | unset | create user `admin` at first start (env only) |
+| `DOCKER_HOST` | `unix:///var/run/docker.sock` | Docker API of the local environment |
+| `NUDGE_TLS_CERT`, `NUDGE_TLS_KEY` | unset | serve HTTPS with these PEM files (reloaded on change or SIGHUP) |
+| `NUDGE_PUBLIC_URL` | unset | URL browsers and agents reach the server at; used in the agent command |
+| `NUDGE_TRUSTED_PROXIES` | unset | reverse proxies (CIDRs or IPs) whose `X-Forwarded-For`/`-Proto` are trusted |
+| `NUDGE_AUDIT_RETENTION_DAYS` | `90` | days the audit log keeps entries |
+| `NUDGE_UPDATE_CHECK_INTERVAL` | `6h` | how often images are checked for updates, `0` for never |
+
+Remote hosts run the same image as `nudge agent` with `NUDGE_SERVER_URL` and
+`NUDGE_JOIN_TOKEN` (the UI's "Add environment" prints the `docker run` command and a
+compose file, as in [deploy/agent.compose.yml](deploy/agent.compose.yml)).
 
 Details: [docs/config/server.md](docs/config/server.md), agents:
 [docs/config/agent.md](docs/config/agent.md). API: [docs/api.md](docs/api.md).

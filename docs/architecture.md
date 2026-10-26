@@ -39,15 +39,27 @@ small interface over the client, so tests run against fakes.
 1. Admin creates an agent environment in the UI. The server stores a **join token**
    (random 32 bytes, stored as a SHA-256 hash, single use, expires after 24 h) and shows the
    `docker run` command for the agent.
-2. The agent connects to `wss://<server>/api/v1/agents/connect` and sends the join token.
-   The server answers with an agent ID and a long-lived **agent secret** (hashed on the
-   server); the agent saves both to `/data/agent.json` (0600) and forgets the join token.
-3. Every later connect authenticates with ID + secret. A second connection for the same
-   agent replaces the first. Revoking the environment deletes the secret and drops the session.
+2. The agent sends the join token to `POST /api/v1/agents/enroll` (plain HTTPS, before
+   any WebSocket). The server answers with an agent ID and a long-lived **agent secret**
+   (hashed on the server); the agent saves both to `/data/agent.json` (0600) and forgets
+   the join token. Then it connects to `wss://<server>/api/v1/agents/connect`.
+3. Every connect authenticates with ID + secret (HTTP Basic auth on the upgrade request).
+   A second connection for the same agent replaces the first. Revoking the environment
+   (or enrolling it again) deletes the old secret and drops the session. The sessions
+   live in `environments.Service` (`ServeAgent`), one per environment; the agent
+   environment's Docker client dials a new yamux stream on the current session per
+   connection, so a reconnect needs no new client.
 4. After the handshake the WebSocket is wrapped in a `net.Conn` and a yamux session where
    the **server is the yamux client**: it opens streams, and the agent accepts each one and
    pipes it to its local Docker socket. A small JSON hello at connect carries the agent's
    version and host name; liveness uses yamux keepalives.
+   Wire format (`internal/tunnel`): the agent sends one text message
+   `{"protocol": 2, "version": "...", "hostname": "..."}`, the server answers
+   `{"protocol": 2, "version": "..."}` (in the agent's protocol for an agent on 1) or
+   `{"protocol": 2, "error": "..."}` and closes (policy violation) on an unsupported
+   protocol or invalid fields; after that every message is binary yamux data. On protocol
+   2 every stream starts with a kind byte: `0x00` Docker, `0x01` control. Keepalive pings every 15 s, the session closes when one isn't
+   answered within 10 s. Streams opened by the agent are refused.
 5. The agent reconnects with exponential backoff and jitter (1 s → 60 s). The server marks
    the environment offline when the session closes and records `last_seen`.
 
@@ -63,14 +75,132 @@ refuses `ws://` unless `NUDGE_INSECURE=1`.
 - Browser: session cookie (`HttpOnly`, `Secure` behind TLS, `SameSite=Strict`), sessions
   in SQLite with expiry; writes additionally require a matching `Origin`.
 - Scripts: API tokens (`Authorization: Bearer nudge_...`), stored hashed, shown once.
+- Decision (#33): routes that mint a credential which outlives the token's revocation
+  (creating API tokens) are **session-only**, not scoped: a token request gets `403`,
+  audited under the token's name. They are listed in `sessionOnlyRoutes` in
+  `internal/api` and enforced in the auth middleware; a new route of that kind goes on
+  the list. Scopes stay a later option.
 - Login attempts are rate-limited per IP and username, with bounded memory.
+- Deploy webhooks (`POST /api/v1/hooks/{id}`, internal/deployhooks): a public route whose
+  credential is the webhook's own secret, as a bearer token or as the key of an
+  HMAC-SHA256 body signature (Forgejo, Gitea, GitHub headers), compared in constant time.
+  The secret is sealed with the secretbox key (not hashed: a signature check needs its
+  value). A webhook can do one thing, update its one target, and runs as its creator;
+  failed checks count against the login limit per IP, and each webhook takes 10 triggers
+  a minute. This is the credential to put in CI instead of an API token, which is its user
+  on every route.
 
-## Stacks (phase 5, open question)
-Compose files live in `/data/stacks/<env>/<name>/`. For local environments the server runs
-the compose library/CLI against the socket. For agent environments relative bind mounts
-and `env_file` refer to the remote host, so compose must run on the agent: the agent then
-needs one small control endpoint ("deploy this compose project"), the only exception to
-"the agent is a dumb pipe". Decide when phase 5 starts.
+## Stacks (phase 5)
+Decision (approved by zefir for #25): **compose runs next to the daemon it deploys to**: in
+the server for the local environment, in the agent for agent environments, with the same
+code. The server keeps the authoritative files and sends them to the agent on every
+deploy; the agent gets a small control service on its tunnel, the one exception to "the
+agent is a dumb pipe".
+
+### Where compose can run
+| | A: on the server, through the tunnel | B: on the agent, via a control endpoint |
+|---|---|---|
+| Relative bind mounts (`./data:/data`) | resolved on the server, then mounted by the remote daemon from a path that doesn't exist there: broken | resolved in the agent's copy of the project, on the host that mounts it: works (with the same-path mount below) |
+| `env_file`, `.env`, interpolation | read on the server: works, but only files the server holds | read from the agent's copy: works |
+| `configs`/`secrets` with `file:` | bind-mounted outside swarm, so broken like relative binds | works |
+| Build contexts | the context is tarred on the server and sent through the tunnel: works, but every build crosses the tunnel | the files are synced first (size limit), the build runs against the local daemon; git URLs work in both |
+| Agent | stays a dumb pipe | gets a compose binary and a control service; needs the protocol bump below |
+| Implementations | one | one, run in two places |
+
+A keeps the agent simple but breaks the most common compose layouts (relative data and
+config mounts), and nothing can fix that short of copying files to the remote host,
+which is B. So B.
+
+The same problem exists locally: nudge runs in a container, so `./data` in
+`/data/stacks/local/web/` is a path inside nudge's container, and the daemon mounts that
+path from the host. Whatever runs compose (server or agent) keeps stacks in a directory
+**mounted at the same path on the host and in the container** (`NUDGE_STACKS_DIR`,
+default `/data/stacks`; the deploy docs show `-v /opt/nudge/stacks:/opt/nudge/stacks
+-e NUDGE_STACKS_DIR=/opt/nudge/stacks`). Without that mount relative binds are refused
+at deploy with a clear error rather than mounting an empty host directory.
+
+### Running compose
+The image is distroless with no Docker CLI. Options (zefir approved 1):
+1. Ship the static `docker-compose` binary (compose v2 standalone, ~60 MB) in the image
+   and run it with fixed arguments: `docker-compose -p <name> --project-directory <dir>
+   -f compose.yaml up -d --remove-orphans [--pull always]`, `down [--volumes]`,
+   `config --quiet` (validate). `DOCKER_HOST` is the local socket.
+2. Import `github.com/docker/compose/v2` as a library: no subprocess, but a very large
+   dependency tree (buildkit, containerd) in every build.
+
+Recommended: 1. It's isolated, its version can move independently, and its output is
+what users know from the CLI. nudge parses only the exit code; output lines are streamed
+to the UI as they are.
+
+### Files
+- Server: `<stacks dir>/<env>/<name>/` holds `compose.yaml`, `.env` (variables set in the
+  UI) and any extra files the user adds. It is the source of truth: the UI edits it,
+  and the audit log records every change.
+- Agent: `<stacks dir>/<name>/`, a copy replaced on each deploy. Names follow compose's
+  project name rules (`[a-z0-9][a-z0-9_-]*`).
+- Status (services, containers, health) is read through the Docker API by the
+  `com.docker.compose.project` label, the same for both kinds; logs use the existing
+  container log stream. No control endpoint is needed for reads.
+
+### Agent control protocol
+- Tunnel protocol 2: every stream the server opens starts with one byte, `0x00` Docker
+  socket or `0x01` control. The hello carries the protocol; with an agent on protocol 1
+  the server opens plain Docker streams and stacks on that environment answer `409
+  "update the agent to use stacks"`. Protocol 1 agents keep working for everything else.
+- Control streams carry HTTP/1.1: the agent serves a `net/http` handler on a listener fed
+  by control streams, and the server uses an `http.Client` whose dialer opens one. Only
+  the server can reach it (the tunnel is already authenticated); there is no listening
+  port.
+- Endpoints:
+  - `PUT /v1/stacks/{name}`: body is `{"compose": "...", "env": "..."}` (at most 2 MB),
+    each file written to a temporary file and swapped in with a rename. (A tar of extra
+    project files can come later, when the UI edits them.)
+  - `POST /v1/stacks/{name}/up` `{"pull": bool, "credentials": [{"address", "username",
+    "password"}]}`: `credentials` (left out when there are none, so older agents still
+    deploy public images) are the registry logins the server picked for the stack; runs
+    compose, answers NDJSON
+    `{"stream": "stdout"|"stderr", "line": "..."}` frames, then `{"exit_code": N}`.
+    Cancelling the request kills the process.
+  - `POST /v1/stacks/{name}/down` `{"volumes": bool}`: the same output format.
+  - `DELETE /v1/stacks/{name}`: removes the files after `down`.
+  - Not built yet: `GET /v1/stacks` with names and a SHA-256 of each project's files, so
+    the server can show a stack that differs from what it last sent.
+- One deploy per stack at a time (the server serializes per environment and name; the
+  agent refuses a second one with `409`).
+- Security: no new privilege (the server can already do anything on the remote daemon),
+  but the agent runs only the compose binary with fixed arguments, never a shell, and
+  validates names and tar entries before writing.
+
+In code: a `stacks.Runner` interface (`Sync`, `Up`, `Down`, `Remove`) with a local
+implementation (`stacks.Local`: writes the files, runs compose) used by the server for the
+local environment and by the agent's control service (`stacks.NewControl`), and
+`stacks.Remote`, which calls the control endpoints over `environments.ControlDialer`.
+
+Registry credentials: compose otherwise runs with only `DOCKER_HOST`, `HOME` and `PATH`,
+so for each `up` the runner that runs compose writes the credentials of the registries the stack
+may need to a `config.json` (0600) in a new private temporary directory (0700) under
+`<data>/compose-config` (0700), sets `DOCKER_CONFIG` to it and removes it when compose
+exits; `serve` and `agent` remove the directories a killed run left there at start (and
+log how many). On an agent environment the server picks the credentials and sends them
+with the `up` request; the agent writes the same temporary config. An agent from before
+this answers such an `up` with `400`, which the server reports as "the agent is too old
+for registry credentials; update it" (`stacks.ErrOldAgent`).
+- Which credentials (`registries.Service.AuthsFor`): Docker Hub's on every `up` when
+  they are stored (images without a host use them), and those of each registry whose
+  host compose.yaml or `.env` names. The match is a text scan of both files, comments
+  included, not a parse of the images. So anyone who can edit a stack can make nudge
+  hand any stored registry's credentials to that environment's compose (and, on an agent
+  environment, to its agent). That is no more than deploy access already gives: such a
+  user can already pull any image with the stored credentials, and image pulls send
+  them through the tunnel (`X-Registry-Auth`) anyway.
+- Passwords and their base64 `auth` are masked (`********`) in compose's output,
+  longest secret first, so a short password can't break up an `auth` and leave part of
+  it visible. Masking works line by line: a password containing a newline isn't
+  masked. `stacks.Credential` never logs or prints its password.
+- Credential helpers are not supported.
+
+Out of scope for phase 5: swarm stacks, compose `build` with large contexts (git URLs
+are fine), and editing a project's extra files beyond compose.yaml and `.env` in the UI.
 
 ## Storage
 SQLite (`modernc.org/sqlite`, pure Go, so the image stays static) with numbered SQL

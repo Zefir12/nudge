@@ -9,17 +9,19 @@ RUN npm ci --no-audit --no-fund
 COPY frontend/ ./
 RUN npm run build
 
+# The static docker-compose v2 binary that deploys stacks (docs/architecture.md, Stacks).
+FROM docker/compose-bin:v2.39.1 AS compose
+
 FROM golang:1.27.3 AS builder
 
 WORKDIR /src/backend
-# go.sum* because the module has no go.sum until it gets its first dependency.
-COPY backend/go.mod backend/go.sum* ./
+COPY backend/go.mod backend/go.sum ./
 RUN go mod download
 
 COPY backend/ ./
 COPY --from=web /web/dist/ ./internal/web/dist/
 ARG VERSION=dev
-# Static binary: modernc.org/sqlite (phase 1) is pure Go, so no cgo is needed.
+# Static binary: modernc.org/sqlite is pure Go, so no cgo is needed.
 RUN CGO_ENABLED=0 go build -trimpath \
 	-ldflags "-s -w -X git.zefirlabs.net/zefir/nudge/backend/internal/version.Version=${VERSION}" \
 	-o /out/nudge ./cmd/nudge
@@ -31,6 +33,7 @@ RUN mkdir -m 0700 /out/data
 FROM gcr.io/distroless/static-debian13
 
 COPY --from=builder /out/nudge /usr/local/bin/nudge
+COPY --from=compose /docker-compose /usr/local/bin/docker-compose
 COPY --from=builder /out/data /data
 VOLUME /data
 ENV NUDGE_DATA=/data

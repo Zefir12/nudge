@@ -23,7 +23,8 @@ mode of the same binary. Read PLAN.md for the roadmap and docs/ for decisions.
   Vite+ (`vp`) for dev, build, test, lint and format.
 - Standard library first. Approved dependencies: `github.com/moby/moby/client` (Docker),
   `modernc.org/sqlite` (pure-Go SQLite), `github.com/coder/websocket`,
-  `github.com/hashicorp/yamux`, `golang.org/x/crypto` (argon2id), `vue-router`. Any
+  `github.com/hashicorp/yamux`, `golang.org/x/crypto` (argon2id), `vue-router`,
+  `yaml` (compose syntax in the stack editor). Any
   other dependency only after asking zefir.
 - Lint: golangci-lint (backend/.golangci.yml), `vp check` and `vue-tsc`. Formatting:
   gofmt + goimports, `vp check --fix`.

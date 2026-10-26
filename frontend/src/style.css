@@ -8,6 +8,8 @@
   --accent: #2563eb;
   --accent-soft: #e6eefe;
   --danger: #c4302b;
+  --ok: #1a7f37;
+  --warn: #9a6700;
   --radius: 8px;
   --font: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
@@ -25,6 +27,8 @@
     --accent: #6b9cff;
     --accent-soft: #1f2b44;
     --danger: #ff6b63;
+    --ok: #4ac26b;
+    --warn: #d4a72c;
   }
 }
 
@@ -74,4 +78,122 @@ code {
 
 .error {
   color: var(--danger);
+}
+
+input {
+  padding: 0.45rem 0.6rem;
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+select {
+  padding: 0.45rem 0.6rem;
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+textarea {
+  padding: 0.45rem 0.6rem;
+  font: inherit;
+  font-family: var(--mono);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  resize: vertical;
+}
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+button:focus-visible,
+a.button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+button,
+a.button {
+  padding: 0.45rem 0.9rem;
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+/* a.button is a link that looks like a button. */
+a.button {
+  display: inline-block;
+  text-decoration: none;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+button.primary,
+a.button.primary {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+button.danger {
+  color: var(--danger);
+}
+
+.auth-page {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: 1rem;
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 380px;
+}
+
+table {
+  width: 100%;
+  margin-top: 1rem;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  padding: 0.5rem;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--border);
+}
+
+th {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+/* Wide tables scroll inside their card instead of the page. */
+.table-wrap {
+  overflow-x: auto;
+}
+
+/* Columns that are dropped at phone width. */
+@media (max-width: 720px) {
+  .wide-only {
+    display: none;
+  }
+}
+
+.break {
+  word-break: break-all;
 }

@@ -1,0 +1,251 @@
+<script setup lang="ts">
+import { computed, onMounted, ref } from 'vue';
+import { RouterLink } from 'vue-router';
+
+import {
+  createRegistry,
+  deleteRegistry,
+  listRegistries,
+  updateRegistry,
+  type Registry,
+  type RegistryInput,
+  type RegistryKind,
+} from '../api/client';
+import { formatDate } from '../format';
+
+const registries = ref<Registry[] | null>(null);
+const error = ref('');
+const busy = ref(false);
+// editing is the registry the form changes, null when it adds one.
+const editing = ref<Registry | null>(null);
+const emptyForm = () => ({
+  name: '',
+  address: '',
+  username: '',
+  password: '',
+  kind: 'generic' as RegistryKind,
+  owners: '',
+  plainHttp: false,
+});
+const form = ref(emptyForm());
+
+const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+async function load() {
+  try {
+    registries.value = await listRegistries();
+  } catch (e) {
+    error.value = message(e);
+  }
+}
+
+function reset() {
+  editing.value = null;
+  form.value = emptyForm();
+}
+
+function onEdit(r: Registry) {
+  editing.value = r;
+  form.value = {
+    name: r.name,
+    address: r.address,
+    username: r.username,
+    password: '',
+    kind: r.kind,
+    owners: r.owners.join(', '),
+    plainHttp: r.plain_http,
+  };
+  error.value = '';
+}
+
+// needsPassword: the stored password only goes to the host, user and scheme it was
+// saved for, so an edit that changes one must give it again (the API refuses otherwise).
+const needsPassword = computed(() => {
+  const old = editing.value;
+  if (!old) return true;
+  const f = form.value;
+  return (
+    f.address.trim() !== old.address || f.username.trim() !== old.username || f.plainHttp !== old.plain_http
+  );
+});
+
+async function onSubmit() {
+  const f = form.value;
+  if (editing.value && needsPassword.value && !f.password) {
+    error.value = 'Enter the password again: the address, username or plain HTTP setting changed.';
+    return;
+  }
+  busy.value = true;
+  error.value = '';
+  const input: RegistryInput = {
+    name: f.name.trim(),
+    address: f.address.trim(),
+    username: f.username.trim(),
+    kind: f.kind,
+    // Owners only apply to Forgejo, separated by commas or spaces.
+    owners: f.kind === 'forgejo' ? f.owners.split(/[\s,]+/).filter(Boolean) : [],
+    plain_http: f.plainHttp,
+  };
+  // An empty password on edit keeps the stored one.
+  if (f.password) input.password = f.password;
+  try {
+    if (editing.value) await updateRegistry(editing.value.id, input);
+    else await createRegistry(input);
+    reset();
+    await load();
+  } catch (e) {
+    error.value = message(e);
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function onDelete(r: Registry) {
+  if (!window.confirm(`Delete the credentials for ${r.address}? Pulls from it become anonymous.`)) return;
+  error.value = '';
+  try {
+    await deleteRegistry(r.id);
+    if (editing.value?.id === r.id) reset();
+    await load();
+  } catch (e) {
+    error.value = message(e);
+  }
+}
+
+onMounted(load);
+</script>
+
+<template>
+  <h1>Registries</h1>
+  <p class="muted">
+    Image pulls from a registry listed here use its credentials, matched by the image's host (Docker Hub for
+    images without one). Passwords are stored encrypted and never shown again.
+  </p>
+
+  <section class="card">
+    <h2>{{ editing ? `Edit ${editing.name}` : 'Add a registry' }}</h2>
+    <form class="registry" @submit.prevent="onSubmit">
+      <label>
+        Name
+        <input v-model="form.name" name="name" maxlength="64" placeholder="e.g. GitHub" required />
+      </label>
+      <label>
+        Address
+        <input v-model="form.address" name="address" placeholder="ghcr.io or docker.io" required />
+      </label>
+      <label>
+        Username
+        <input v-model="form.username" name="username" maxlength="255" autocomplete="off" required />
+      </label>
+      <label>
+        Password or token
+        <input
+          v-model="form.password"
+          name="password"
+          type="password"
+          autocomplete="new-password"
+          :placeholder="editing && !needsPassword ? 'unchanged' : ''"
+          :required="needsPassword"
+        />
+      </label>
+      <label>
+        Kind
+        <select v-model="form.kind" name="kind">
+          <option value="generic">Registry v2</option>
+          <option value="forgejo">Forgejo</option>
+        </select>
+      </label>
+      <label v-if="form.kind === 'forgejo'">
+        Owners
+        <input v-model="form.owners" name="owners" placeholder="users or orgs; empty: the username" />
+      </label>
+      <label class="check">
+        <input v-model="form.plainHttp" name="plain_http" type="checkbox" />
+        Browse over plain HTTP
+      </label>
+      <div class="buttons">
+        <button type="submit" class="primary" :disabled="busy">{{ editing ? 'Save' : 'Add' }}</button>
+        <button v-if="editing" type="button" @click="reset">Cancel</button>
+      </div>
+    </form>
+    <p v-if="form.plainHttp" class="warn">
+      Plain HTTP sends the username and password unencrypted: use it only for a registry on a network you
+      trust. It applies to browsing only; pulls need the registry in the Docker daemon's insecure-registries.
+    </p>
+    <p v-if="form.kind === 'forgejo'" class="muted">
+      For Forgejo, the password is an access token with read:package (and write:package to delete tags).
+    </p>
+    <p v-if="error" class="error" role="alert">{{ error }}</p>
+  </section>
+
+  <section class="card">
+    <p v-if="registries === null && !error" class="muted">Loading…</p>
+    <p v-else-if="registries && registries.length === 0" class="muted">No registries yet.</p>
+    <div v-else-if="registries" class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Address</th>
+            <th>Username</th>
+            <th class="wide-only">Updated</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="r in registries" :key="r.id">
+            <td>
+              <RouterLink :to="{ name: 'registry', params: { id: r.id } }">{{ r.name }}</RouterLink>
+            </td>
+            <td>
+              <code>{{ r.address }}</code>
+            </td>
+            <td>{{ r.username }}</td>
+            <td class="wide-only">{{ formatDate(r.updated_at) }}</td>
+            <td class="row-actions">
+              <button type="button" @click="onEdit(r)">Edit</button>
+              <button type="button" class="danger" @click="onDelete(r)">Delete</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</template>
+
+<style scoped>
+.card + .card {
+  margin-top: 1rem;
+}
+
+.registry {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.registry label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-weight: 500;
+}
+
+.registry label.check {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: normal;
+}
+
+.warn {
+  color: var(--warn);
+}
+
+.buttons,
+.row-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+</style>
