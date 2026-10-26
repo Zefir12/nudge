@@ -3,14 +3,19 @@ package api
 import (
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
+	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker/dockertest"
 )
 
@@ -315,5 +320,89 @@ func TestServerURL(t *testing.T) {
 				t.Errorf("serverURL = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestDeleteEnvironment(t *testing.T) {
+	t.Parallel()
+	stacksDir := t.TempDir()
+	admin := true
+	et := newEnvTestOpts(t, map[string]*dockertest.Fake{"local": {}}, func(o *Options) {
+		o.StacksDir = stacksDir
+		o.Admin = func(auth.User) bool { return admin }
+	})
+	created := createAgentEnv(t, et, "nas")
+	path := fmt.Sprintf("/api/v1/environments/%d", created.ID)
+	files := filepath.Join(stacksDir, strconv.FormatInt(created.ID, 10), "web")
+	if err := os.MkdirAll(files, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name     string
+		path     string
+		noCookie bool
+		wantCode int
+	}{
+		{name: "local", path: fmt.Sprintf("/api/v1/environments/%d", et.ids["local"]), wantCode: 409},
+		{name: "unknown", path: "/api/v1/environments/999", wantCode: 404},
+		{name: "not a number", path: "/api/v1/environments/x", wantCode: 404},
+		{name: "without session", path: path, noCookie: true, wantCode: 401},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := request{method: "DELETE", path: tt.path, cookie: et.cookie}
+			if tt.noCookie {
+				req.cookie = nil
+			}
+			if rec := do(t, et.h, req); rec.Code != tt.wantCode {
+				t.Errorf("code = %d, want %d (%s)", rec.Code, tt.wantCode, rec.Body)
+			}
+		})
+	}
+
+	admin = false
+	if rec := do(t, et.h, request{method: "DELETE", path: path, cookie: et.cookie}); rec.Code != http.StatusForbidden {
+		t.Errorf("not an admin: code = %d, want 403 (%s)", rec.Code, rec.Body)
+	}
+	admin = true
+	if rec := do(t, et.h, request{method: "DELETE", path: path, cookie: et.cookie}); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete: code = %d (%s)", rec.Code, rec.Body)
+	}
+	if rec := do(t, et.h, request{method: "GET", path: path, cookie: et.cookie}); rec.Code != http.StatusNotFound {
+		t.Errorf("get after delete: code = %d, want 404", rec.Code)
+	}
+	if rec := enroll(t, et, created.JoinToken.Token); rec.Code != http.StatusUnauthorized {
+		t.Errorf("join token after delete: code = %d, want 401", rec.Code)
+	}
+	if _, err := os.Stat(filepath.Dir(files)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("stack files after delete: stat err = %v, want not exist", err)
+	}
+}
+
+func TestLockEnvironmentStacks(t *testing.T) {
+	t.Parallel()
+	s := &server{stackBusy: map[string]bool{}}
+	if !s.lockStack(stackKey(1, "web")) {
+		t.Fatal("lockStack(1/web) = false")
+	}
+	if s.lockEnvironmentStacks(1) {
+		t.Error("lockEnvironmentStacks(1) = true while 1/web changes")
+	}
+	if !s.lockEnvironmentStacks(2) {
+		t.Fatal("lockEnvironmentStacks(2) = false")
+	}
+	if s.lockStack(stackKey(2, "db")) {
+		t.Error("lockStack(2/db) = true while environment 2 is claimed")
+	}
+	if s.lockEnvironmentStacks(2) {
+		t.Error("lockEnvironmentStacks(2) twice = true")
+	}
+	s.unlockEnvironmentStacks(2)
+	if !s.lockStack(stackKey(2, "db")) {
+		t.Error("lockStack(2/db) after unlock = false")
+	}
+	if !s.lockStack(stackKey(12, "db")) {
+		t.Error("lockStack(12/db) = false; environment 1's claim must not cover 12")
 	}
 }

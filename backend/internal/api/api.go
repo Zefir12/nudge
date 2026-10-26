@@ -152,6 +152,7 @@ func New(opts Options) http.Handler {
 	api.HandleFunc("GET /api/v1/environments", s.listEnvironments)
 	api.HandleFunc("POST /api/v1/environments", s.createEnvironment)
 	api.HandleFunc("GET /api/v1/environments/{env}", s.getEnvironment)
+	api.HandleFunc("DELETE /api/v1/environments/{env}", s.deleteEnvironment)
 	api.HandleFunc("POST /api/v1/environments/{env}/join-tokens", s.createJoinToken)
 	api.HandleFunc("DELETE /api/v1/environments/{env}/credentials", s.revokeAgent)
 	api.HandleFunc("POST /api/v1/agents/enroll", s.enrollAgent)

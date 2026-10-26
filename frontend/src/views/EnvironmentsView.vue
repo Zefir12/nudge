@@ -5,6 +5,7 @@ import { RouterLink } from 'vue-router';
 import {
   createEnvironment,
   createJoinToken,
+  deleteEnvironment,
   revokeAgent,
   type Environment,
   type JoinToken,
@@ -13,6 +14,7 @@ import EnvStatus from '../components/EnvStatus.vue';
 import JoinTokenCard from '../components/JoinTokenCard.vue';
 import { environments, loadEnvironments } from '../environments';
 import { formatDate } from '../format';
+import { currentUser } from '../session';
 
 const error = ref('');
 const loading = ref(true);
@@ -77,6 +79,23 @@ function onRevoke(env: Environment) {
   });
 }
 
+// onRemove asks for the name, so a slip of the mouse can't remove the wrong environment.
+function onRemove(env: Environment) {
+  const typed = window.prompt(
+    `Remove "${env.name}" from nudge? Its agent is disconnected and its stacks, webhooks and history ` +
+      `here are deleted. Containers on the host keep running. Type the name to confirm:`,
+  );
+  if (typed === null) return;
+  if (typed.trim() !== env.name) {
+    error.value = `The name didn't match; "${env.name}" was not removed.`;
+    return;
+  }
+  void run(async () => {
+    await deleteEnvironment(env.id);
+    if (shown.value?.id === env.id) shown.value = null;
+  });
+}
+
 onMounted(load);
 </script>
 
@@ -134,6 +153,15 @@ onMounted(load);
                   @click="onRevoke(env)"
                 >
                   Revoke
+                </button>
+                <button
+                  v-if="currentUser?.admin"
+                  type="button"
+                  class="danger"
+                  :disabled="busy"
+                  @click="onRemove(env)"
+                >
+                  Remove
                 </button>
               </template>
             </td>

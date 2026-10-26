@@ -84,7 +84,8 @@ func stackKey(envID int64, name string) string {
 func (s *server) lockStack(key string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.stackBusy[key] {
+	env, _, _ := strings.Cut(key, "/")
+	if s.stackBusy[key] || s.stackBusy[env+"/*"] {
 		return false
 	}
 	s.stackBusy[key] = true
@@ -95,6 +96,25 @@ func (s *server) unlockStack(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.stackBusy, key)
+}
+
+// lockEnvironmentStacks claims every stack of environment envID: false if a change of
+// one is running. Until unlockEnvironmentStacks, lockStack refuses them all.
+func (s *server) lockEnvironmentStacks(envID int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prefix := strconv.FormatInt(envID, 10) + "/"
+	for key := range s.stackBusy {
+		if strings.HasPrefix(key, prefix) {
+			return false
+		}
+	}
+	s.stackBusy[prefix+"*"] = true
+	return true
+}
+
+func (s *server) unlockEnvironmentStacks(envID int64) {
+	s.unlockStack(strconv.FormatInt(envID, 10) + "/*")
 }
 
 // stackName returns the {id} path value if it can name a stack, else answers 404.

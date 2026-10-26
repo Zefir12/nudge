@@ -44,6 +44,23 @@ describe('apiFetch', () => {
     await expect(apiFetch('/health')).rejects.toMatchObject({ status: 502, message: 'Status' });
   });
 
+  it('names the status when there is no status text (HTTP/2) or error message', async () => {
+    const cases: [string, string][] = [
+      ['Method Not Allowed\n', 'Request failed (405)'],
+      ['{"error":""}', 'Request failed (405)'],
+    ];
+    for (const [body, message] of cases) {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response(body, { status: 405 })),
+      );
+      await expect(apiFetch('/environments/2', { method: 'DELETE' })).rejects.toMatchObject({
+        status: 405,
+        message,
+      });
+    }
+  });
+
   it('sends cookies and JSON', async () => {
     const fn = mockFetch(200, '{}');
     await apiFetch('/x', { method: 'POST', body: '{}' });

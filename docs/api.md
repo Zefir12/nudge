@@ -169,6 +169,11 @@ settings are not.
 - `DELETE /api/v1/environments/{env}/credentials` revokes the agent: deletes its
   credentials and any pending join token (`204`). The environment stays.
   Both answer `409` for a non-agent environment.
+- `DELETE /api/v1/environments/{env}`, admins only (`403` otherwise), removes an agent
+  environment from nudge (`204`): its agent is disconnected and its credentials, join
+  token, stack files, deploy webhooks and update results are deleted. Nothing on the
+  host changes; its containers keep running. `409` for the local environment or while a
+  stack change runs there.
 - `POST /api/v1/agents/enroll` `{"join_token": "nudge_join_…"}`, public (the join token is
   the credential), answers `201` `{"environment_id": 2, "agent_id": "agt_…", "agent_secret":
   "nudge_agent_…"}` and replaces any credentials the environment had. The secret is shown
