@@ -3,6 +3,7 @@ import { ref } from 'vue';
 import { useRouter } from 'vue-router';
 
 import { ApiError, setup, type Credentials } from '../api/client';
+import BrandLogo from '../components/BrandLogo.vue';
 import CredentialsForm from '../components/CredentialsForm.vue';
 import { currentUser } from '../session';
 
@@ -31,6 +32,7 @@ async function onSubmit(c: Credentials) {
 
 <template>
   <div class="auth-page">
+    <BrandLogo class="auth-logo" />
     <section class="card auth-card">
       <h1>Welcome to nudge</h1>
       <p class="muted">Create the admin account. You will use it to log in.</p>

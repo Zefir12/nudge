@@ -3,6 +3,7 @@ import { ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import { login, type Credentials } from '../api/client';
+import BrandLogo from '../components/BrandLogo.vue';
 import CredentialsForm from '../components/CredentialsForm.vue';
 import { currentUser, safeRedirect } from '../session';
 
@@ -27,6 +28,7 @@ async function onSubmit(c: Credentials) {
 
 <template>
   <div class="auth-page">
+    <BrandLogo class="auth-logo" />
     <section class="card auth-card">
       <h1>Log in to nudge</h1>
       <CredentialsForm submit-label="Log in" :busy="busy" :error="error" @submit="onSubmit" />
