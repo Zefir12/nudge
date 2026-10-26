@@ -154,8 +154,14 @@ button.danger {
 .auth-page {
   display: grid;
   place-items: center;
+  align-content: center;
+  gap: 1.5rem;
   min-height: 100vh;
   padding: 1rem;
+}
+
+.auth-logo {
+  --logo-height: 3rem;
 }
 
 .auth-card {

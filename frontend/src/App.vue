@@ -3,6 +3,7 @@ import { computed, watch } from 'vue';
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router';
 
 import { logout } from './api/client';
+import BrandLogo from './components/BrandLogo.vue';
 import EnvSwitcher from './components/EnvSwitcher.vue';
 import { lastEnvironment, rememberEnvironment } from './environments';
 import { apiError, currentUser } from './session';
@@ -41,6 +42,7 @@ async function onLogout() {
 
 <template>
   <div v-if="apiError" class="auth-page">
+    <BrandLogo class="auth-logo" />
     <section class="card auth-card" role="alert">
       <h1>nudge is unreachable</h1>
       <p class="error">{{ apiError }}</p>
@@ -52,7 +54,7 @@ async function onLogout() {
   <RouterView v-else-if="route.meta.public" />
   <div v-else class="layout">
     <aside class="sidebar">
-      <RouterLink to="/" class="brand">nudge</RouterLink>
+      <RouterLink to="/" class="brand"><BrandLogo /></RouterLink>
       <EnvSwitcher />
       <nav>
         <template v-if="env">
@@ -102,10 +104,10 @@ async function onLogout() {
 }
 
 .brand {
-  font-size: 1.25rem;
-  font-weight: 700;
-  color: var(--accent);
-  text-decoration: none;
+  --logo-height: 1.75rem;
+
+  align-self: flex-start;
+  padding: 0.25rem 0.5rem;
 }
 
 nav {

@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/brand/nudge-dark-lockup.svg">
+  <img src="docs/brand/nudge-light-lockup.svg" alt="nudge" height="64">
+</picture>
+
 # nudge
 
 A small self-hosted Docker manager: one container with the Docker socket gives you a web
