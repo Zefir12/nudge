@@ -45,7 +45,8 @@ async function send(path: string, init?: RequestInit, opts?: FetchOptions): Prom
     },
   });
   if (!res.ok) {
-    let message = res.statusText;
+    // HTTP/2 has no status text, and an empty message reads as no error at all.
+    let message = res.statusText || `Request failed (${res.status})`;
     let fields: Record<string, string> = {};
     try {
       const body = (await res.json()) as { error?: string; fields?: Record<string, string> };
@@ -335,6 +336,9 @@ export const createEnvironment = (name: string) =>
   apiFetch<CreatedEnvironment>('/environments', post({ name, kind: 'agent' }));
 export const createJoinToken = (env: number) =>
   apiFetch<JoinToken>(`/environments/${env}/join-tokens`, { method: 'POST' });
+export const deleteEnvironment = (env: number) =>
+  apiFetch<void>(`/environments/${env}`, { method: 'DELETE' });
+
 export const revokeAgent = (env: number) =>
   apiFetch<void>(`/environments/${env}/credentials`, { method: 'DELETE' });
 
