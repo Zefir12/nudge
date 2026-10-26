@@ -61,11 +61,37 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.switcher,
+.switcher {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.6rem 0.65rem 0.7rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
 .field {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
-  font-size: 0.9rem;
+  gap: 0.2rem;
+}
+
+.field > span {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+select {
+  width: 100%;
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.switcher > :deep(.status) {
+  font-size: 12px;
 }
 </style>

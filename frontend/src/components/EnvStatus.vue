@@ -8,16 +8,18 @@ import { formatDate } from '../format';
 const props = defineProps<{ env: Environment }>();
 
 const status = computed(() => {
-  if (props.env.online) return { label: 'online', tone: 'good' };
+  if (props.env.online) return { label: 'online', tone: 'good', lamp: 'on' };
   if (props.env.kind === 'agent' && !props.env.agent?.enrolled)
-    return { label: 'waiting for agent', tone: 'warn' };
-  return { label: 'offline', tone: 'bad' };
+    return { label: 'waiting for agent', tone: 'warn', lamp: 'warn' };
+  return { label: 'offline', tone: 'bad', lamp: '' };
 });
 </script>
 
 <template>
   <span class="status">
-    <span class="badge" :class="status.tone">{{ status.label }}</span>
+    <span class="badge" :class="status.tone">
+      <span class="lamp" :class="status.lamp" aria-hidden="true" />{{ status.label }}
+    </span>
     <span v-if="!env.online && env.last_seen_at" class="muted">
       last seen {{ formatDate(env.last_seen_at) }}
     </span>
@@ -29,20 +31,20 @@ const status = computed(() => {
   display: inline-flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 0.25rem 0.5rem;
+  gap: 0.25rem 0.6rem;
 }
 
 .badge {
-  display: inline-block;
-  padding: 0.05rem 0.5rem;
-  font-size: 0.85em;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.9em;
+  font-weight: 500;
   white-space: nowrap;
-  border: 1px solid currentColor;
-  border-radius: 999px;
 }
 
 .good {
-  color: var(--ok);
+  color: var(--ok-text);
 }
 
 .warn {
@@ -50,7 +52,7 @@ const status = computed(() => {
 }
 
 .bad {
-  color: var(--danger);
+  color: var(--muted);
 }
 
 .muted {
