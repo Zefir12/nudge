@@ -38,6 +38,7 @@ describe('AppSidebar', () => {
     expect(labels(wrapper.findAll('nav[aria-label="Global"] a'))).toEqual([
       'Dashboard',
       'Environments',
+      'Deployments',
       'Registries',
       'Notifications',
       'API tokens',

@@ -89,6 +89,14 @@ refuses `ws://` unless `NUDGE_INSECURE=1`.
   failed checks count against the login limit per IP, and each webhook takes 10 triggers
   a minute. This is the credential to put in CI instead of an API token, which is its user
   on every route.
+- Deployments (internal/deployments) have their own access model, so it can grow (teams,
+  environment roles) in one place: members with a role (viewer < deployer < maintainer <
+  owner, admins above all), and one check, `Service.Authorize(actor, name, action)`,
+  that every deployment handler calls; `Role.Allows` maps roles to actions. Deploy
+  tokens (`nudge_dt_`, hashed, scoped `deploy` / `runs:read`) never reach the API mux:
+  `server.protect` sends any request carrying one to a mux with only the deployment's
+  `deploys` routes, which check the token against the deployment in the path, its
+  scopes and its creator's current role.
 
 ## Stacks (phase 5)
 Decision (approved by zefir for #25): **compose runs next to the daemon it deploys to**: in

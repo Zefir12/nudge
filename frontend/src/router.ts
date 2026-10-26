@@ -14,6 +14,8 @@ import ContainerFormView from './views/ContainerFormView.vue';
 import ContainersView from './views/ContainersView.vue';
 import ContainerView from './views/ContainerView.vue';
 import DashboardView from './views/DashboardView.vue';
+import DeploymentsView from './views/DeploymentsView.vue';
+import DeploymentView from './views/DeploymentView.vue';
 import EnvironmentsView from './views/EnvironmentsView.vue';
 import EventsView from './views/EventsView.vue';
 import HomeView from './views/HomeView.vue';
@@ -66,6 +68,8 @@ export function createAppRouter(history: RouterHistory) {
       { path: '/env/:env/stacks/:id', name: 'stack', component: StackView },
       { path: '/env/:env/events', name: 'events', component: EventsView },
       { path: '/environments', name: 'environments', component: EnvironmentsView },
+      { path: '/deployments', name: 'deployments', component: DeploymentsView },
+      { path: '/deployments/:name', name: 'deployment', component: DeploymentView },
       { path: '/registries', name: 'registries', component: RegistriesView },
       { path: '/registries/:id', name: 'registry', component: RegistryView },
       // Repository names contain "/", so the name goes in the query (?name=team/app).
