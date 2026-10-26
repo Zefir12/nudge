@@ -37,6 +37,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/stacks"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/store"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/updates"
+	diskusage "git.zefirlabs.net/zefir/nudge/backend/internal/usage"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/version"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/web"
 )
@@ -211,6 +212,11 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 		// The first check waits for agents to reconnect after a restart.
 		wg.Go(func() { upd.Run(cleanupCtx, 2*time.Minute, cfg.UpdateCheckInterval) })
 	}
+	usageSvc := diskusage.New(diskusage.Options{DB: st.DB(), Log: log, Envs: envs})
+	if cfg.UsageInterval > 0 {
+		// Like the update check, the first measurement waits for agents to reconnect.
+		wg.Go(func() { usageSvc.Run(cleanupCtx, 2*time.Minute, cfg.UsageInterval) })
+	}
 	if certLoader != nil {
 		// SIGHUP would otherwise kill the process.
 		hup := make(chan os.Signal, 1)
@@ -235,6 +241,7 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 			Updates:     upd,
 			Webhooks:    hooks,
 			DeployHooks: deployHooks,
+			Usage:       usageSvc,
 			Events:      hub,
 			Web:         web.Handler(web.Dist()),
 

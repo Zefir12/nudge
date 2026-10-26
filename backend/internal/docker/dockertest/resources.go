@@ -75,6 +75,13 @@ type Resources struct {
 	// answer.
 	VolumePruneReport  volume.PruneReport
 	NetworkPruneReport network.PruneReport
+	// VolumeUsage is the usage DiskUsage reports for each volume in Volumes by name; a
+	// missing one is reported as not available (-1). DiskUsageErr fails every DiskUsage
+	// call, and DiskUsageWait, if set, holds each call until it receives (or the
+	// context ends).
+	VolumeUsage   map[string]volume.UsageData
+	DiskUsageErr  error
+	DiskUsageWait chan struct{}
 }
 
 // Action is a recorded call that changes a container, image, volume or network: its name
@@ -405,6 +412,40 @@ func (f *Fake) VolumeList(ctx context.Context, _ client.VolumeListOptions) (clie
 		return client.VolumeListResult{}, err
 	}
 	return client.VolumeListResult{Items: f.Volumes}, nil
+}
+
+// DiskUsage answers with Volumes and their VolumeUsage, when asked for volumes in detail.
+func (f *Fake) DiskUsage(ctx context.Context, opts client.DiskUsageOptions) (client.DiskUsageResult, error) {
+	if f.DiskUsageWait != nil {
+		select {
+		case <-f.DiskUsageWait:
+		case <-ctx.Done():
+			return client.DiskUsageResult{}, ctx.Err()
+		}
+	}
+	if err := f.resourceErr(ctx); err != nil {
+		return client.DiskUsageResult{}, err
+	}
+	if f.DiskUsageErr != nil {
+		return client.DiskUsageResult{}, f.DiskUsageErr
+	}
+	var res client.DiskUsageResult
+	if !opts.Volumes {
+		return res, nil
+	}
+	res.Volumes.TotalCount = int64(len(f.Volumes))
+	if !opts.Verbose {
+		return res, nil
+	}
+	for _, v := range f.Volumes {
+		u, ok := f.VolumeUsage[v.Name]
+		if !ok {
+			u = volume.UsageData{Size: -1, RefCount: -1}
+		}
+		v.UsageData = &u
+		res.Volumes.Items = append(res.Volumes.Items, v)
+	}
+	return res, nil
 }
 
 // VolumeInspect answers with the volume in Volumes named id.

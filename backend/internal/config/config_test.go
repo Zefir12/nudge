@@ -24,18 +24,18 @@ func TestLoadServer(t *testing.T) {
 	}{
 		{
 			name: "defaults",
-			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute},
 		},
 		{
 			name: "env",
 			env:  map[string]string{"NUDGE_ADDR": ":9000", "NUDGE_DATA": "/var/lib/nudge", "NUDGE_LOG_LEVEL": "debug", "NUDGE_ADMIN_PASSWORD": "s3cret-pw", "DOCKER_HOST": "tcp://10.0.0.2:2375"},
-			want: Server{Addr: ":9000", DataDir: "/var/lib/nudge", StacksDir: "/var/lib/nudge/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelDebug, AdminPassword: "s3cret-pw", DockerHost: "tcp://10.0.0.2:2375", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour},
+			want: Server{Addr: ":9000", DataDir: "/var/lib/nudge", StacksDir: "/var/lib/nudge/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelDebug, AdminPassword: "s3cret-pw", DockerHost: "tcp://10.0.0.2:2375", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute},
 		},
 		{
 			name: "flag wins over env",
 			args: []string{"-addr", "127.0.0.1:1234"},
 			env:  map[string]string{"NUDGE_ADDR": ":9000"},
-			want: Server{Addr: "127.0.0.1:1234", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour},
+			want: Server{Addr: "127.0.0.1:1234", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute},
 		},
 		{name: "bad log level", args: []string{"-log-level", "loud"}, wantErr: true},
 		{name: "empty addr", args: []string{"-addr", ""}, wantErr: true},
@@ -45,12 +45,12 @@ func TestLoadServer(t *testing.T) {
 		{
 			name: "tls and public url",
 			env:  map[string]string{"NUDGE_TLS_CERT": "/certs/cert.pem", "NUDGE_TLS_KEY": "/certs/key.pem", "NUDGE_PUBLIC_URL": "https://nudge.example.net:8443/"},
-			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour, TLSCert: "/certs/cert.pem", TLSKey: "/certs/key.pem", PublicURL: "https://nudge.example.net:8443"},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute, TLSCert: "/certs/cert.pem", TLSKey: "/certs/key.pem", PublicURL: "https://nudge.example.net:8443"},
 		},
 		{
 			name: "public url flag",
 			args: []string{"-public-url", "http://10.0.0.5:8080"},
-			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour, PublicURL: "http://10.0.0.5:8080"},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute, PublicURL: "http://10.0.0.5:8080"},
 		},
 		{name: "cert without key", args: []string{"-tls-cert", "/c.pem"}, wantErr: true},
 		{name: "key without cert", env: map[string]string{"NUDGE_TLS_KEY": "/k.pem"}, wantErr: true},
@@ -65,12 +65,12 @@ func TestLoadServer(t *testing.T) {
 		{
 			name: "audit retention",
 			env:  map[string]string{"NUDGE_AUDIT_RETENTION_DAYS": "7"},
-			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 7, UpdateCheckInterval: 6 * time.Hour},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 7, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute},
 		},
 		{
 			name: "stacks",
 			env:  map[string]string{"NUDGE_STACKS_DIR": "/opt/nudge/stacks", "NUDGE_COMPOSE": "/bin/compose"},
-			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/opt/nudge/stacks", Compose: "/bin/compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/opt/nudge/stacks", Compose: "/bin/compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute},
 		},
 		{name: "relative stacks dir", args: []string{"-stacks-dir", "stacks"}, wantErr: true},
 		{name: "empty compose", args: []string{"-compose", ""}, wantErr: true},
@@ -78,13 +78,25 @@ func TestLoadServer(t *testing.T) {
 		{
 			name: "update check interval",
 			env:  map[string]string{"NUDGE_UPDATE_CHECK_INTERVAL": "30m"},
-			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 30 * time.Minute},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 30 * time.Minute, UsageInterval: 15 * time.Minute},
 		},
 		{
 			name: "update checks off",
 			args: []string{"-update-check-interval", "0"},
-			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UsageInterval: 15 * time.Minute},
 		},
+		{
+			name: "usage interval",
+			env:  map[string]string{"NUDGE_USAGE_INTERVAL": "1h"},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour, UsageInterval: time.Hour},
+		},
+		{
+			name: "usage measuring off",
+			args: []string{"-usage-interval", "0"},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour},
+		},
+		{name: "usage interval too short", args: []string{"-usage-interval", "30s"}, wantErr: true},
+		{name: "usage interval not a duration", env: map[string]string{"NUDGE_USAGE_INTERVAL": "often"}, wantErr: true},
 		{name: "update check interval too short", args: []string{"-update-check-interval", "1m"}, wantErr: true},
 		{name: "update check interval negative", args: []string{"-update-check-interval", "-1h"}, wantErr: true},
 		{name: "update check interval not a duration", env: map[string]string{"NUDGE_UPDATE_CHECK_INTERVAL": "daily"}, wantErr: true},
@@ -92,7 +104,7 @@ func TestLoadServer(t *testing.T) {
 		{
 			name: "trusted proxies",
 			env:  map[string]string{"NUDGE_TRUSTED_PROXIES": " 172.16.0.0/12, 10.1.2.3 ,fd00::/8,::1,10.9.9.9/8,::ffff:192.0.2.1"},
-			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour,
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute,
 				TrustedProxies: []netip.Prefix{
 					netip.MustParsePrefix("172.16.0.0/12"), netip.MustParsePrefix("10.1.2.3/32"), netip.MustParsePrefix("fd00::/8"),
 					netip.MustParsePrefix("::1/128"), netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("192.0.2.1/32"),
@@ -102,7 +114,7 @@ func TestLoadServer(t *testing.T) {
 			name: "trusted proxies flag wins over env",
 			args: []string{"-trusted-proxies", "127.0.0.1"},
 			env:  map[string]string{"NUDGE_TRUSTED_PROXIES": "10.0.0.0/8"},
-			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour,
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute,
 				TrustedProxies: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}},
 		},
 		{name: "trusted proxies not an address", env: map[string]string{"NUDGE_TRUSTED_PROXIES": "proxy.local"}, wantErr: true},
@@ -113,7 +125,7 @@ func TestLoadServer(t *testing.T) {
 		{
 			name: "trusted proxies IPv4-mapped /96 is all of IPv4",
 			args: []string{"-trusted-proxies", "::ffff:0.0.0.0/96"},
-			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour,
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute,
 				TrustedProxies: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}},
 		},
 	}

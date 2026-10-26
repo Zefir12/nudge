@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue';
 import { RouterLink } from 'vue-router';
 
-import { listVolumes, pruneVolumes } from '../api/client';
+import { listVolumes, measureVolumes, pruneVolumes, type Volume } from '../api/client';
 import LoadState from '../components/LoadState.vue';
 import VolumeCreate from '../components/VolumeCreate.vue';
 import { useLiveReload } from '../composables/useEvents';
@@ -42,7 +42,36 @@ async function onPrune(all: boolean) {
   }
 }
 
-const shown = computed(() => (data.value ?? []).filter((v) => matches(query.value, v.name, v.driver)));
+const measuring = ref(false);
+
+async function onMeasure() {
+  measuring.value = true;
+  pruneError.value = '';
+  try {
+    await measureVolumes(env.value);
+    await reload();
+  } catch (e) {
+    pruneError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    measuring.value = false;
+  }
+}
+
+// bySize sorts the largest first; the API lists by name.
+const bySize = ref(false);
+
+const shown = computed(() => {
+  const vols = (data.value ?? []).filter((v) => matches(query.value, v.name, v.driver));
+  return bySize.value ? [...vols].sort((a, b) => (b.size ?? -1) - (a.size ?? -1)) : vols;
+});
+
+const sizeText = (v: Volume) => (v.size === null ? '—' : formatBytes(v.size));
+
+function sizeTitle(v: Volume): string {
+  if (!v.size_measured_at) return 'Not measured yet';
+  const at = `Measured ${formatDate(v.size_measured_at)}`;
+  return v.size === null ? `${at}; the driver can't report its size` : at;
+}
 </script>
 
 <template>
@@ -55,6 +84,9 @@ const shown = computed(() => (data.value ?? []).filter((v) => matches(query.valu
     <div class="prune">
       <button type="button" :disabled="pruning" @click="onPrune(false)">Prune anonymous</button>
       <button type="button" class="danger" :disabled="pruning" @click="onPrune(true)">Prune unused</button>
+      <button type="button" :disabled="measuring" @click="onMeasure">
+        {{ measuring ? 'Measuring…' : 'Measure sizes' }}
+      </button>
       <span v-if="pruneResult" class="muted" role="status">{{ pruneResult }}</span>
     </div>
     <p v-if="pruneError" class="error" role="alert">{{ pruneError }}</p>
@@ -79,6 +111,9 @@ const shown = computed(() => (data.value ?? []).filter((v) => matches(query.valu
             <tr>
               <th>Name</th>
               <th>Driver</th>
+              <th :aria-sort="bySize ? 'descending' : 'none'">
+                <button type="button" class="sort" @click="bySize = !bySize">Size</button>
+              </th>
               <th class="wide-only">Mountpoint</th>
               <th class="wide-only">Created</th>
             </tr>
@@ -89,6 +124,7 @@ const shown = computed(() => (data.value ?? []).filter((v) => matches(query.valu
                 <RouterLink :to="{ name: 'volume', params: { env, id: v.name } }">{{ v.name }}</RouterLink>
               </td>
               <td>{{ v.driver }}</td>
+              <td class="size" :title="sizeTitle(v)">{{ sizeText(v) }}</td>
               <td class="wide-only break">
                 <code>{{ v.mountpoint }}</code>
               </td>
@@ -112,6 +148,19 @@ const shown = computed(() => (data.value ?? []).filter((v) => matches(query.valu
   align-items: center;
   gap: 0.5rem;
   margin-bottom: 0.75rem;
+}
+
+.sort {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.size {
+  white-space: nowrap;
 }
 
 .search {

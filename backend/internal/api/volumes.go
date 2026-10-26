@@ -11,6 +11,7 @@ import (
 	"github.com/moby/moby/client"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/usage"
 )
 
 // volumeTimeout bounds a volume create or remove; a plugin driver may mount or unmount
@@ -26,6 +27,10 @@ type volumeResponse struct {
 	Scope      string            `json:"scope"`
 	CreatedAt  *time.Time        `json:"created_at"`
 	Labels     map[string]string `json:"labels"`
+	// Size is the last measured size in bytes; null when the volume wasn't measured yet
+	// or its driver can't tell, and then SizeMeasuredAt says which.
+	Size           *int64     `json:"size"`
+	SizeMeasuredAt *time.Time `json:"size_measured_at"`
 }
 
 func (s *server) listVolumes(w http.ResponseWriter, r *http.Request) {
@@ -34,9 +39,10 @@ func (s *server) listVolumes(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, err
 		}
+		sizes := s.volumeSizes(ctx, envID(r))
 		resp := make([]volumeResponse, len(res.Items))
 		for i, v := range res.Items {
-			resp[i] = toVolume(v)
+			resp[i] = withSize(toVolume(v), sizes)
 		}
 		sortBy(resp, func(v volumeResponse) string { return v.Name })
 		return resp, nil
@@ -53,8 +59,59 @@ func (s *server) getVolume(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, err
 		}
-		return toVolume(res.Volume), nil
+		return withSize(toVolume(res.Volume), s.volumeSizes(ctx, envID(r))), nil
 	})
+}
+
+// volumeSizes are the environment's last measured volume sizes. Best effort: without
+// them the volumes are still listed.
+func (s *server) volumeSizes(ctx context.Context, env int64) map[string]usage.Volume {
+	if s.usage == nil {
+		return nil
+	}
+	sizes, err := s.usage.Volumes(ctx, env)
+	if err != nil {
+		s.log.Warn("volume sizes", "env", env, "err", err)
+		return nil
+	}
+	return sizes
+}
+
+func withSize(v volumeResponse, sizes map[string]usage.Volume) volumeResponse {
+	if u, ok := sizes[v.Name]; ok {
+		at := u.MeasuredAt.UTC()
+		v.Size, v.SizeMeasuredAt = u.Size, &at
+	}
+	return v
+}
+
+// measureVolumes measures the environment's volume sizes now and answers once they're
+// stored; 409 while a measurement of it runs. The measurement outlives the request (a
+// proxy may cut a long one) and ends only on its own timeout or at shutdown.
+func (s *server) measureVolumes(w http.ResponseWriter, r *http.Request) {
+	if s.usage == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "volume sizes aren't available")
+		return
+	}
+	env, _, ok := s.environment(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.WithoutCancel(r.Context()))
+	defer cancel()
+	stop := context.AfterFunc(s.done, cancel)
+	defer stop()
+	err := s.usage.Measure(ctx, env)
+	switch {
+	case errors.Is(err, usage.ErrRunning):
+		s.writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, usage.ErrSave):
+		s.internalError(w, "measure volumes", err)
+	case err != nil:
+		s.dockerError(w, r, env, "measure volumes", err)
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
 }
 
 func toVolume(v volume.Volume) volumeResponse {

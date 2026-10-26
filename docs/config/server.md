@@ -17,6 +17,7 @@ image without setting anything. A flag wins over its variable.
 | `-trusted-proxies` | `NUDGE_TRUSTED_PROXIES` | unset | comma-separated CIDRs or IPs of reverse proxies whose `X-Forwarded-For` and `X-Forwarded-Proto` are trusted (see Reverse proxy) |
 | `-audit-retention-days` | `NUDGE_AUDIT_RETENTION_DAYS` | `90` | days the audit log keeps entries (at least 1); older ones are deleted hourly |
 | `-update-check-interval` | `NUDGE_UPDATE_CHECK_INTERVAL` | `6h` | how often every environment's images are checked for updates (a Go duration, at least `5m`; `0` turns the scheduled check off, the UI's check still works); the first check runs two minutes after start |
+| `-usage-interval` | `NUDGE_USAGE_INTERVAL` | `15m` | how often every environment's volume sizes are measured (a Go duration, at least `1m`; `0` turns the scheduled measurement off, the UI's "Measure sizes" still works); the first measurement runs two minutes after start. Docker walks every volume to size it, so on hosts with large volumes a longer interval is kinder to the disks |
 | — | `NUDGE_ADMIN_PASSWORD` | unset | create the user `admin` with this password at start if no user exists |
 
 ## Data directory
