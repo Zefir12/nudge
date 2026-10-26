@@ -45,7 +45,8 @@ async function send(path: string, init?: RequestInit, opts?: FetchOptions): Prom
     },
   });
   if (!res.ok) {
-    let message = res.statusText;
+    // HTTP/2 has no status text, and an empty message reads as no error at all.
+    let message = res.statusText || `Request failed (${res.status})`;
     let fields: Record<string, string> = {};
     try {
       const body = (await res.json()) as { error?: string; fields?: Record<string, string> };
@@ -335,6 +336,9 @@ export const createEnvironment = (name: string) =>
   apiFetch<CreatedEnvironment>('/environments', post({ name, kind: 'agent' }));
 export const createJoinToken = (env: number) =>
   apiFetch<JoinToken>(`/environments/${env}/join-tokens`, { method: 'POST' });
+export const deleteEnvironment = (env: number) =>
+  apiFetch<void>(`/environments/${env}`, { method: 'DELETE' });
+
 export const revokeAgent = (env: number) =>
   apiFetch<void>(`/environments/${env}/credentials`, { method: 'DELETE' });
 
@@ -461,6 +465,10 @@ export interface Volume {
   scope: string;
   created_at: string | null;
   labels: Record<string, string>;
+  // size is the last measured size in bytes: null before the first measurement
+  // (size_measured_at null too) or when the driver can't report it.
+  size: number | null;
+  size_measured_at: string | null;
 }
 
 export interface Network {
@@ -838,6 +846,10 @@ export interface VolumePruneResult {
 }
 
 // all also prunes named volumes, not only anonymous ones.
+// measureVolumes measures the volume sizes now; it resolves once they're stored.
+export const measureVolumes = (env: string) =>
+  apiFetch<void>(envPath(env, '/volumes/usage'), { method: 'POST' });
+
 export const pruneVolumes = (env: string, all = false) =>
   apiFetch<VolumePruneResult>(envPath(env, `/volumes/prune${all ? '?all=true' : ''}`), { method: 'POST' });
 

@@ -146,6 +146,47 @@ describe('EnvironmentsView', () => {
     expect(wrapper.findAll('tbody tr')[1]?.text()).toContain('waiting for agent');
   });
 
+  it('removes after the name is typed', async () => {
+    let list: unknown[] = [local, nas];
+    const fetch = stubApi({
+      'GET /environments': () => ({ body: list }),
+      'DELETE /environments/2': () => {
+        list = [local];
+        return { status: 204 };
+      },
+    });
+    const prompt = vi
+      .spyOn(window, 'prompt')
+      .mockReturnValueOnce('nope')
+      .mockReturnValueOnce(null)
+      .mockReturnValueOnce('nas');
+    const wrapper = await mountView();
+    expect(wrapper.findAll('tbody tr')[0]?.text()).not.toContain('Remove');
+
+    await button(wrapper, 'Remove')?.trigger('click');
+    await flushPromises();
+    expect(wrapper.find('[role="alert"]').text()).toContain("didn't match");
+    await button(wrapper, 'Remove')?.trigger('click');
+    await flushPromises();
+    const deletes = () =>
+      fetch.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'DELETE');
+    expect(deletes()).toHaveLength(0);
+
+    await button(wrapper, 'Remove')?.trigger('click');
+    await flushPromises();
+    expect(prompt).toHaveBeenCalledTimes(3);
+    expect(deletes()).toHaveLength(1);
+    expect(wrapper.findAll('tbody tr')).toHaveLength(1);
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+  });
+
+  it('hides Remove from non-admins', async () => {
+    currentUser.value = { ...admin, admin: false };
+    stubApi({ 'GET /environments': { body: [local, nas] } });
+    const wrapper = await mountView();
+    expect(button(wrapper, 'Remove')).toBeUndefined();
+  });
+
   it('keeps an action error when the reload fails too', async () => {
     let fail = false;
     stubApi({

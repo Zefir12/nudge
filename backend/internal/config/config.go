@@ -53,6 +53,9 @@ type Server struct {
 	// UpdateCheckInterval is how often images are checked for updates; zero turns the
 	// scheduled check off.
 	UpdateCheckInterval time.Duration
+	// UsageInterval is how often disk usage (volume sizes) is measured; zero turns the
+	// scheduled measurement off.
+	UsageInterval time.Duration
 }
 
 // TLS reports whether the server serves HTTPS itself.
@@ -83,6 +86,11 @@ func LoadServer(args []string, getenv func(string) string, out io.Writer) (Serve
 		return Server{}, fmt.Errorf("NUDGE_UPDATE_CHECK_INTERVAL %q: want a duration such as 6h or 30m", getenv("NUDGE_UPDATE_CHECK_INTERVAL"))
 	}
 	fs.DurationVar(&c.UpdateCheckInterval, "update-check-interval", interval, "how often to check images for updates, 0 for never (NUDGE_UPDATE_CHECK_INTERVAL)")
+	usage, err := time.ParseDuration(envOr(getenv, "NUDGE_USAGE_INTERVAL", "15m"))
+	if err != nil {
+		return Server{}, fmt.Errorf("NUDGE_USAGE_INTERVAL %q: want a duration such as 15m or 1h", getenv("NUDGE_USAGE_INTERVAL"))
+	}
+	fs.DurationVar(&c.UsageInterval, "usage-interval", usage, "how often to measure volume sizes, 0 for never (NUDGE_USAGE_INTERVAL)")
 	level := fs.String("log-level", envOr(getenv, "NUDGE_LOG_LEVEL", "info"), "debug, info, warn or error (NUDGE_LOG_LEVEL)")
 	if err := fs.Parse(args); err != nil {
 		return Server{}, err
@@ -117,6 +125,9 @@ func LoadServer(args []string, getenv func(string) string, out io.Writer) (Serve
 	}
 	if c.UpdateCheckInterval != 0 && c.UpdateCheckInterval < 5*time.Minute {
 		return Server{}, errors.New("update check interval must be 0 (off) or at least 5m")
+	}
+	if c.UsageInterval != 0 && c.UsageInterval < time.Minute {
+		return Server{}, errors.New("usage interval must be 0 (off) or at least 1m")
 	}
 	if (c.TLSCert == "") != (c.TLSKey == "") {
 		return Server{}, errors.New("set both -tls-cert and -tls-key (NUDGE_TLS_CERT, NUDGE_TLS_KEY) or neither")

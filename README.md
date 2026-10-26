@@ -44,6 +44,7 @@ Flags with `NUDGE_*` environment variable fallbacks; the defaults work in the im
 | `NUDGE_TRUSTED_PROXIES` | unset | reverse proxies (CIDRs or IPs) whose `X-Forwarded-For`/`-Proto` are trusted |
 | `NUDGE_AUDIT_RETENTION_DAYS` | `90` | days the audit log keeps entries |
 | `NUDGE_UPDATE_CHECK_INTERVAL` | `6h` | how often images are checked for updates, `0` for never |
+| `NUDGE_USAGE_INTERVAL` | `15m` | how often volume sizes are measured, `0` for never |
 
 Remote hosts run the same image as `nudge agent` with `NUDGE_SERVER_URL` and
 `NUDGE_JOIN_TOKEN` (the UI's "Add environment" prints the `docker run` command and a

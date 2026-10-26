@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -100,6 +102,59 @@ func (s *server) revokeAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("agent revoked", "env", id, "ip", clientIP(r))
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteEnvironment removes an agent environment from nudge with its stack files; the
+// containers on its host keep running. Admins only.
+func (s *server) deleteEnvironment(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	id, ok := s.envID(w, r)
+	if !ok {
+		return
+	}
+	// The lock stays held until the row is gone, so no stack change starts in between.
+	if !s.lockEnvironmentStacks(id) {
+		s.writeError(w, http.StatusConflict, "a stack change is running in this environment")
+		return
+	}
+	defer s.unlockEnvironmentStacks(id)
+	env, err := s.envs.Get(r.Context(), id)
+	if s.removeError(w, err) {
+		return
+	}
+	if env.Kind == environments.KindLocal {
+		s.writeError(w, http.StatusConflict, environments.ErrLocal.Error())
+		return
+	}
+	// Files first: ids can be reused, so a later environment must never find these.
+	if s.stacksDir != "" {
+		if err := os.RemoveAll(filepath.Join(s.stacksDir, strconv.FormatInt(id, 10))); err != nil { // #nosec G703 -- id is a number
+			s.internalError(w, "remove environment's stack files", err)
+			return
+		}
+	}
+	if s.removeError(w, s.envs.Delete(r.Context(), id)) {
+		return
+	}
+	s.log.Info("environment removed", "env", id, "ip", clientIP(r))
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// removeError answers err from removing an environment; it reports whether it did.
+func (s *server) removeError(w http.ResponseWriter, err error) bool {
+	switch {
+	case err == nil:
+		return false
+	case errors.Is(err, environments.ErrNotFound):
+		s.writeError(w, http.StatusNotFound, "environment not found")
+	case errors.Is(err, environments.ErrLocal):
+		s.writeError(w, http.StatusConflict, err.Error())
+	default:
+		s.internalError(w, "delete environment", err)
+	}
+	return true
 }
 
 // enrollAgent is public: the join token is the credential.

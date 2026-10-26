@@ -60,6 +60,7 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | DELETE | `/api/v1/environments/{env}/images/{id}` | session | remove an image or tag (`?force=true`); `204` |
 | POST | `/api/v1/environments/{env}/volumes` | session | create a volume; `201`; see Volume and network actions |
 | POST | `/api/v1/environments/{env}/volumes/prune` | session | remove unused anonymous volumes, or with `?all=true` named ones too |
+| POST | `/api/v1/environments/{env}/volumes/usage` | session | measure the volume sizes now; `204` once stored |
 | DELETE | `/api/v1/environments/{env}/volumes/{name}` | session | remove a volume (`?force=true`); `204` |
 | POST | `/api/v1/environments/{env}/networks` | session | create a network; `201` |
 | POST | `/api/v1/environments/{env}/networks/prune` | session | remove custom networks no container uses |
@@ -183,6 +184,11 @@ settings are not.
 - `DELETE /api/v1/environments/{env}/credentials` revokes the agent: deletes its
   credentials and any pending join token (`204`). The environment stays.
   Both answer `409` for a non-agent environment.
+- `DELETE /api/v1/environments/{env}`, admins only (`403` otherwise), removes an agent
+  environment from nudge (`204`): its agent is disconnected and its credentials, join
+  token, stack files, deploy webhooks and update results are deleted. Nothing on the
+  host changes; its containers keep running. `409` for the local environment or while a
+  stack change runs there.
 - `POST /api/v1/agents/enroll` `{"join_token": "nudge_join_…"}`, public (the join token is
   the credential), answers `201` `{"environment_id": 2, "agent_id": "agt_…", "agent_secret":
   "nudge_agent_…"}` and replaces any credentials the environment had. The secret is shown
@@ -240,8 +246,11 @@ doesn't exist, answers `404` `{"error": "container not found"}` (or `image`, `vo
   "cmd", "entrypoint", "working_dir", "exposed_ports", "volumes", "labels"}, "layers"}`.
 - `GET /api/v1/environments/{env}/volumes` and `/volumes/{name}`, sorted by name:
   `{"name": "data", "driver": "local", "mountpoint": "/var/lib/docker/volumes/data/_data",
-  "scope": "local", "created_at": "...", "labels": {}}`. Driver options are left out:
-  CIFS and NFS volumes keep their mount credentials there.
+  "scope": "local", "created_at": "...", "labels": {}, "size": 4096, "size_measured_at":
+  "..."}`. Driver options are left out: CIFS and NFS volumes keep their mount credentials
+  there. `size` (bytes) is the last background measurement (`-usage-interval`): `null`
+  with a null `size_measured_at` before the first one, `null` with a time when the driver
+  can't report sizes. Volumes created since are not measured yet.
 - `GET /api/v1/environments/{env}/networks`, sorted by name: `{"id", "name", "driver",
   "scope", "created_at", "internal", "attachable", "ingress", "ipam": [{"subnet":
   "172.18.0.0/16", "ip_range": "", "gateway": "172.18.0.1"}], "labels"}`.
@@ -425,6 +434,11 @@ when the client falls more than 64 events behind; clients reconnect.
 - `POST /api/v1/environments/{env}/volumes/prune`: removes the anonymous volumes no
   container uses, or with `?all=true` named ones too. Answers `{"deleted": ["name"],
   "space_reclaimed": 1234}`; `409` while another prune runs.
+- `POST /api/v1/environments/{env}/volumes/usage`: measures every volume's size now
+  (Docker walks each one, so it can take minutes on a big host) and answers `204` once
+  the sizes are stored. `409` while a measurement of the environment runs, `503` when
+  the environment is offline. The measurement goes on if the request is cut short (by a
+  proxy's timeout, say); the list shows its sizes once it ends.
 - `DELETE /api/v1/environments/{env}/volumes/{name}`: `409` while a container (running
   or not) uses it; `?force=true` removes it even if its driver fails to.
 - `POST /api/v1/environments/{env}/networks` with `{"name": "apps", "driver": "bridge",

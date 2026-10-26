@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -31,7 +32,7 @@ func TestOpenSettings(t *testing.T) {
 	}{
 		{"journal_mode", "wal"},
 		{"foreign_keys", "1"},
-		{"busy_timeout", "5000"},
+		{"busy_timeout", strconv.Itoa(busyTimeoutMS)},
 	}
 	for _, tt := range tests {
 		var got string

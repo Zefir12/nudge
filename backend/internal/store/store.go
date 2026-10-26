@@ -21,8 +21,10 @@ import (
 const FileName = "nudge.db"
 
 // busyTimeoutMS is how long a statement waits for another connection's write lock
-// (another process, or a concurrent migrate) before failing with SQLITE_BUSY.
-const busyTimeoutMS = 5000
+// (another process, or a concurrent migrate) before failing with SQLITE_BUSY. Concurrent
+// migrates queue for the lock, so the last one waits for all the others: on a loaded
+// machine 5s was not enough for eight of them.
+const busyTimeoutMS = 30000
 
 // Store owns the database handle.
 type Store struct {
