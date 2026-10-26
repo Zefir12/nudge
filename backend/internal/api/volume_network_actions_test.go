@@ -36,12 +36,12 @@ func TestVolumeNetworkActions(t *testing.T) {
 	}{
 		{name: "create volume", method: "POST", path: "/volumes", wantCode: 201,
 			body:     `{"name":"media","driver":"local","options":{"type":"cifs","o":"password=secret-pw"},"labels":{"app":"web"}}`,
-			wantBody: `{"name":"media","driver":"local","mountpoint":"","scope":"local","created_at":null,"labels":{"app":"web"}}`,
+			wantBody: `{"name":"media","driver":"local","mountpoint":"","scope":"local","created_at":null,"labels":{"app":"web"},"size":null,"size_measured_at":null}`,
 			want: []dockertest.Action{{Name: "volume-create", ID: "media", Options: client.VolumeCreateOptions{
 				Name: "media", Driver: "local", DriverOpts: map[string]string{"type": "cifs", "o": "password=secret-pw"}, Labels: map[string]string{"app": "web"},
 			}}}},
 		{name: "create anonymous volume", method: "POST", path: "/volumes", body: `{}`, wantCode: 201,
-			wantBody: `{"name":"generated","driver":"local","mountpoint":"","scope":"local","created_at":null,"labels":{}}`,
+			wantBody: `{"name":"generated","driver":"local","mountpoint":"","scope":"local","created_at":null,"labels":{},"size":null,"size_measured_at":null}`,
 			want:     []dockertest.Action{{Name: "volume-create", Options: client.VolumeCreateOptions{}}}},
 		{name: "create volume invalid name", method: "POST", path: "/volumes", body: `{"name":"../x"}`, wantCode: 400,
 			wantErr: "name may only contain letters, digits, '_', '.' and '-' and must start with a letter or digit"},

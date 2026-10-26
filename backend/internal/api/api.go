@@ -22,6 +22,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/registryclient"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/stacks"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/updates"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/usage"
 )
 
 // Options are the API's dependencies.
@@ -57,6 +58,8 @@ type Options struct {
 	Webhooks *notify.Service
 	// DeployHooks are the deploy webhooks; nil means they aren't available.
 	DeployHooks *deployhooks.Service
+	// Usage keeps the measured volume sizes; nil means sizes aren't available.
+	Usage *usage.Service
 	// Events is the Docker events hub, shared with the notification watcher; nil means
 	// the API makes its own.
 	Events *events.Hub
@@ -102,7 +105,7 @@ var sessionOnlyRoutes = map[string]bool{
 func New(opts Options) http.Handler {
 	s := &server{
 		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries, audit: opts.Audit, updates: opts.Updates,
-		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, registryClient: opts.RegistryClient, isAdmin: opts.Admin,
+		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, usage: opts.Usage, registryClient: opts.RegistryClient, isAdmin: opts.Admin,
 		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, recreating: map[string]bool{},
 		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{},
 		checks: make(chan struct{}, maxStackChecks),
@@ -181,6 +184,7 @@ func New(opts Options) http.Handler {
 	api.HandleFunc("GET /api/v1/environments/{env}/volumes", s.listVolumes)
 	api.HandleFunc("POST /api/v1/environments/{env}/volumes", s.createVolume)
 	api.HandleFunc("POST /api/v1/environments/{env}/volumes/prune", s.pruneVolumes)
+	api.HandleFunc("POST /api/v1/environments/{env}/volumes/usage", s.measureVolumes)
 	api.HandleFunc("GET /api/v1/environments/{env}/volumes/{id}", s.getVolume)
 	api.HandleFunc("DELETE /api/v1/environments/{env}/volumes/{id}", s.removeVolume)
 	api.HandleFunc("GET /api/v1/environments/{env}/networks", s.listNetworks)
@@ -237,6 +241,7 @@ type server struct {
 	webhooks *notify.Service
 	// deployHooks are the deploy webhooks.
 	deployHooks *deployhooks.Service
+	usage       *usage.Service
 	// done ends at shutdown (Options.Context).
 	done context.Context
 	// events fans each environment's Docker events out to the clients watching it.
