@@ -162,7 +162,7 @@ func TestSSOUserRole(t *testing.T) {
 	if me := do(t, h, request{method: http.MethodGet, path: "/api/v1/auth/me", cookie: session}); !strings.Contains(me.Body.String(), `"role":"user"`) {
 		t.Errorf("me = %d %s", me.Code, me.Body)
 	}
-	if rec := do(t, h, request{method: http.MethodGet, path: "/api/v1/environments", cookie: session}); rec.Code != http.StatusForbidden {
+	if rec := do(t, h, request{method: http.MethodGet, path: "/api/v1/registries", cookie: session}); rec.Code != http.StatusForbidden {
 		t.Errorf("user on an admin route = %d", rec.Code)
 	}
 

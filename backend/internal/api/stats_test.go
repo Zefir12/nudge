@@ -417,16 +417,16 @@ func TestEnvironmentSummary(t *testing.T) {
 func TestEnvironmentSummaryEviction(t *testing.T) {
 	t.Parallel()
 	clock := &fakeClock{now: time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)}
-	s := &server{summaries: map[int64]*summaryEntry{}, now: clock.Now}
-	s.storeSummary(1, environmentStats{})
+	s := &server{summaries: map[summaryKey]*summaryEntry{}, now: clock.Now}
+	s.storeSummary(summaryKey{env: 1}, environmentStats{})
 	clock.Add(summaryKeep)
-	s.storeSummary(2, environmentStats{})
+	s.storeSummary(summaryKey{env: 2}, environmentStats{})
 	if len(s.summaries) != 2 {
 		t.Fatalf("summaries = %d, want 2 before summaryKeep passed", len(s.summaries))
 	}
 	clock.Add(time.Second)
-	s.storeSummary(2, environmentStats{})
-	if _, ok := s.summaries[1]; ok || len(s.summaries) != 1 {
+	s.storeSummary(summaryKey{env: 2}, environmentStats{})
+	if _, ok := s.summaries[summaryKey{env: 1}]; ok || len(s.summaries) != 1 {
 		t.Errorf("summaries = %v, want only environment 2", s.summaries)
 	}
 }

@@ -50,13 +50,19 @@ type networkContainerResponse struct {
 
 func (s *server) listNetworks(w http.ResponseWriter, r *http.Request) {
 	s.dockerCall(w, r, "list networks", func(ctx context.Context, c docker.Client) (any, error) {
-		res, err := c.NetworkList(ctx, client.NetworkListOptions{})
+		sc, err := s.scopeOf(ctx)
 		if err != nil {
 			return nil, err
 		}
-		resp := make([]networkResponse, len(res.Items))
-		for i, n := range res.Items {
-			resp[i] = toNetwork(n.Network)
+		res, err := c.NetworkList(ctx, client.NetworkListOptions{Filters: sc.filters(nil)})
+		if err != nil {
+			return nil, err
+		}
+		resp := []networkResponse{}
+		for _, n := range res.Items {
+			if sc.owns(n.Labels) {
+				resp = append(resp, toNetwork(n.Network))
+			}
 		}
 		sortBy(resp, func(n networkResponse) string { return n.Name })
 		return resp, nil
@@ -69,13 +75,39 @@ func (s *server) getNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.dockerCall(w, r, "network", func(ctx context.Context, c docker.Client) (any, error) {
+		sc, err := s.scopeOf(ctx)
+		if err != nil {
+			return nil, err
+		}
 		res, err := c.NetworkInspect(ctx, id, client.NetworkInspectOptions{})
 		if err != nil {
 			return nil, err
 		}
 		n := res.Network
+		if !sc.owns(n.Labels) {
+			return nil, docker.ErrNotFound
+		}
+		// A user's network may have other owners' containers attached: list only theirs.
+		var mine map[string]bool
+		if !sc.all {
+			list, err := c.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: sc.filters(nil)})
+			if err != nil {
+				return nil, err
+			}
+			items, err := sc.ownedContainers(ctx, c, list.Items)
+			if err != nil {
+				return nil, err
+			}
+			mine = map[string]bool{}
+			for _, it := range items {
+				mine[it.ID] = true
+			}
+		}
 		resp := networkDetailResponse{networkResponse: toNetwork(n.Network), Options: nonNilMap(n.Options), Containers: []networkContainerResponse{}}
 		for _, id := range sortedKeys(n.Containers) {
+			if mine != nil && !mine[id] {
+				continue
+			}
 			ep := n.Containers[id]
 			nc := networkContainerResponse{ID: id, Name: ep.Name, MacAddress: ep.MacAddress.String()}
 			if ep.IPv4Address.IsValid() {
@@ -154,6 +186,9 @@ func (s *server) createNetwork(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, msg)
 		return
 	}
+	if s.refuseReservedLabels(w, req.Labels) {
+		return
+	}
 	ipam, msg := toIPAM(req)
 	if msg != "" {
 		s.writeError(w, http.StatusBadRequest, msg)
@@ -167,6 +202,11 @@ func (s *server) createNetwork(w http.ResponseWriter, r *http.Request) {
 		opts.EnableIPv6 = &req.IPv6
 	}
 	resp, ok := s.runDocker(context.WithoutCancel(r.Context()), w, r, "network create", "a network with this name already exists", networkTimeout, func(ctx context.Context, c docker.Client) (any, error) {
+		labels, err := s.ownerLabels(ctx, opts.Labels)
+		if err != nil {
+			return nil, err
+		}
+		opts.Labels = labels
 		res, err := c.NetworkCreate(ctx, req.Name, opts)
 		if err != nil {
 			return nil, createError(err, "network")
@@ -217,7 +257,11 @@ func (s *server) removeNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.dockerAction(w, r, "network", "the network has containers attached or is one of Docker's predefined networks", networkTimeout, func(ctx context.Context, c docker.Client) error {
-		_, err := c.NetworkRemove(ctx, id, client.NetworkRemoveOptions{})
+		id, err := s.ownedNetwork(ctx, c, id)
+		if err != nil {
+			return err
+		}
+		_, err = c.NetworkRemove(ctx, id, client.NetworkRemoveOptions{})
 		if docker.Forbidden(err) {
 			return docker.ErrConflict
 		}

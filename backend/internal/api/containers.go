@@ -125,12 +125,21 @@ func (s *server) listContainers(w http.ResponseWriter, r *http.Request) {
 		opts.Filters = make(client.Filters).Add("status", state)
 	}
 	s.dockerCall(w, r, "list containers", func(ctx context.Context, c docker.Client) (any, error) {
+		sc, err := s.scopeOf(ctx)
+		if err != nil {
+			return nil, err
+		}
+		opts.Filters = sc.filters(opts.Filters)
 		res, err := c.ContainerList(ctx, opts)
 		if err != nil {
 			return nil, err
 		}
-		resp := make([]containerSummaryResponse, len(res.Items))
-		for i, c := range res.Items {
+		items, err := sc.ownedContainers(ctx, c, res.Items)
+		if err != nil {
+			return nil, err
+		}
+		resp := make([]containerSummaryResponse, len(items))
+		for i, c := range items {
 			resp[i] = toContainerSummary(c)
 		}
 		return resp, nil
@@ -143,11 +152,11 @@ func (s *server) getContainer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.dockerCall(w, r, "container", func(ctx context.Context, c docker.Client) (any, error) {
-		res, err := c.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
+		ct, _, err := s.ownedContainer(ctx, c, id)
 		if err != nil {
 			return nil, err
 		}
-		return toContainerDetail(res.Container), nil
+		return toContainerDetail(ct), nil
 	})
 }
 
@@ -168,7 +177,11 @@ func (s *server) startContainer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.dockerAction(w, r, "container", "the container cannot be started in its current state", dockerTimeout, func(ctx context.Context, c docker.Client) error {
-		_, err := c.ContainerStart(ctx, id, client.ContainerStartOptions{})
+		id, err := s.ownedContainerID(ctx, c, id)
+		if err != nil {
+			return err
+		}
+		_, err = c.ContainerStart(ctx, id, client.ContainerStartOptions{})
 		return err
 	})
 }
@@ -183,7 +196,11 @@ func (s *server) stopContainer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.dockerAction(w, r, "container", "the container cannot be stopped in its current state", wait, func(ctx context.Context, c docker.Client) error {
-		_, err := c.ContainerStop(ctx, id, client.ContainerStopOptions{Timeout: timeout})
+		id, err := s.ownedContainerID(ctx, c, id)
+		if err != nil {
+			return err
+		}
+		_, err = c.ContainerStop(ctx, id, client.ContainerStopOptions{Timeout: timeout})
 		return err
 	})
 }
@@ -198,7 +215,11 @@ func (s *server) restartContainer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.dockerAction(w, r, "container", "the container cannot be restarted in its current state", wait, func(ctx context.Context, c docker.Client) error {
-		_, err := c.ContainerRestart(ctx, id, client.ContainerRestartOptions{Timeout: timeout})
+		id, err := s.ownedContainerID(ctx, c, id)
+		if err != nil {
+			return err
+		}
+		_, err = c.ContainerRestart(ctx, id, client.ContainerRestartOptions{Timeout: timeout})
 		return err
 	})
 }
@@ -214,7 +235,11 @@ func (s *server) killContainer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.dockerAction(w, r, "container", "the container cannot be killed in its current state (is it running?)", dockerTimeout, func(ctx context.Context, c docker.Client) error {
-		_, err := c.ContainerKill(ctx, id, client.ContainerKillOptions{Signal: signal})
+		id, err := s.ownedContainerID(ctx, c, id)
+		if err != nil {
+			return err
+		}
+		_, err = c.ContainerKill(ctx, id, client.ContainerKillOptions{Signal: signal})
 		if docker.InvalidArgument(err) {
 			return &badRequestError{msg: "unknown signal " + strconv.Quote(signal)}
 		}
@@ -241,7 +266,11 @@ func (s *server) removeContainer(w http.ResponseWriter, r *http.Request) {
 		wait = defaultStopWait
 	}
 	s.dockerAction(w, r, "container", "the container is running: stop it first, or remove it with force=true", wait, func(ctx context.Context, c docker.Client) error {
-		_, err := c.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: force, RemoveVolumes: volumes})
+		id, err := s.ownedContainerID(ctx, c, id)
+		if err != nil {
+			return err
+		}
+		_, err = c.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: force, RemoveVolumes: volumes})
 		return err
 	})
 }

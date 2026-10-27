@@ -163,6 +163,8 @@ func (sp *containerSpec) validate() map[string]string {
 	}
 	if hasEmptyKey(sp.Labels) {
 		errs["labels"] = "label names must not be empty"
+	} else if reservedLabel(sp.Labels) {
+		errs["labels"] = "labels starting with " + reservedLabels + " are reserved for nudge"
 	}
 	return errs
 }
@@ -322,7 +324,9 @@ func toSpec(ct container.InspectResponse) containerSpec {
 		Command: []string{}, Env: []string{}, Networks: []string{}, Labels: map[string]string{},
 	}
 	if cfg := ct.Config; cfg != nil {
-		sp.Image, sp.Command, sp.Env, sp.Labels = cfg.Image, nonNil(cfg.Cmd), nonNil(cfg.Env), nonNilMap(cfg.Labels)
+		sp.Image, sp.Command, sp.Env, sp.Labels = cfg.Image, nonNil(cfg.Cmd), nonNil(cfg.Env), nonNilMap(maps.Clone(cfg.Labels))
+		// nudge's own labels (the owner) aren't settings; a recreate keeps them.
+		maps.DeleteFunc(sp.Labels, func(k, _ string) bool { return reservedKey(k) })
 	}
 	if hc := ct.HostConfig; hc != nil {
 		sp.RestartPolicy = string(hc.RestartPolicy.Name)
@@ -377,6 +381,11 @@ func (s *server) createContainer(w http.ResponseWriter, r *http.Request) {
 	resp, ok := s.runDocker(context.WithoutCancel(r.Context()), w, r, "container create", "", createTimeout, func(ctx context.Context, c docker.Client) (any, error) {
 		cfg, hc, nc := &container.Config{}, &container.HostConfig{}, &network.NetworkingConfig{}
 		req.apply(cfg, hc, nc, nil)
+		labels, err := s.ownerLabels(ctx, cfg.Labels)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Labels = labels
 		res, err := c.ContainerCreate(ctx, client.ContainerCreateOptions{Name: req.Name, Config: cfg, HostConfig: hc, NetworkingConfig: nc})
 		if err != nil {
 			return nil, refusal(err, "created", req.Env)
@@ -400,11 +409,10 @@ func (s *server) getContainerSpec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.dockerCall(w, r, "container", func(ctx context.Context, c docker.Client) (any, error) {
-		res, err := c.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
+		ct, _, err := s.ownedContainer(ctx, c, id)
 		if err != nil {
 			return nil, err
 		}
-		ct := res.Container
 		if ct.Config != nil {
 			img, err := imageConfig(ctx, c, ct.Image)
 			if err != nil {
@@ -505,6 +513,11 @@ func (e *dockerFailure) Unwrap() error { return e.err }
 func (s *server) beginReplace(w http.ResponseWriter, r *http.Request, id string) (*replacement, bool) {
 	env, c, ok := s.environment(w, r)
 	if !ok {
+		return nil, false
+	}
+	id, err := s.ownedContainerID(r.Context(), c, id)
+	if err != nil {
+		s.replaceError(w, r, env, err)
 		return nil, false
 	}
 	rp, err := s.startReplace(r.Context(), env, c, id)
@@ -637,7 +650,17 @@ func (s *server) replace(ctx context.Context, c docker.Client, old container.Ins
 	cfg, hc, nc := recreateSettings(old)
 	dropImageDefaults(cfg, img)
 	if spec != nil {
+		// The spec can't set nudge's own labels (the owner): keep the old container's.
+		kept := maps.Clone(cfg.Labels)
+		maps.DeleteFunc(kept, func(k, _ string) bool { return !reservedKey(k) })
 		spec.apply(cfg, hc, nc, nc.EndpointsConfig)
+		if len(kept) > 0 {
+			cfg.Labels = maps.Clone(cfg.Labels)
+			if cfg.Labels == nil {
+				cfg.Labels = map[string]string{}
+			}
+			maps.Copy(cfg.Labels, kept)
+		}
 		if spec.Name != "" {
 			name = spec.Name
 		}
