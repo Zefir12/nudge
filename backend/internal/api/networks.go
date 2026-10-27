@@ -219,6 +219,13 @@ func (s *server) createNetwork(w http.ResponseWriter, r *http.Request) {
 		opts.EnableIPv6 = &req.IPv6
 	}
 	resp, ok := s.runDocker(context.WithoutCancel(r.Context()), w, r, "network create", "a network with this name already exists", networkTimeout, func(ctx context.Context, c docker.Client) (any, error) {
+		if !admin {
+			unlock, err := s.roomForNetwork(ctx, c, envID(r), u.ID)
+			if err != nil {
+				return nil, err
+			}
+			defer unlock()
+		}
 		labels, err := s.ownerLabels(ctx, opts.Labels)
 		if err != nil {
 			return nil, err

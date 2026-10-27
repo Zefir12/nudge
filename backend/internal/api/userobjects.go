@@ -27,6 +27,48 @@ func userPrefix(id int64) string { return "u" + strconv.FormatInt(id, 10) + "-" 
 // given an environment.
 func defaultNetwork(id int64) string { return "nudge-u-" + strconv.FormatInt(id, 10) }
 
+// maxUserNetworks bounds a user's networks in an environment, their default one included:
+// each bridge takes a subnet from the daemon's address pools, which a few dozen exhaust for
+// everyone on the host.
+const maxUserNetworks = 8
+
+// roomForNetwork takes user id's lock in env (their creates run one at a time) and returns
+// its unlock if they may create another network, else a 409.
+func (s *server) roomForNetwork(ctx context.Context, c docker.Client, env, id int64) (func(), error) {
+	unlock, err := s.allowances.Lock(ctx, id, env)
+	if err != nil {
+		return nil, err
+	}
+	n, err := s.ownedNetworks(ctx, c)
+	if err == nil && n >= maxUserNetworks {
+		err = &statusError{code: http.StatusConflict, msg: fmt.Sprintf("you have %d networks here, the most a user may have: remove one first", n)}
+	}
+	if err != nil {
+		unlock()
+		return nil, err
+	}
+	return unlock, nil
+}
+
+// ownedNetworks counts the request's user's networks.
+func (s *server) ownedNetworks(ctx context.Context, c docker.Client) (int, error) {
+	sc, err := s.scopeOf(ctx)
+	if err != nil {
+		return 0, err
+	}
+	res, err := c.NetworkList(ctx, client.NetworkListOptions{Filters: sc.filters(nil)})
+	if err != nil {
+		return 0, fmt.Errorf("list networks: %w", err)
+	}
+	n := 0
+	for _, it := range res.Items {
+		if sc.owns(it.Labels) {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // requestUser returns the request's user, and whether they are an admin.
 func requestUser(r *http.Request) (auth.User, bool, error) {
 	u, ok := userFrom(r.Context())

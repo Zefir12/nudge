@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -90,6 +91,36 @@ func TestUserCreates(t *testing.T) {
 				t.Errorf("%s: labels %v, want %v", tt.name, labels, tt.labels)
 			}
 		}
+	}
+}
+
+// A user has at most maxUserNetworks networks in an environment.
+func TestUserNetworkLimit(t *testing.T) {
+	t.Parallel()
+	ot := newOwnTest(t)
+	// Bob owns "mine"; fill up to one below the limit.
+	for i := range maxUserNetworks - 2 {
+		n := network.Network{ID: fmt.Sprint("n", i), Name: fmt.Sprint("n", i), Labels: map[string]string{ownerLabel: ot.bobKey}}
+		ot.fake.Networks = append(ot.fake.Networks, network.Summary{Network: n})
+	}
+	create := func() *httptest.ResponseRecorder {
+		return do(t, ot.h, request{method: "POST", path: ot.path(ot.local, "/networks"), cookie: ot.bob, body: `{"name":"web"}`})
+	}
+	if rec := create(); rec.Code != http.StatusCreated {
+		t.Fatalf("create below the limit = %d %s", rec.Code, rec.Body)
+	}
+	n := network.Network{ID: "last", Name: "last", Labels: map[string]string{ownerLabel: ot.bobKey}}
+	ot.fake.Networks = append(ot.fake.Networks, network.Summary{Network: n})
+	before := len(ot.fake.Actions())
+	if rec := create(); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "the most a user may have") {
+		t.Errorf("create at the limit = %d %s, want 409", rec.Code, rec.Body)
+	}
+	if len(ot.fake.Actions()) != before {
+		t.Errorf("actions = %+v, want no create", ot.fake.Actions()[before:])
+	}
+	// Admins have no limit.
+	if rec := do(t, ot.h, request{method: "POST", path: ot.path(ot.local, "/networks"), cookie: ot.admin, body: `{"name":"web"}`}); rec.Code != http.StatusCreated {
+		t.Errorf("admin create = %d %s", rec.Code, rec.Body)
 	}
 }
 
