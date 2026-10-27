@@ -624,6 +624,42 @@ export const recreateContainer = (
   opts: { pull?: boolean; spec?: ContainerSpec } = {},
 ) => apiFetch<CreatedContainer>(envPath(env, `/containers/${enc(id)}/recreate`), post(opts));
 
+// TenantSpec is a user's container: the server builds Docker's settings from it, checked
+// against the allowance. name is without the user's prefix; host_port 0 takes a free one
+// of the user's range; mounts and networks name the user's own volumes and networks.
+export interface TenantSpec {
+  image: string;
+  name: string;
+  command: string[];
+  entrypoint: string[];
+  env: string[];
+  cpus_milli: number;
+  memory_bytes: number;
+  ports: { host_port: number; container_port: number; protocol: string }[];
+  mounts: { volume: string; target: string; read_only: boolean }[];
+  networks: string[];
+  restart_policy: string;
+  // healthcheck null keeps the image's.
+  healthcheck: TenantHealth | null;
+  labels: Record<string, string>;
+}
+
+export interface TenantHealth {
+  command: string[];
+  interval_seconds: number;
+  timeout_seconds: number;
+  start_period_seconds: number;
+  retries: number;
+}
+
+export const createTenantContainer = (env: string, spec: TenantSpec, start: boolean) =>
+  apiFetch<CreatedContainer>(envPath(env, '/user-containers'), post({ ...spec, start }));
+export const getTenantSpec = (env: string, id: string) =>
+  apiFetch<TenantSpec>(envPath(env, `/user-containers/${enc(id)}/spec`));
+// recreateTenantContainer pulls the image and replaces the container with spec's settings.
+export const recreateTenantContainer = (env: string, id: string, spec: TenantSpec) =>
+  apiFetch<CreatedContainer>(envPath(env, `/user-containers/${enc(id)}/recreate`), post(spec));
+
 // UpdatedContainer is the outcome of an update: updated is false when the registry had
 // nothing newer and the container was left alone; id is the (new) container's.
 export interface UpdatedContainer {

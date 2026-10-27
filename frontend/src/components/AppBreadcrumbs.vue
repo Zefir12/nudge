@@ -13,6 +13,8 @@ const sectionOf: Record<string, { label: string; list: string }> = {
   'container-new': { label: 'Containers', list: 'containers' },
   container: { label: 'Containers', list: 'containers' },
   'container-edit': { label: 'Containers', list: 'containers' },
+  'tenant-deploy': { label: 'Containers', list: 'containers' },
+  'tenant-edit': { label: 'Containers', list: 'containers' },
   images: { label: 'Images', list: 'images' },
   image: { label: 'Images', list: 'images' },
   volumes: { label: 'Volumes', list: 'volumes' },

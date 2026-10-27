@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { computed } from 'vue';
 import { RouterLink } from 'vue-router';
 
-import { getEnvironment, listNetworks, listVolumes } from '../api/client';
+import { getAllowance, getEnvironment, listNetworks, listVolumes } from '../api/client';
+import AllowanceUsage from '../components/AllowanceUsage.vue';
 import EnvironmentUsage from '../components/EnvironmentUsage.vue';
 import KeyValues from '../components/KeyValues.vue';
 import LoadState from '../components/LoadState.vue';
@@ -10,17 +12,22 @@ import RecentEvents from '../components/RecentEvents.vue';
 import { useLoad } from '../composables/useLoad';
 import { useParams } from '../composables/params';
 import { formatBytes } from '../format';
+import { currentUser } from '../session';
 
 const { env } = useParams();
+// A user's overview is about their own things: their allowance instead of images, the
+// host and what needs an admin's attention.
+const isAdmin = computed(() => !!currentUser.value?.admin);
 
 // Docker's info has container and image counts; volumes and networks need their lists.
 const { data, error, reload } = useLoad(env, async (id) => {
-  const [detail, volumes, networks] = await Promise.all([
+  const [detail, volumes, networks, allowance] = await Promise.all([
     getEnvironment(id),
     listVolumes(id),
     listNetworks(id),
+    isAdmin.value ? null : getAllowance(id),
   ]);
-  return { detail, volumes: volumes.length, networks: networks.length };
+  return { detail, volumes: volumes.length, networks: networks.length, allowance };
 });
 </script>
 
@@ -30,7 +37,7 @@ const { data, error, reload } = useLoad(env, async (id) => {
     <h1>{{ data?.detail.name ?? 'Dashboard' }}</h1>
     <span v-if="data" class="chip">{{ data.detail.kind === 'local' ? 'socket' : 'agent' }}</span>
   </div>
-  <p v-if="data" class="host">
+  <p v-if="data && isAdmin" class="host">
     Docker {{ data.detail.docker.version }} · {{ data.detail.docker.os_type }}/{{
       data.detail.docker.architecture
     }}
@@ -38,6 +45,18 @@ const { data, error, reload } = useLoad(env, async (id) => {
   </p>
   <LoadState :loading="!data" :error="error" :ready="data !== null" @retry="reload">
     <template v-if="data">
+      <section v-if="data.allowance" class="card">
+        <div class="allowance-head">
+          <h2>Your allowance</h2>
+          <RouterLink
+            v-if="data.allowance.limits"
+            class="button primary"
+            :to="{ name: 'tenant-deploy', params: { env } }"
+            >Deploy</RouterLink
+          >
+        </div>
+        <AllowanceUsage :allowance="data.allowance" />
+      </section>
       <section class="counts">
         <RouterLink class="count" :to="{ name: 'containers', params: { env } }">
           <span class="label">Containers</span>
@@ -50,7 +69,7 @@ const { data, error, reload } = useLoad(env, async (id) => {
             </template>
           </span>
         </RouterLink>
-        <RouterLink class="count" :to="{ name: 'images', params: { env } }">
+        <RouterLink v-if="isAdmin" class="count" :to="{ name: 'images', params: { env } }">
           <span class="label">Images</span>
           <span class="number">{{ data.detail.docker.images }}</span>
         </RouterLink>
@@ -64,11 +83,11 @@ const { data, error, reload } = useLoad(env, async (id) => {
         </RouterLink>
       </section>
       <div v-if="data.detail.online" class="panels">
-        <NeedsAttention :env="env" />
+        <NeedsAttention v-if="isAdmin" :env="env" />
         <RecentEvents :env="env" />
       </div>
       <EnvironmentUsage :env="env" />
-      <section class="card">
+      <section v-if="isAdmin" class="card">
         <h2>Host</h2>
         <KeyValues
           :rows="[
@@ -91,6 +110,19 @@ const { data, error, reload } = useLoad(env, async (id) => {
 </template>
 
 <style scoped>
+.allowance-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.allowance-head h2 {
+  margin: 0;
+}
+
 .head {
   display: flex;
   flex-wrap: wrap;

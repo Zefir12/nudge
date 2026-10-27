@@ -32,6 +32,7 @@ import StackNewView from './views/StackNewView.vue';
 import StacksView from './views/StacksView.vue';
 import StackView from './views/StackView.vue';
 import SetupView from './views/SetupView.vue';
+import TenantDeployView from './views/TenantDeployView.vue';
 import TokensView from './views/TokensView.vue';
 import UsersView from './views/UsersView.vue';
 import VolumesView from './views/VolumesView.vue';
@@ -55,22 +56,35 @@ export function createAppRouter(history: RouterHistory) {
     routes: [
       // The start page opens an environment; each environment's pages live under /env/:env.
       { path: '/', name: 'dashboard', component: HomeView },
-      { path: '/env/:env', name: 'env', component: DashboardView },
-      { path: '/env/:env/containers', name: 'containers', component: ContainersView },
+      { path: '/env/:env', name: 'env', component: DashboardView, meta: { users: true } },
+      { path: '/env/:env/containers', name: 'containers', component: ContainersView, meta: { users: true } },
       { path: '/env/:env/containers/new', name: 'container-new', component: ContainerFormView },
-      { path: '/env/:env/containers/:id', name: 'container', component: ContainerView },
+      {
+        path: '/env/:env/containers/:id',
+        name: 'container',
+        component: ContainerView,
+        meta: { users: true },
+      },
       { path: '/env/:env/containers/:id/edit', name: 'container-edit', component: ContainerFormView },
+      // A user's containers go through the tenant form, built by the server from a strict spec.
+      { path: '/env/:env/deploy', name: 'tenant-deploy', component: TenantDeployView, meta: { users: true } },
+      {
+        path: '/env/:env/containers/:id/redeploy',
+        name: 'tenant-edit',
+        component: TenantDeployView,
+        meta: { users: true },
+      },
       { path: '/env/:env/images', name: 'images', component: ImagesView },
       { path: '/env/:env/images/:id', name: 'image', component: ImageView },
-      { path: '/env/:env/volumes', name: 'volumes', component: VolumesView },
-      { path: '/env/:env/volumes/:id', name: 'volume', component: VolumeView },
-      { path: '/env/:env/networks', name: 'networks', component: NetworksView },
-      { path: '/env/:env/networks/:id', name: 'network', component: NetworkView },
+      { path: '/env/:env/volumes', name: 'volumes', component: VolumesView, meta: { users: true } },
+      { path: '/env/:env/volumes/:id', name: 'volume', component: VolumeView, meta: { users: true } },
+      { path: '/env/:env/networks', name: 'networks', component: NetworksView, meta: { users: true } },
+      { path: '/env/:env/networks/:id', name: 'network', component: NetworkView, meta: { users: true } },
       { path: '/env/:env/stacks', name: 'stacks', component: StacksView },
       // Not under stacks/: "new" is a valid stack name.
       { path: '/env/:env/new-stack', name: 'stack-new', component: StackNewView },
       { path: '/env/:env/stacks/:id', name: 'stack', component: StackView },
-      { path: '/env/:env/events', name: 'events', component: EventsView },
+      { path: '/env/:env/events', name: 'events', component: EventsView, meta: { users: true } },
       { path: '/environments', name: 'environments', component: EnvironmentsView },
       { path: '/deployments', name: 'deployments', component: DeploymentsView, meta: { users: true } },
       { path: '/deployments/:name', name: 'deployment', component: DeploymentView, meta: { users: true } },
