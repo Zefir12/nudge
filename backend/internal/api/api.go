@@ -78,6 +78,8 @@ type Options struct {
 	// After is time.After outside tests: the deployments' stability window and the
 	// keepalives of their progress streams.
 	After func(time.Duration) <-chan time.Time
+	// Now is time.Now outside tests: the age of the environments' usage summaries.
+	Now func() time.Time
 	// TrustedProxies are the reverse proxies whose X-Forwarded-For (client IP for the
 	// login limiter and logs) and X-Forwarded-Proto are believed; empty means none.
 	TrustedProxies []netip.Prefix
@@ -115,7 +117,7 @@ func New(opts Options) http.Handler {
 		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries, audit: opts.Audit, updates: opts.Updates,
 		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, deployments: opts.Deployments, usage: opts.Usage, registryClient: opts.RegistryClient, isAdmin: opts.Admin,
 		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, recreating: map[string]bool{},
-		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{},
+		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{}, summaries: map[int64]*summaryEntry{},
 		checks: make(chan struct{}, maxStackChecks),
 		done:   context.Background(),
 	}
@@ -134,6 +136,10 @@ func New(opts Options) http.Handler {
 	s.after = opts.After
 	if s.after == nil {
 		s.after = time.After
+	}
+	s.now = opts.Now
+	if s.now == nil {
+		s.now = time.Now
 	}
 	if s.stackRunner == nil {
 		s.stackRunner = func(environments.Environment) stacks.Runner { return nil }
@@ -187,6 +193,7 @@ func New(opts Options) http.Handler {
 	api.HandleFunc("GET /api/v1/environments/{env}/containers/{id}/stats", s.containerStats)
 	api.HandleFunc("GET /api/v1/environments/{env}/containers/{id}/exec", s.containerExec)
 	api.HandleFunc("GET /api/v1/environments/{env}/stats", s.environmentStats)
+	api.HandleFunc("GET /api/v1/environments/{env}/stats/summary", s.environmentSummary)
 	api.HandleFunc("GET /api/v1/environments/{env}/events", s.environmentEvents)
 	api.HandleFunc("GET /api/v1/environments/{env}/images", s.listImages)
 	api.HandleFunc("POST /api/v1/environments/{env}/images/pull", s.pullImage)
@@ -294,8 +301,12 @@ type server struct {
 	recreating map[string]bool
 	// stackBusy holds stackKey of the stacks being changed or deployed now.
 	stackBusy map[string]bool
+	// summaries holds each environment's last usage totals, by environment ID.
+	summaries map[int64]*summaryEntry
 	// after is Options.After.
 	after func(time.Duration) <-chan time.Time
+	// now is Options.Now.
+	now func() time.Time
 }
 
 // protect requires a session or an API token for every route outside publicRoutes.

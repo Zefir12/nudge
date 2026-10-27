@@ -813,6 +813,18 @@ export interface EnvironmentStats {
 export const getEnvironmentStats = (env: string, signal?: AbortSignal) =>
   apiFetch<EnvironmentStats>(envPath(env, '/stats'), { signal });
 
+// UsageSummary is an environment's usage totals from its last overview: CPU as a
+// percentage of one CPU, memory without the page cache, over `containers` sampled.
+export interface UsageSummary {
+  sampled_at: string;
+  cpu_percent: number;
+  memory_usage: number;
+  containers: number;
+}
+
+// getEnvironmentSummary answers the environment's usage totals, sampled at most every 30 s.
+export const getEnvironmentSummary = (env: string) => apiFetch<UsageSummary>(envPath(env, '/stats/summary'));
+
 // force also removes an image with several tags or used by stopped containers.
 export const removeImage = (env: string, id: string, force = false) =>
   apiFetch<void>(envPath(env, `/images/${enc(id)}${force ? '?force=true' : ''}`), { method: 'DELETE' });

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -199,60 +200,73 @@ type environmentStats struct {
 	Total      usageTotals      `json:"total"`
 }
 
-// environmentStats takes one sample of every running container, sorted by name.
+// environmentStats answers one sample of every running container and keeps the totals
+// as the environment's summary.
 func (s *server) environmentStats(w http.ResponseWriter, r *http.Request) {
 	resp, ok := s.runDocker(r.Context(), w, r, "environment stats", "", statsTimeout, func(ctx context.Context, c docker.Client) (any, error) {
-		list, err := c.ContainerList(ctx, client.ContainerListOptions{})
+		stats, err := s.sampleEnvironment(ctx, c)
 		if err != nil {
 			return nil, err
 		}
-		usage := make([]*containerUsage, len(list.Items))
-		sem := make(chan struct{}, maxConcurrentStats)
-		var wg sync.WaitGroup
-	sample:
-		for i, item := range list.Items {
-			select {
-			case sem <- struct{}{}:
-			case <-ctx.Done():
-				break sample
-			}
-			wg.Go(func() {
-				defer func() { <-sem }()
-				sample, err := oneSample(ctx, c, item.ID)
-				if err != nil {
-					s.log.Debug("environment stats: container", "container", item.ID, "err", err)
-					return
-				}
-				u := containerUsage{ID: item.ID, statsSample: sample}
-				if len(item.Names) > 0 {
-					u.Name = strings.TrimPrefix(item.Names[0], "/")
-				}
-				usage[i] = &u
-			})
+		if id, err := strconv.ParseInt(r.PathValue("env"), 10, 64); err == nil && incomplete(ctx, stats) == nil {
+			s.storeSummary(id, stats)
 		}
-		wg.Wait()
-		resp := environmentStats{Containers: []containerUsage{}}
-		for _, u := range usage {
-			if u == nil {
-				resp.Skipped++
-				continue
-			}
-			resp.Containers = append(resp.Containers, *u)
-			resp.Total.CPUPercent += u.CPUPercent
-			resp.Total.MemoryUsage += u.MemoryUsage
-			resp.Total.NetworkRx += u.NetworkRx
-			resp.Total.NetworkTx += u.NetworkTx
-			resp.Total.BlockRead += u.BlockRead
-			resp.Total.BlockWrite += u.BlockWrite
-		}
-		slices.SortFunc(resp.Containers, func(a, b containerUsage) int {
-			return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.ID, b.ID))
-		})
-		return resp, nil
+		return stats, nil
 	})
 	if ok {
 		s.writeJSON(w, http.StatusOK, resp)
 	}
+}
+
+// sampleEnvironment takes one sample of every running container, sorted by name.
+func (s *server) sampleEnvironment(ctx context.Context, c docker.Client) (environmentStats, error) {
+	list, err := c.ContainerList(ctx, client.ContainerListOptions{})
+	if err != nil {
+		return environmentStats{}, err
+	}
+	usage := make([]*containerUsage, len(list.Items))
+	sem := make(chan struct{}, maxConcurrentStats)
+	var wg sync.WaitGroup
+sample:
+	for i, item := range list.Items {
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			break sample
+		}
+		wg.Go(func() {
+			defer func() { <-sem }()
+			sample, err := oneSample(ctx, c, item.ID)
+			if err != nil {
+				s.log.Debug("environment stats: container", "container", item.ID, "err", err)
+				return
+			}
+			u := containerUsage{ID: item.ID, statsSample: sample}
+			if len(item.Names) > 0 {
+				u.Name = strings.TrimPrefix(item.Names[0], "/")
+			}
+			usage[i] = &u
+		})
+	}
+	wg.Wait()
+	resp := environmentStats{Containers: []containerUsage{}}
+	for _, u := range usage {
+		if u == nil {
+			resp.Skipped++
+			continue
+		}
+		resp.Containers = append(resp.Containers, *u)
+		resp.Total.CPUPercent += u.CPUPercent
+		resp.Total.MemoryUsage += u.MemoryUsage
+		resp.Total.NetworkRx += u.NetworkRx
+		resp.Total.NetworkTx += u.NetworkTx
+		resp.Total.BlockRead += u.BlockRead
+		resp.Total.BlockWrite += u.BlockWrite
+	}
+	slices.SortFunc(resp.Containers, func(a, b containerUsage) int {
+		return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.ID, b.ID))
+	})
+	return resp, nil
 }
 
 // oneSample asks the daemon for a sample with a previous reading, so the CPU percentage

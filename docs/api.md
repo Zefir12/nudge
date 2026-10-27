@@ -54,6 +54,7 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | GET | `/api/v1/environments/{env}/containers/{id}/stats` | session | WebSocket: a running container's usage, a sample about every second; see Stats |
 | GET | `/api/v1/environments/{env}/containers/{id}/exec` | session | WebSocket: a command with a terminal in a running container (audited); see Container exec |
 | GET | `/api/v1/environments/{env}/stats` | session | one usage sample of every running container, with totals; see Stats |
+| GET | `/api/v1/environments/{env}/stats/summary` | session | the environment's CPU and memory totals, sampled at most every 30 s; see Stats |
 | GET | `/api/v1/environments/{env}/events` | session | WebSocket: the environment's Docker events as they happen; see Events |
 | POST | `/api/v1/environments/{env}/images/pull` | session | pull `{"image": "nginx:1.29"}`, progress as JSON lines; see Image actions |
 | POST | `/api/v1/environments/{env}/images/prune` | session | remove untagged images, or with `?all=true` every unused one |
@@ -381,6 +382,15 @@ when the container stopped or `{"error": "..."}`.
 "block_write"}}`, sorted by name. It takes about a second (the daemon waits for a second
 reading) and samples 8 containers at a time, for at most a minute; a container that stops
 meanwhile, or isn't sampled in time, is left out and counted in `skipped`.
+
+`GET /api/v1/environments/{env}/stats/summary` answers `{"sampled_at": "...", "cpu_percent":
+200, "memory_usage": 536870912, "containers": 2}`: the totals of the environment's last
+overview and how many containers it sampled (running ones that stopped meanwhile are not
+counted). An overview cut short, or one that could sample none of the listed containers,
+is not kept. It is cheap to ask for often (the global
+dashboard asks for every environment's): a summary younger than 30 s is answered as it
+is, else the server samples like the overview (callers at the same time share one
+sampling) and answers when it is done. Every overview refreshes the summary too.
 
 ### Events
 `GET /api/v1/environments/{env}/events` upgrades to a WebSocket like the log stream (same
