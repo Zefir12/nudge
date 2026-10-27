@@ -24,6 +24,7 @@ import (
 	"github.com/moby/moby/client"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
+	"git.zefirlabs.net/zefir/nudge/backend/internal/allowances"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker/dockertest"
@@ -45,6 +46,8 @@ type ownTest struct {
 	bobKey, alice string
 	local, other  int64
 	srv           *httptest.Server
+	// allowances works on the API's database; bob's allowance in local is roomy.
+	allowances *allowances.Service
 }
 
 // ownedObjects are the names (and IDs) of the containers, volumes and networks in local.
@@ -59,7 +62,7 @@ func newOwnTest(t *testing.T) ownTest {
 	if _, err := svc.CreateFirstUser(ctx, "admin", "longenough"); err != nil {
 		t.Fatal(err)
 	}
-	ot := ownTest{h: h, svc: svc, fake: fake, msgs: msgs, errs: errs}
+	ot := ownTest{h: h, svc: svc, fake: fake, msgs: msgs, errs: errs, allowances: allowances.New(allowances.Options{DB: db})}
 	ot.admin = sessionCookieOf(t, do(t, h, request{method: "POST", path: "/api/v1/auth/login", body: adminCreds}))
 	ot.bob = addUser(t, h, ot.admin, "bob", auth.RoleUser)
 	addUser(t, h, ot.admin, "alice", auth.RoleUser)
@@ -121,7 +124,8 @@ func newOwnTest(t *testing.T) ownTest {
 		})
 		fake.ContainerDetails[name] = container.InspectResponse{
 			ID: name, Name: "/" + name, Image: img, State: &container.State{Running: true, Status: container.StateRunning},
-			Config: &container.Config{Image: "nginx:1", Labels: labels[name]}, HostConfig: &container.HostConfig{},
+			Config:     &container.Config{Image: "nginx:1", Labels: labels[name]},
+			HostConfig: &container.HostConfig{Resources: container.Resources{NanoCPUs: 500_000_000, Memory: 256 << 20}},
 		}
 		fake.Logs[name] = muxed("stdout", name+" says hello\n")
 		// Only a container's labels can come from an image: bob owns no "forged" volume or
@@ -136,6 +140,11 @@ func newOwnTest(t *testing.T) ownTest {
 		fake.NetworkDetails[name] = network.Inspect{Network: n, Containers: map[string]network.EndpointResource{
 			"mine": {Name: "mine"}, "admins": {Name: "admins"},
 		}}
+	}
+	if _, err := ot.allowances.Set(ctx, ot.bobID, ot.local, allowances.Allowance{
+		CPUsMilli: 4000, MemoryBytes: 8 << 30, DiskBytes: 100 << 30, MaxContainers: 10, PortMin: 8000, PortMax: 8999,
+	}); err != nil {
+		t.Fatal(err)
 	}
 	ot.srv = httptest.NewServer(h)
 	t.Cleanup(ot.srv.Close)

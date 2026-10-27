@@ -67,6 +67,9 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | GET | `/api/v1/environments/{env}/containers/{id}/exec` | user | WebSocket: a command with a terminal in a running container (audited); see Container exec |
 | GET | `/api/v1/environments/{env}/stats` | user | one usage sample of every running container, with totals; see Stats |
 | GET | `/api/v1/environments/{env}/stats/summary` | user | the environment's CPU and memory totals, sampled at most every 30 s; see Stats |
+| GET | `/api/v1/environments/{env}/allowance` | user | a user's allowance with what they use and what is left (admin: `?user=`); see Allowances |
+| PUT | `/api/v1/environments/{env}/allowance?user={id}` | session | set a user's allowance in the environment; see Allowances |
+| DELETE | `/api/v1/environments/{env}/allowance?user={id}` | session | remove it; `204`, `404` if there was none |
 | GET | `/api/v1/environments/{env}/events` | user | WebSocket: the environment's Docker events as they happen; see Events |
 | POST | `/api/v1/environments/{env}/images/pull` | session | pull `{"image": "nginx:1.29"}`, progress as JSON lines; see Image actions |
 | POST | `/api/v1/environments/{env}/images/prune` | session | remove untagged images, or with `?all=true` every unused one |
@@ -246,7 +249,8 @@ Users (role `user`) reach only what is theirs; admins reach everything.
   as if it did not exist. A container counts as theirs only if its image sets no owner
   label (Docker copies an image's labels onto its containers, so an image could otherwise
   hand a user a container an admin runs from it). Creating, recreating, images, stacks,
-  prunes, updates checks and webhooks stay with admins for now.
+  prunes, updates checks and webhooks stay with admins for now. Their own allowance
+  (see Allowances) is open to them too.
 - **Totals.** For a user, `GET /api/v1/environments/{env}` counts only their containers
   (`images` is `0`, `name` and `docker_root_dir` are empty), the stats overview and
   summary add up only their containers, and a network's detail lists only their
@@ -254,6 +258,47 @@ Users (role `user`) reach only what is theirs; admins reach everything.
 - **Events.** A user's event stream has only the events of their own containers: no
   volume, network, image or daemon events (they carry no owner), and none of a container
   that was already gone when the stream first saw it.
+
+### Allowances
+An admin gives each user (role `user`) an allowance per environment: what all their
+containers there may take together. Admins and their containers have none.
+
+`PUT /api/v1/environments/{env}/allowance?user={id}` takes and answers
+`{"cpus_milli": 1000, "memory_bytes": 8589934592, "disk_bytes": 21474836480,
+"max_containers": 5, "port_min": 8000, "port_max": 8009, "images": []}` (the answer adds
+`updated_at`). Every field is required and not negative; `port_min`..`port_max` are the
+host ports the user may publish (both `0`: none). `images` are patterns (`path.Match`
+syntax) of the images they may run, matched against the reference or its repository
+(`nginx` allows `nginx:1.29`, `ghcr.io/me/*` everything under it); empty allows any. An
+invalid allowance is `400` with `fields` (`port_max`, `images.0`), an admin as the user is
+`400 admins have no allowance`.
+
+`GET /api/v1/environments/{env}/allowance` answers a user's own (an admin passes
+`?user=`; a user asking for someone else is `403`): `{"user": 2, "limits": {...} | null,
+"used": {"cpus_milli", "memory_bytes", "disk_bytes", "containers"}, "left": {...} | null}`.
+It asks the environment's Docker host, so an offline one answers like any Docker call.
+
+**The check.** Before a user's container is created, recreated, updated (the API or a
+deploy webhook), started or restarted, nudge adds up the CPU and memory limits of all
+their containers in the environment, running or not (a stopped container can start), and
+refuses with `409 over your allowance: ...` if the new total is over:
+- Without an allowance a user's container can't be created or started (`409 you have no
+  allowance in this environment`).
+- The container needs a CPU and a memory limit; an existing one without counts as the
+  whole allowance. A recreate leaves the old container out, so a bigger limit counts as
+  the difference.
+- The container count includes it.
+- Host ports must be in the range; a binding without a host port gets the lowest one in
+  the range that no container uses.
+- Disk: the writable layers of their containers, the volumes they own or their containers
+  mount (anonymous ones from an image's `VOLUME` too; sizes from the last volume
+  measurement) and the images their pulls brought. Once that reaches the allowance, creates,
+  recreates and pulls are refused (a start is not). An image a user's pull brings counts
+  toward their disk; if it takes them over it is removed again and the change refused.
+  After an update, the image the container ran before is removed if their pull brought it
+  and nothing else uses it. Disk is not enforced by the kernel (yet).
+- Checks of one user in one environment run one at a time, through the create or start
+  they allow, so two parallel creates can't both fit in what is left for one.
 
 ### Agent environments
 - `POST /api/v1/environments` `{"name": "nas", "kind": "agent"}` creates an agent

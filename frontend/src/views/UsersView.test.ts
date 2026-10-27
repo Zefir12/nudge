@@ -150,4 +150,59 @@ describe('UsersView', () => {
     expect(saved).toEqual({ environments: [2] });
     expect(wrapper.find('form.access').exists()).toBe(false);
   });
+
+  it("edits a user's allowance per environment", async () => {
+    const usage = { cpus_milli: 500, memory_bytes: 256 * 1024 ** 2, disk_bytes: 0, containers: 1 };
+    let limits: object | null = null;
+    let sent: unknown;
+    stubApi({
+      'GET /users': { body: [adminAccount, bob] },
+      'GET /environments': {
+        body: [{ id: 4, name: 'shared', kind: 'local', online: true, created_at: '', last_seen_at: null }],
+      },
+      'GET /environments/4/allowance?user=2': () => ({ body: { user: 2, limits, used: usage, left: null } }),
+      'PUT /environments/4/allowance?user=2': (init) => {
+        sent = JSON.parse(String(init?.body));
+        limits = { ...(sent as object), updated_at: '2026-10-27T12:00:00Z' };
+        return { body: limits };
+      },
+      'DELETE /environments/4/allowance?user=2': () => {
+        limits = null;
+        return { status: 204 };
+      },
+    });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const wrapper = mountView();
+    await flushPromises();
+    expect(button(rowOf(wrapper, 'admin'), 'Allowance')).toBeUndefined();
+    await button(rowOf(wrapper, 'bob'), 'Allowance')!.trigger('click');
+    await flushPromises();
+    const form = wrapper.find('form.allowance');
+    expect(form.text()).toContain('Allowance of bob');
+    await form.find('input[name="cpus"]').setValue('1.5');
+    await form.find('input[name="memory"]').setValue('8192');
+    await form.find('input[name="disk"]').setValue('20');
+    await form.find('input[name="containers"]').setValue('5');
+    await form.find('input[name="port_min"]').setValue('8000');
+    await form.find('input[name="port_max"]').setValue('8009');
+    await form.find('textarea[name="images"]').setValue('nginx\n ghcr.io/me/* ');
+    await form.trigger('submit');
+    await flushPromises();
+    expect(sent).toEqual({
+      cpus_milli: 1500,
+      memory_bytes: 8 * 1024 ** 3,
+      disk_bytes: 20 * 1024 ** 3,
+      max_containers: 5,
+      port_min: 8000,
+      port_max: 8009,
+      images: ['nginx', 'ghcr.io/me/*'],
+    });
+    expect(wrapper.find('form.allowance').text()).toContain('0.5 / 1.5');
+
+    await button(wrapper.find('form.allowance'), 'Remove allowance')!.trigger('click');
+    await flushPromises();
+    expect(button(wrapper.find('form.allowance'), 'Remove allowance')).toBeUndefined();
+    await button(wrapper.find('form.allowance'), 'Close')!.trigger('click');
+    expect(wrapper.find('form.allowance').exists()).toBe(false);
+  });
 });

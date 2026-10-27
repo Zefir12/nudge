@@ -14,6 +14,18 @@ export function formatBytes(n: number): string {
   return `${i === 0 ? n : n.toFixed(1)} ${units[i]}`;
 }
 
+const binaryUnits = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+
+// formatBinaryBytes uses powers of 1024, like memory limits ("512 MiB").
+export function formatBinaryBytes(n: number): string {
+  let i = 0;
+  while (n >= 1024 && i < binaryUnits.length - 1) {
+    n /= 1024;
+    i++;
+  }
+  return `${Number.isInteger(n) ? n : n.toFixed(1)} ${binaryUnits[i]}`;
+}
+
 // shortId drops a sha256: prefix and keeps 12 characters, like the Docker CLI.
 export const shortId = (id: string) => id.replace(/^sha256:/, '').slice(0, 12);
 

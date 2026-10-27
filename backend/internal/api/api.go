@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"git.zefirlabs.net/zefir/nudge/backend/internal/allowances"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/audit"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/deployhooks"
@@ -61,6 +62,9 @@ type Options struct {
 	Deployments *deployments.Service
 	// Usage keeps the measured volume sizes; nil means sizes aren't available.
 	Usage *usage.Service
+	// Allowances are the users' allowances, checked before a user's container is
+	// created, recreated, updated or started.
+	Allowances *allowances.Service
 	// Events is the Docker events hub, shared with the notification watcher; nil means
 	// the API makes its own.
 	Events *events.Hub
@@ -168,13 +172,15 @@ var userRoutes = map[string]bool{
 	"GET /api/v1/environments/{env}/containers/{id}/exec":     true,
 	"GET /api/v1/environments/{env}/stats":                    true,
 	"GET /api/v1/environments/{env}/stats/summary":            true,
-	"GET /api/v1/environments/{env}/events":                   true,
-	"GET /api/v1/environments/{env}/volumes":                  true,
-	"GET /api/v1/environments/{env}/volumes/{id}":             true,
-	"DELETE /api/v1/environments/{env}/volumes/{id}":          true,
-	"GET /api/v1/environments/{env}/networks":                 true,
-	"GET /api/v1/environments/{env}/networks/{id}":            true,
-	"DELETE /api/v1/environments/{env}/networks/{id}":         true,
+	// Their own allowance; setting one is for admins.
+	"GET /api/v1/environments/{env}/allowance":        true,
+	"GET /api/v1/environments/{env}/events":           true,
+	"GET /api/v1/environments/{env}/volumes":          true,
+	"GET /api/v1/environments/{env}/volumes/{id}":     true,
+	"DELETE /api/v1/environments/{env}/volumes/{id}":  true,
+	"GET /api/v1/environments/{env}/networks":         true,
+	"GET /api/v1/environments/{env}/networks/{id}":    true,
+	"DELETE /api/v1/environments/{env}/networks/{id}": true,
 }
 
 // route is one API route: its mux pattern and the server method that serves it.
@@ -243,6 +249,9 @@ var routes = []route{
 	{"GET /api/v1/environments/{env}/containers/{id}/exec", (*server).containerExec},
 	{"GET /api/v1/environments/{env}/stats", (*server).environmentStats},
 	{"GET /api/v1/environments/{env}/stats/summary", (*server).environmentSummary},
+	{"GET /api/v1/environments/{env}/allowance", (*server).getAllowance},
+	{"PUT /api/v1/environments/{env}/allowance", (*server).setAllowance},
+	{"DELETE /api/v1/environments/{env}/allowance", (*server).deleteAllowance},
 	{"GET /api/v1/environments/{env}/events", (*server).environmentEvents},
 	{"GET /api/v1/environments/{env}/images", (*server).listImages},
 	{"POST /api/v1/environments/{env}/images/pull", (*server).pullImage},
@@ -299,7 +308,7 @@ var routes = []route{
 func New(opts Options) http.Handler {
 	s := &server{
 		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries, audit: opts.Audit, updates: opts.Updates,
-		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, deployments: opts.Deployments, usage: opts.Usage, registryClient: opts.RegistryClient,
+		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, deployments: opts.Deployments, usage: opts.Usage, allowances: opts.Allowances, registryClient: opts.RegistryClient,
 		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, oidc: opts.OIDC, oidcName: opts.OIDCName, noPasswordLogin: opts.NoPasswordLogin, recreating: map[string]bool{},
 		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{}, summaries: map[summaryKey]*summaryEntry{},
 		checks: make(chan struct{}, maxStackChecks),
@@ -370,6 +379,7 @@ type server struct {
 	// deployTokens serves the requests that carry a deploy token.
 	deployTokens *http.ServeMux
 	usage        *usage.Service
+	allowances   *allowances.Service
 	// done ends at shutdown (Options.Context).
 	done context.Context
 	// events fans each environment's Docker events out to the clients watching it.

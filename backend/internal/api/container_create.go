@@ -386,6 +386,11 @@ func (s *server) createContainer(w http.ResponseWriter, r *http.Request) {
 			return nil, err
 		}
 		cfg.Labels = labels
+		unlock, err := s.fitAllowance(ctx, pathEnv(r), c, labels[ownerLabel], cfg, hc, "", true)
+		if err != nil {
+			return nil, err
+		}
+		defer unlock()
 		res, err := c.ContainerCreate(ctx, client.ContainerCreateOptions{Name: req.Name, Config: cfg, HostConfig: hc, NetworkingConfig: nc})
 		if err != nil {
 			return nil, refusal(err, "created", req.Env)
@@ -467,12 +472,14 @@ func (s *server) recreateContainer(w http.ResponseWriter, r *http.Request) {
 }
 
 // replacement is a recreate or update under way: the container and the image it runs
-// (zero if the image is gone), inspected before anything changed.
+// (zero if the image is gone), inspected before anything changed, and its owner key ("" for
+// the admins').
 type replacement struct {
 	env      environments.Environment
 	c        docker.Client
 	old      container.InspectResponse
 	oldImage image.InspectResponse
+	owner    string
 	done     func()
 }
 
@@ -555,12 +562,16 @@ func (s *server) startReplace(ctx context.Context, env environments.Environment,
 	if !ok {
 		return nil, errRecreating
 	}
-	return &replacement{env: env, c: c, old: old, oldImage: oldImage, done: done}, nil
+	var imageLabels map[string]string
+	if oldImage.Config != nil {
+		imageLabels = oldImage.Config.Labels
+	}
+	return &replacement{env: env, c: c, old: old, oldImage: oldImage, owner: containerOwner(old, imageLabels), done: done}, nil
 }
 
 // pullForReplace pulls ref with its registry's credentials; on false it has answered.
 func (s *server) pullForReplace(w http.ResponseWriter, r *http.Request, rp *replacement, ref string) bool {
-	if err := s.pullWithAuth(r.Context(), rp.c, ref); err != nil {
+	if err := s.pullOwned(r.Context(), rp.env.ID, rp.c, ref, rp.owner); err != nil {
 		s.replaceError(w, r, rp.env, err)
 		return false
 	}
@@ -598,7 +609,7 @@ func (s *server) finishReplace(w http.ResponseWriter, r *http.Request, rp *repla
 func (s *server) completeReplace(ctx context.Context, rp *replacement, spec *containerSpec) (string, error) {
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recreateTimeout)
 	defer cancel()
-	newID, err := s.replace(rctx, rp.c, rp.old, rp.oldImage.Config, spec)
+	newID, err := s.replace(rctx, rp, spec)
 	if err != nil {
 		return "", err
 	}
@@ -645,10 +656,11 @@ func pullAndWait(ctx context.Context, c docker.Client, ref string, opts client.I
 }
 
 // replace does the steps of a recreate after the pull and returns the new container's ID.
-func (s *server) replace(ctx context.Context, c docker.Client, old container.InspectResponse, img *dockerspec.DockerOCIImageConfig, spec *containerSpec) (string, error) {
+func (s *server) replace(ctx context.Context, rp *replacement, spec *containerSpec) (string, error) {
+	c, old := rp.c, rp.old
 	name := strings.TrimPrefix(old.Name, "/")
 	cfg, hc, nc := recreateSettings(old)
-	dropImageDefaults(cfg, img)
+	dropImageDefaults(cfg, rp.oldImage.Config)
 	if spec != nil {
 		// The spec can't set nudge's own labels (the owner): keep the old container's.
 		kept := maps.Clone(cfg.Labels)
@@ -666,6 +678,13 @@ func (s *server) replace(ctx context.Context, c docker.Client, old container.Ins
 		}
 	}
 	keepAnonymousVolumes(old, hc)
+	// Checked before the old container stops; it is left out of the user's total, so a
+	// bigger limit counts as the difference.
+	unlock, err := s.fitAllowance(ctx, rp.env.ID, c, rp.owner, cfg, hc, old.ID, true)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
 	var secrets []string
 	if spec != nil {
 		secrets = spec.Env

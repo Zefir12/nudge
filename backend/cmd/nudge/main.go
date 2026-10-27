@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/agent"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/allowances"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/api"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/audit"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
@@ -268,6 +269,7 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 			DeployHooks: deployHooks,
 			Deployments: deps,
 			Usage:       usageSvc,
+			Allowances:  allowances.New(allowances.Options{DB: st.DB()}),
 			Events:      hub,
 			Web:         web.Handler(web.Dist()),
 

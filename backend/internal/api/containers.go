@@ -181,6 +181,11 @@ func (s *server) startContainer(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
+		unlock, err := s.fitStart(ctx, pathEnv(r), c, id)
+		if err != nil {
+			return err
+		}
+		defer unlock()
 		_, err = c.ContainerStart(ctx, id, client.ContainerStartOptions{})
 		return err
 	})
@@ -219,6 +224,12 @@ func (s *server) restartContainer(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
+		// A restart starts a stopped container too.
+		unlock, err := s.fitStart(ctx, pathEnv(r), c, id)
+		if err != nil {
+			return err
+		}
+		defer unlock()
 		_, err = c.ContainerRestart(ctx, id, client.ContainerRestartOptions{Timeout: timeout})
 		return err
 	})
