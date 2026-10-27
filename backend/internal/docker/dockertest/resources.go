@@ -2,6 +2,7 @@ package dockertest
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -462,13 +463,18 @@ func (f *Fake) VolumeInspect(ctx context.Context, id string, _ client.VolumeInsp
 }
 
 // VolumeCreate records the action (the ID is the requested name) and answers with the
-// new volume.
+// new volume or, like Docker, the one in Volumes of that name and driver as it is.
 func (f *Fake) VolumeCreate(ctx context.Context, opts client.VolumeCreateOptions) (client.VolumeCreateResult, error) {
 	if err := f.resourceErr(ctx); err != nil {
 		return client.VolumeCreateResult{}, err
 	}
 	if err := f.record("volume-create", opts.Name, opts); err != nil {
 		return client.VolumeCreateResult{}, err
+	}
+	for _, v := range f.Volumes {
+		if v.Name == opts.Name && v.Driver == cmp.Or(opts.Driver, "local") {
+			return client.VolumeCreateResult{Volume: v}, nil
+		}
 	}
 	v := volume.Volume{Name: opts.Name, Driver: opts.Driver, Labels: opts.Labels, Options: opts.DriverOpts, Scope: "local"}
 	if v.Name == "" {

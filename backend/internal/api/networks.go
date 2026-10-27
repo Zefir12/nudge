@@ -171,7 +171,8 @@ type pruneNetworksResponse struct {
 	Deleted []string `json:"deleted"`
 }
 
-// createNetwork creates a network and answers 201 with its ID.
+// createNetwork creates a network and answers 201 with its ID. A user's network is a
+// bridge named with their prefix (userNetworkRefusal, userName).
 func (s *server) createNetwork(w http.ResponseWriter, r *http.Request) {
 	var req createNetworkRequest
 	if !s.decodeJSON(w, r, &req) {
@@ -189,6 +190,22 @@ func (s *server) createNetwork(w http.ResponseWriter, r *http.Request) {
 	if s.refuseReservedLabels(w, req.Labels) {
 		return
 	}
+	u, admin, err := requestUser(r)
+	if err != nil {
+		s.internalError(w, "network create", err)
+		return
+	}
+	name := req.Name
+	if !admin {
+		msg := userNetworkRefusal(req)
+		if msg == "" {
+			name, msg = userName(u.ID, req.Name)
+		}
+		if msg != "" {
+			s.writeError(w, http.StatusBadRequest, msg)
+			return
+		}
+	}
 	ipam, msg := toIPAM(req)
 	if msg != "" {
 		s.writeError(w, http.StatusBadRequest, msg)
@@ -202,12 +219,19 @@ func (s *server) createNetwork(w http.ResponseWriter, r *http.Request) {
 		opts.EnableIPv6 = &req.IPv6
 	}
 	resp, ok := s.runDocker(context.WithoutCancel(r.Context()), w, r, "network create", "a network with this name already exists", networkTimeout, func(ctx context.Context, c docker.Client) (any, error) {
+		if !admin {
+			unlock, err := s.roomForNetwork(ctx, c, envID(r), u.ID)
+			if err != nil {
+				return nil, err
+			}
+			defer unlock()
+		}
 		labels, err := s.ownerLabels(ctx, opts.Labels)
 		if err != nil {
 			return nil, err
 		}
 		opts.Labels = labels
-		res, err := c.NetworkCreate(ctx, req.Name, opts)
+		res, err := c.NetworkCreate(ctx, name, opts)
 		if err != nil {
 			return nil, createError(err, "network")
 		}

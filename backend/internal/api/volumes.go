@@ -149,7 +149,9 @@ type pruneVolumesResponse struct {
 }
 
 // createVolume creates a volume and answers 201 with it. Docker answers an existing
-// volume of the same name and driver instead of failing, like `docker volume create`.
+// volume of the same name and driver instead of failing, like `docker volume create`. A
+// user's volume is a local one without options named with their prefix
+// (userVolumeRefusal, userName).
 func (s *server) createVolume(w http.ResponseWriter, r *http.Request) {
 	var req createVolumeRequest
 	if !s.decodeJSON(w, r, &req) {
@@ -163,14 +165,35 @@ func (s *server) createVolume(w http.ResponseWriter, r *http.Request) {
 	if s.refuseReservedLabels(w, req.Labels) {
 		return
 	}
+	u, admin, err := requestUser(r)
+	if err != nil {
+		s.internalError(w, "volume create", err)
+		return
+	}
+	name := req.Name
+	if !admin {
+		msg := userVolumeRefusal(req)
+		if msg == "" {
+			name, msg = userName(u.ID, req.Name)
+		}
+		if msg != "" {
+			s.writeError(w, http.StatusBadRequest, msg)
+			return
+		}
+	}
 	resp, ok := s.runDocker(context.WithoutCancel(r.Context()), w, r, "volume create", "a volume with this name already exists with another driver", volumeTimeout, func(ctx context.Context, c docker.Client) (any, error) {
 		labels, err := s.ownerLabels(ctx, req.Labels)
 		if err != nil {
 			return nil, err
 		}
-		res, err := c.VolumeCreate(ctx, client.VolumeCreateOptions{Name: req.Name, Driver: req.Driver, DriverOpts: req.Options, Labels: labels})
+		res, err := c.VolumeCreate(ctx, client.VolumeCreateOptions{Name: name, Driver: req.Driver, DriverOpts: req.Options, Labels: labels})
 		if err != nil {
 			return nil, createError(err, "volume")
+		}
+		// Docker answers an existing volume of the name as it is: a user gets it only if
+		// it is theirs.
+		if !admin && res.Volume.Labels[ownerLabel] != labels[ownerLabel] {
+			return nil, errNameTaken("volume")
 		}
 		return toVolume(res.Volume), nil
 	})
