@@ -237,18 +237,19 @@ func cmpProto(p string) string {
 	return p
 }
 
-// buildTenant turns a validated spec into Docker's settings for a container of the user
-// with owner key ("" for an admin's). Everything not taken from the spec is fixed here.
-func buildTenant(sp *tenantSpec, owner string) (*container.Config, *container.HostConfig, *network.NetworkingConfig) {
+// buildTenant turns a validated spec into Docker's settings for a container of owner (key
+// "" for an admin's), with host's hardening on a user's. Everything not taken from the
+// spec is fixed here.
+func buildTenant(sp *tenantSpec, owner tenantOwner, host TenantHosting) (*container.Config, *container.HostConfig, *network.NetworkingConfig) {
 	labels := maps.Clone(sp.Labels)
 	if labels == nil {
 		labels = map[string]string{}
 	}
 	maps.DeleteFunc(labels, func(k, _ string) bool { return reservedKey(k) })
-	if owner != "" {
+	if owner.key != "" {
 		// Set last, so it wins over the spec; an image's own value can't override a
 		// container's label (and an image that sets one is refused, refuseOwnerImage).
-		labels[ownerLabel] = owner
+		labels[ownerLabel] = owner.key
 	}
 	cfg := &container.Config{
 		Image: sp.Image, Cmd: slices.Clone(sp.Command), Entrypoint: slices.Clone(sp.Entrypoint),
@@ -280,6 +281,7 @@ func buildTenant(sp *tenantSpec, owner string) (*container.Config, *container.Ho
 		},
 		PortBindings: network.PortMap{},
 	}
+	host.hostSettings(hc, owner)
 	for _, p := range sp.Ports {
 		// validate checked the range.
 		port, _ := network.PortFrom(uint16(p.ContainerPort), network.IPProtocol(cmpProto(p.Protocol))) // #nosec G115 -- 1 to 65535
@@ -513,7 +515,11 @@ func (s *server) createTenant(ctx context.Context, env int64, c docker.Client, r
 	if err := imageVolumes(ctx, c, &req.tenantSpec); err != nil {
 		return createContainerResponse{}, err
 	}
-	cfg, hc, nc := buildTenant(&req.tenantSpec, owner.key)
+	host, err := s.tenantHosting(ctx, c, owner)
+	if err != nil {
+		return createContainerResponse{}, err
+	}
+	cfg, hc, nc := buildTenant(&req.tenantSpec, owner, host)
 	unlock, err := s.fitAllowance(ctx, env, c, owner.key, cfg, hc, "", true)
 	if err != nil {
 		return createContainerResponse{}, err
@@ -640,6 +646,10 @@ func (s *server) tenantSettings(ctx context.Context, rp *replacement) (*containe
 	if err != nil {
 		return nil, nil, nil, "", err
 	}
-	cfg, hc, nc := buildTenant(sp, owner.key)
+	host, err := s.tenantHosting(ctx, rp.c, owner)
+	if err != nil {
+		return nil, nil, nil, "", err
+	}
+	cfg, hc, nc := buildTenant(sp, owner, host)
 	return cfg, hc, nc, name, nil
 }

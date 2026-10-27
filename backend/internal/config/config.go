@@ -61,7 +61,31 @@ type Server struct {
 	// NoPasswordLogin turns password login off for everyone but the local break-glass
 	// user "admin" (NUDGE_PASSWORD_LOGIN=false); it needs OIDC.
 	NoPasswordLogin bool
+	// Tenant hardens users' containers with the host's setup; zero adds nothing.
+	Tenant Tenant
 }
+
+// Tenant is the hardening of users' containers that needs the host set up for it
+// (docs/config/server.md, "Hosting other users").
+type Tenant struct {
+	// CgroupParent is a user's cgroup parent, {id} standing for the user's ID, e.g.
+	// nudge-u{id}.slice.
+	CgroupParent string
+	// Runtime is the OCI runtime of users' containers, e.g. runsc (gVisor).
+	Runtime string
+	// StorageSize caps a user's container's writable layer, in bytes.
+	StorageSize int64
+}
+
+var (
+	// cgroupParent is a cgroup parent template: a systemd slice name or a cgroupfs path,
+	// with {id} for the user's ID.
+	cgroupParent = regexp.MustCompile(`^[A-Za-z0-9_.@/{}-]+$`)
+	// runtimeName is a runtime as the daemon lists it.
+	runtimeName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+	// sizePattern is a size in bytes with an optional binary unit: 512M, 10G, 10GiB.
+	sizePattern = regexp.MustCompile(`^([0-9]+)([KMGT]?)(?:I?B)?$`)
+)
 
 // OIDC is the OpenID Connect provider users sign in with.
 type OIDC struct {
@@ -138,6 +162,9 @@ func LoadServer(args []string, getenv func(string) string, out io.Writer) (Serve
 		return Server{}, fmt.Errorf("NUDGE_PASSWORD_LOGIN %q: want true or false", getenv("NUDGE_PASSWORD_LOGIN"))
 	}
 	fs.BoolVar(&passwordLogin, "password-login", passwordLogin, "allow password login; false leaves it only to the local admin user (NUDGE_PASSWORD_LOGIN)")
+	fs.StringVar(&c.Tenant.CgroupParent, "tenant-cgroup-parent", getenv("NUDGE_TENANT_CGROUP_PARENT"), "cgroup parent of each user's containers, {id} for the user's ID, e.g. nudge-u{id}.slice (NUDGE_TENANT_CGROUP_PARENT)")
+	fs.StringVar(&c.Tenant.Runtime, "tenant-runtime", getenv("NUDGE_TENANT_RUNTIME"), "OCI runtime of users' containers, e.g. runsc (NUDGE_TENANT_RUNTIME)")
+	storageSize := fs.String("tenant-storage-size", getenv("NUDGE_TENANT_STORAGE_SIZE"), "disk cap of a user's container's writable layer, e.g. 10G, where the storage driver supports it (NUDGE_TENANT_STORAGE_SIZE)")
 	level := fs.String("log-level", envOr(getenv, "NUDGE_LOG_LEVEL", "info"), "debug, info, warn or error (NUDGE_LOG_LEVEL)")
 	if err := fs.Parse(args); err != nil {
 		return Server{}, err
@@ -194,7 +221,58 @@ func LoadServer(args []string, getenv func(string) string, out io.Writer) (Serve
 	if err := c.checkOIDC(); err != nil {
 		return Server{}, err
 	}
+	if c.Tenant.StorageSize, err = parseSize(*storageSize); err != nil {
+		return Server{}, fmt.Errorf("tenant storage size %w", err)
+	}
+	if err := c.Tenant.check(); err != nil {
+		return Server{}, err
+	}
 	return c, nil
+}
+
+// check refuses a cgroup parent or runtime the daemon would misread.
+func (t Tenant) check() error {
+	if p := t.CgroupParent; p != "" {
+		rest := strings.ReplaceAll(p, "{id}", "")
+		if !cgroupParent.MatchString(p) || rest == p || strings.ContainsAny(rest, "{}") || strings.Contains(p, "..") {
+			return fmt.Errorf("tenant cgroup parent %q: want a slice name or cgroup path with {id}, e.g. nudge-u{id}.slice", p)
+		}
+		if strings.HasSuffix(p, ".slice") && strings.Contains(p, "/") {
+			return fmt.Errorf("tenant cgroup parent %q: a systemd slice is a name, not a path", p)
+		}
+	}
+	if t.Runtime != "" && !runtimeName.MatchString(t.Runtime) {
+		return fmt.Errorf("tenant runtime %q: want a runtime name such as runsc", t.Runtime)
+	}
+	return nil
+}
+
+// minStorageSize is the smallest disk cap: below it most images can't even start.
+const minStorageSize = 64 << 20
+
+// parseSize parses a size such as 10G or 512MiB (binary units, any case) into bytes;
+// empty is 0 (no cap).
+func parseSize(s string) (int64, error) {
+	if s == "" {
+		return 0, nil
+	}
+	m := sizePattern.FindStringSubmatch(strings.ToUpper(s))
+	if m == nil {
+		return 0, fmt.Errorf("%q: want a size such as 10G or 512M", s)
+	}
+	n, err := strconv.ParseInt(m[1], 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%q: too large", s)
+	}
+	shift := map[string]uint{"": 0, "K": 10, "M": 20, "G": 30, "T": 40}[m[2]]
+	if n > (1<<62)>>shift {
+		return 0, fmt.Errorf("%q: too large", s)
+	}
+	n <<= shift
+	if n < minStorageSize {
+		return 0, fmt.Errorf("%q: at least 64M", s)
+	}
+	return n, nil
 }
 
 // checkOIDC refuses a half-set SSO configuration. Without SSO the OIDC settings are
