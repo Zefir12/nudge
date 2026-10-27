@@ -45,6 +45,12 @@ Flags with `NUDGE_*` environment variable fallbacks; the defaults work in the im
 | `NUDGE_AUDIT_RETENTION_DAYS` | `90` | days the audit log keeps entries |
 | `NUDGE_UPDATE_CHECK_INTERVAL` | `6h` | how often images are checked for updates, `0` for never |
 | `NUDGE_USAGE_INTERVAL` | `15m` | how often volume sizes are measured, `0` for never |
+| `NUDGE_OIDC_ISSUER`, `NUDGE_OIDC_CLIENT_ID`, `NUDGE_OIDC_CLIENT_SECRET` | unset | single sign-on through an OpenID Connect provider (secret env only; needs an `https://` public URL) |
+| `NUDGE_OIDC_NAME` | `SSO` | label of the single sign-on button |
+| `NUDGE_OIDC_ADMIN_ROLE` | `admin` | `roles` claim value that lets a user sign in as admin |
+| `NUDGE_OIDC_REQUIRE_MFA` | `false` | refuse single sign-on without a second factor |
+| `NUDGE_OIDC_SESSION_TTL` | `12h` | how long a single sign-on session lasts |
+| `NUDGE_PASSWORD_LOGIN` | `true` | `false` leaves password login only to the local `admin` (with SSO) |
 
 Remote hosts run the same image as `nudge agent` with `NUDGE_SERVER_URL` and
 `NUDGE_JOIN_TOKEN` (the UI's "Add environment" prints the `docker run` command and a

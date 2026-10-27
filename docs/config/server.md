@@ -19,6 +19,14 @@ image without setting anything. A flag wins over its variable.
 | `-update-check-interval` | `NUDGE_UPDATE_CHECK_INTERVAL` | `6h` | how often every environment's images are checked for updates (a Go duration, at least `5m`; `0` turns the scheduled check off, the UI's check still works); the first check runs two minutes after start |
 | `-usage-interval` | `NUDGE_USAGE_INTERVAL` | `15m` | how often every environment's volume sizes are measured (a Go duration, at least `1m`; `0` turns the scheduled measurement off, the UI's "Measure sizes" still works); the first measurement runs two minutes after start. Docker walks every volume to size it, so on hosts with large volumes a longer interval is kinder to the disks |
 | — | `NUDGE_ADMIN_PASSWORD` | unset | create the user `admin` with this password at start if no user exists |
+| `-oidc-issuer` | `NUDGE_OIDC_ISSUER` | unset | OpenID Connect issuer URL (`https://`); with the client ID and secret it turns on single sign-on (see Single sign-on) |
+| `-oidc-client-id` | `NUDGE_OIDC_CLIENT_ID` | unset | nudge's client ID at the provider |
+| — | `NUDGE_OIDC_CLIENT_SECRET` | unset | nudge's client secret (environment only) |
+| `-oidc-name` | `NUDGE_OIDC_NAME` | `SSO` | label of the login page's button ("Log in with …") |
+| `-oidc-admin-role` | `NUDGE_OIDC_ADMIN_ROLE` | `admin` | value of the ID token's `roles` claim that lets a user sign in (as admin) |
+| `-oidc-require-mfa` | `NUDGE_OIDC_REQUIRE_MFA` | `false` | refuse sign-ins whose `amr` claim lacks `mfa` |
+| `-oidc-session-ttl` | `NUDGE_OIDC_SESSION_TTL` | `12h` | how long a single sign-on session lasts (at least `5m`) |
+| `-password-login` | `NUDGE_PASSWORD_LOGIN` | `true` | `false` hides the password form and refuses password login to everyone but the local `admin` (needs single sign-on) |
 
 ## Data directory
 `nudge serve` creates the data directory (mode 0700) if it is missing and exits with an
@@ -159,6 +167,58 @@ Expired sessions are deleted on use and every 10 minutes. The cookie is `Secure`
 serves TLS or `NUDGE_PUBLIC_URL` is `https://`, else only when the browser uses HTTPS
 through a trusted proxy that sets `X-Forwarded-Proto: https`. Writes from other origins are refused. Failed logins are
 rate-limited per client IP and per username (see docs/api.md).
+
+## Single sign-on
+nudge signs users in through one OpenID Connect provider (authorization code flow with
+PKCE, as a confidential client with `client_secret_basic`; ID tokens must be RS256). Set
+`NUDGE_OIDC_ISSUER`, `NUDGE_OIDC_CLIENT_ID` and `NUDGE_OIDC_CLIENT_SECRET` together (nudge
+refuses to start with only some of them) and an `https://` `NUDGE_PUBLIC_URL`. The
+redirect URI to register is `<public URL>/api/v1/auth/oidc/callback`; the scopes are
+`openid profile email`.
+
+- **Roles.** The ID token's `roles` claim (an array) must hold `NUDGE_OIDC_ADMIN_ROLE`; it
+  is read on every login. Without it the login is refused with a 403 page and audited.
+  Until nudge has more roles, only admins sign in.
+- **Users** are matched by issuer and subject (`sub`) only. A local user with the same
+  name or email is never linked: the SSO user gets a name of its own (its preferred
+  username, else its email, with `-2`… on a clash; never `admin`). Display name and email
+  are refreshed on each login.
+- **Setup** is off with SSO: `POST /api/v1/setup` is refused, and the first admin is
+  whoever the provider gives the admin role. `NUDGE_ADMIN_PASSWORD` still creates a local
+  `admin` on a fresh install: the break-glass user.
+- **Password login** stays on by default. With `NUDGE_PASSWORD_LOGIN=false` the login page
+  shows only the SSO button and the API refuses password logins except the local `admin`'s;
+  `/login?password` shows the form for it.
+- **Sessions** are nudge's own, capped by `NUDGE_OIDC_SESSION_TTL`: a user disabled at the
+  provider keeps their session until then. Logout ends the nudge session and sends the
+  browser to the provider's `end_session_endpoint`.
+- **MFA.** `NUDGE_OIDC_REQUIRE_MFA=true` refuses ID tokens whose `amr` lacks `mfa`.
+- Failed SSO logins land on the login page with a generic error, are logged with the
+  detail and count against the per-IP login limit (shared with password login).
+- **Revoking access.** Roles and MFA are checked at login only: a user whose admin role is
+  taken away keeps their session until `NUDGE_OIDC_SESSION_TTL` ends it, and API tokens
+  they created keep working until deleted in nudge.
+- **Break-glass.** SSO users count as users, so `NUDGE_ADMIN_PASSWORD` creates the local
+  `admin` only on a fresh install: set it before the first SSO login if you want a way in
+  without the provider (or after turning SSO off).
+
+### Authestra
+1. In Authestra, register a **confidential** client for nudge with the redirect URI
+   `https://nudge.example.net/api/v1/auth/oidc/callback` and the scopes
+   `openid profile email`. Note its client ID and secret.
+2. Define the roles `admin` and `user` on that client, and grant `admin` to the people who
+   manage nudge. Authestra refuses users without a role of the client at its login page;
+   `user` signs in nowhere yet (nudge's roles are to come).
+3. Start nudge with:
+   ```sh
+   NUDGE_PUBLIC_URL=https://nudge.example.net
+   NUDGE_OIDC_ISSUER=https://auth.example.net
+   NUDGE_OIDC_CLIENT_ID=nudge
+   NUDGE_OIDC_CLIENT_SECRET=...        # from step 1
+   NUDGE_OIDC_NAME=Authestra
+   # NUDGE_OIDC_REQUIRE_MFA=true       # only users who passed a second factor
+   # NUDGE_PASSWORD_LOGIN=false        # SSO only, plus the local admin
+   ```
 
 ## Docker access
 The server manages the Docker host whose socket is mounted at `/var/run/docker.sock`

@@ -70,6 +70,8 @@ type User struct {
 	// Token is the name of the API token that authenticated the request; empty for a
 	// session.
 	Token string
+	// SSO says the user signs in through the OIDC provider (and has no password).
+	SSO bool
 }
 
 // Session is a new login. Token is the cookie value; only its hash is stored.
@@ -88,6 +90,11 @@ type Options struct {
 	// Params are the argon2id costs of new hashes (DefaultParams by default).
 	Params     Params
 	SessionTTL time.Duration
+	// SSOSessionTTL is how long the sessions of SSO logins last (SessionTTL by default).
+	SSOSessionTTL time.Duration
+	// AdminPasswordOnly refuses password login to everyone but AdminUsername, the
+	// break-glass user, when users sign in through SSO.
+	AdminPasswordOnly bool
 }
 
 // Service manages users and sessions in the store's database.
@@ -97,6 +104,9 @@ type Service struct {
 	now    func() time.Time
 	params Params
 	ttl    time.Duration
+	ssoTTL time.Duration
+	// adminOnly is Options.AdminPasswordOnly.
+	adminOnly bool
 
 	hashes    chan struct{}
 	waiters   chan struct{}
@@ -116,6 +126,8 @@ func New(opts Options) *Service {
 		now:       opts.Now,
 		params:    opts.Params,
 		ttl:       opts.SessionTTL,
+		ssoTTL:    opts.SSOSessionTTL,
+		adminOnly: opts.AdminPasswordOnly,
 		hashes:    make(chan struct{}, maxConcurrentHashes),
 		waiters:   make(chan struct{}, maxHashWaiters),
 		ipLimit:   newLimiter(ipFailureLimit, failureWindow, maxLimiterKeys),
@@ -132,6 +144,9 @@ func New(opts Options) *Service {
 	}
 	if s.ttl == 0 {
 		s.ttl = DefaultSessionTTL
+	}
+	if s.ssoTTL == 0 {
+		s.ssoTTL = s.ttl
 	}
 	// Hash the dummy now, so the first unknown-user login isn't slower than later ones.
 	_, _ = s.dummy()
@@ -208,6 +223,10 @@ func (s *Service) Login(ctx context.Context, ip, username, password string) (Ses
 		// No such user can exist; the IP keeps the failure.
 		return Session{}, ErrInvalidCredentials
 	}
+	if s.adminOnly && !strings.EqualFold(username, AdminUsername) {
+		// Password login is off; the rule is public, so skipping the hash reveals nothing.
+		return Session{}, ErrInvalidCredentials
+	}
 
 	var u User
 	var hash string
@@ -215,7 +234,8 @@ func (s *Service) Login(ctx context.Context, ip, username, password string) (Ses
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, username, password_hash, created_at FROM users WHERE username = ?`, username,
 	).Scan(&u.ID, &u.Username, &hash, &created)
-	known := err == nil
+	// SSO users have no password: they count as unknown.
+	known := err == nil && hash != ""
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		s.ipLimit.release(ip, now)
 		return Session{}, fmt.Errorf("look up user: %w", err)
@@ -244,13 +264,13 @@ func (s *Service) Login(ctx context.Context, ip, username, password string) (Ses
 	s.ipLimit.release(ip, now)
 	s.userLimit.reset(userKey)
 	u.CreatedAt = time.Unix(created, 0)
-	return s.newSession(ctx, u)
+	return s.newSession(ctx, u, s.ttl)
 }
 
-func (s *Service) newSession(ctx context.Context, u User) (Session, error) {
+func (s *Service) newSession(ctx context.Context, u User, ttl time.Duration) (Session, error) {
 	token := rand.Text()
 	now := s.now()
-	expires := now.Add(s.ttl)
+	expires := now.Add(ttl)
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO sessions (id_hash, user_id, created_at, last_seen_at, expires_at) VALUES (?, ?, ?, ?, ?)`,
 		tokenHash(token), u.ID, now.Unix(), now.Unix(), expires.Unix())
@@ -269,9 +289,9 @@ func (s *Service) SessionUser(ctx context.Context, token string) (User, error) {
 	var u User
 	var created, lastSeen, expires int64
 	err := s.db.QueryRowContext(ctx, `
-		SELECT u.id, u.username, u.created_at, s.last_seen_at, s.expires_at
+		SELECT u.id, u.username, u.created_at, u.oidc_issuer <> '', s.last_seen_at, s.expires_at
 		FROM sessions s JOIN users u ON u.id = s.user_id
-		WHERE s.id_hash = ?`, id).Scan(&u.ID, &u.Username, &created, &lastSeen, &expires)
+		WHERE s.id_hash = ?`, id).Scan(&u.ID, &u.Username, &created, &u.SSO, &lastSeen, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrNoSession
 	}
@@ -295,15 +315,22 @@ func (s *Service) SessionUser(ctx context.Context, token string) (User, error) {
 	return u, nil
 }
 
-// Logout ends the session of token, if there is one.
-func (s *Service) Logout(ctx context.Context, token string) error {
+// Logout ends the session of token, if there is one, and reports whether it was an SSO
+// user's (whose provider session the caller may end too).
+func (s *Service) Logout(ctx context.Context, token string) (sso bool, err error) {
 	if token == "" {
-		return nil
+		return false, nil
+	}
+	err = s.db.QueryRowContext(ctx, `
+		SELECT u.oidc_issuer <> '' FROM sessions s JOIN users u ON u.id = s.user_id
+		WHERE s.id_hash = ?`, tokenHash(token)).Scan(&sso)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("look up session: %w", err)
 	}
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE id_hash = ?`, tokenHash(token)); err != nil {
-		return fmt.Errorf("delete session: %w", err)
+		return false, fmt.Errorf("delete session: %w", err)
 	}
-	return nil
+	return sso, nil
 }
 
 // Cleanup deletes expired sessions and forgets finished rate-limit windows.

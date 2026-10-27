@@ -25,8 +25,11 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | GET | `/api/v1/setup` | public | `{"needed":true}` while no user exists |
 | POST | `/api/v1/setup` | public | create the admin and log in; see below |
 | POST | `/api/v1/auth/login` | public | log in; see below |
-| POST | `/api/v1/auth/logout` | public | end the session and clear the cookie; `204` (a no-op for API tokens) |
+| POST | `/api/v1/auth/logout` | public | end the session and clear the cookie; `204` (a no-op for API tokens), or `200 {"logout_url": "..."}` for a single sign-on user: the provider's sign-out page to visit next |
 | GET | `/api/v1/auth/me` | session | the logged-in user |
+| GET | `/api/v1/auth/methods` | public | the login page's ways to sign in; see Single sign-on |
+| GET | `/api/v1/auth/oidc/login` | public | start a single sign-on login (a browser navigation); see Single sign-on |
+| GET | `/api/v1/auth/oidc/callback` | public | the provider's redirect back; starts the session |
 | GET | `/api/v1/tokens` | session | the user's API tokens, oldest first; see below |
 | POST | `/api/v1/tokens` | session | create an API token `{"name": "ci"}`; `201` |
 | DELETE | `/api/v1/tokens/{id}` | session | revoke one of the user's tokens; `204`, or `404` |
@@ -102,6 +105,28 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 "session" means a session cookie or an API token.
 
 Add a row (and a section below, for anything non-trivial) with every new endpoint.
+
+### Single sign-on
+With an OpenID Connect provider configured (docs/config/server.md, Single sign-on):
+
+- `GET /api/v1/auth/methods` answers `{"password": true, "oidc": {"name": "Authestra"}}`;
+  `oidc` is `null` without single sign-on, `password` is false with
+  `NUDGE_PASSWORD_LOGIN=false`.
+- `GET /api/v1/auth/oidc/login?redirect=/path` sets a binding cookie `nudge_oidc`
+  (`HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/api/v1/auth/oidc`, 10 minutes) and
+  answers `302` to the provider. `redirect` must be a path on this site, else `/`.
+- `GET /api/v1/auth/oidc/callback?state=...&code=...` needs the state (one use, 10
+  minutes) and the binding cookie of the browser that started the login. Success sets the
+  session cookie and answers `302` to the saved path. A failure answers `302` to
+  `/login?error=sso`; a valid sign-in without the admin role (or without `mfa` in `amr`
+  when MFA is required) answers a `403` page. Both are audited as
+  `GET /api/v1/auth/oidc/callback` with the subject as target. Every attempt counts against
+  the per-IP login limit until it succeeds.
+- The session cookie stays `SameSite=Strict`: the callback's redirect follows the
+  provider's cross-site navigation, so the cookie isn't sent with that one request, but it
+  loads only the web UI, whose own API calls are same-site.
+- `POST /api/v1/setup` answers `403`, and `GET /api/v1/setup` always `{"needed":false}`.
+- Without single sign-on both `oidc` routes are `404`.
 
 ### Setup and login
 `POST /api/v1/setup` and `POST /api/v1/auth/login` take

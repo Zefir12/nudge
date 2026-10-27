@@ -33,6 +33,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/events"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/notify"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/oidc"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/probe"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/registries"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/secretbox"
@@ -160,7 +161,18 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 	}
 	regs := registries.New(registries.Options{DB: st.DB(), Box: box})
 
-	authSvc := auth.New(auth.Options{DB: st.DB(), Log: log})
+	authSvc := auth.New(auth.Options{
+		DB: st.DB(), Log: log, SSOSessionTTL: cfg.OIDC.SessionTTL, AdminPasswordOnly: cfg.NoPasswordLogin,
+	})
+	var sso *oidc.Client
+	if cfg.OIDC.Enabled() {
+		sso = oidc.New(oidc.Options{
+			Issuer: cfg.OIDC.Issuer, ClientID: cfg.OIDC.ClientID, ClientSecret: cfg.OIDC.ClientSecret,
+			RedirectURL: cfg.PublicURL + "/api/v1/auth/oidc/callback",
+			AdminRole:   cfg.OIDC.AdminRole, RequireMFA: cfg.OIDC.RequireMFA, Log: log,
+		})
+		log.Info("single sign-on on", "issuer", cfg.OIDC.Issuer, "password_login", !cfg.NoPasswordLogin)
+	}
 	auditSvc := audit.New(audit.Options{DB: st.DB(), Log: log, Retention: time.Duration(cfg.AuditRetentionDays) * 24 * time.Hour})
 	if cfg.AdminPassword != "" {
 		// Like the migrations: part of startup, not cancelled by a signal.
@@ -267,6 +279,10 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 			PublicURL:      cfg.PublicURL,
 			SecureCookies:  cfg.TLS() || strings.HasPrefix(cfg.PublicURL, "https://"),
 			TrustedProxies: cfg.TrustedProxies,
+
+			OIDC:            sso,
+			OIDCName:        cfg.OIDC.Name,
+			NoPasswordLogin: cfg.NoPasswordLogin,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,

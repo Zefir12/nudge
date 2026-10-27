@@ -87,7 +87,20 @@ export const getSetupStatus = () => apiFetch<{ needed: boolean }>('/setup');
 export const setup = (c: Credentials) => apiFetch<User>('/setup', post(c), { redirectOn401: false });
 export const login = (c: Credentials) => apiFetch<User>('/auth/login', post(c), { redirectOn401: false });
 // The caller navigates to login itself, so a 401 (session already gone) must not redirect too.
-export const logout = () => apiFetch<void>('/auth/logout', { method: 'POST' }, { redirectOn401: false });
+// An SSO user's logout answers with the provider's sign-out page; others get nothing.
+export const logout = () =>
+  apiFetch<{ logout_url: string } | undefined>('/auth/logout', { method: 'POST' }, { redirectOn401: false });
+
+export interface AuthMethods {
+  password: boolean;
+  oidc: { name: string } | null;
+}
+
+export const getAuthMethods = () =>
+  apiFetch<AuthMethods>('/auth/methods', undefined, { redirectOn401: false });
+// ssoLoginUrl is where the browser goes (a navigation, not a fetch) to sign in with SSO.
+export const ssoLoginUrl = (redirect: string) =>
+  `/api/v1/auth/oidc/login?redirect=${encodeURIComponent(redirect)}`;
 export const getMe = () => apiFetch<User>('/auth/me', undefined, { redirectOn401: false });
 
 export interface Token {

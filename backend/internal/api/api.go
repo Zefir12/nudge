@@ -20,6 +20,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/events"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/notify"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/oidc"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/registries"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/registryclient"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/stacks"
@@ -80,6 +81,13 @@ type Options struct {
 	After func(time.Duration) <-chan time.Time
 	// Now is time.Now outside tests: the age of the environments' usage summaries.
 	Now func() time.Time
+	// OIDC signs users in through the SSO provider; nil means SSO is off.
+	OIDC *oidc.Client
+	// OIDCName labels the SSO button on the login page.
+	OIDCName string
+	// NoPasswordLogin hides the password form; the auth service refuses everyone but the
+	// break-glass admin.
+	NoPasswordLogin bool
 	// TrustedProxies are the reverse proxies whose X-Forwarded-For (client IP for the
 	// login limiter and logs) and X-Forwarded-Proto are believed; empty means none.
 	TrustedProxies []netip.Prefix
@@ -92,6 +100,11 @@ var publicRoutes = map[string]bool{
 	"GET /api/v1/setup":       true,
 	"POST /api/v1/setup":      true,
 	"POST /api/v1/auth/login": true,
+	// The login page asks which ways to sign in it offers; the SSO login starts and ends
+	// before there is a session (the callback checks its state and binding cookie).
+	"GET /api/v1/auth/methods":       true,
+	"GET /api/v1/auth/oidc/login":    true,
+	"GET /api/v1/auth/oidc/callback": true,
 	// Logout clears the cookie even when the session has already expired.
 	"POST /api/v1/auth/logout": true,
 	// Agents enroll with a join token and connect with their ID and secret instead of a
@@ -116,7 +129,7 @@ func New(opts Options) http.Handler {
 	s := &server{
 		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries, audit: opts.Audit, updates: opts.Updates,
 		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, deployments: opts.Deployments, usage: opts.Usage, registryClient: opts.RegistryClient, isAdmin: opts.Admin,
-		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, recreating: map[string]bool{},
+		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, oidc: opts.OIDC, oidcName: opts.OIDCName, noPasswordLogin: opts.NoPasswordLogin, recreating: map[string]bool{},
 		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{}, summaries: map[int64]*summaryEntry{},
 		checks: make(chan struct{}, maxStackChecks),
 		done:   context.Background(),
@@ -151,6 +164,9 @@ func New(opts Options) http.Handler {
 	api.HandleFunc("POST /api/v1/auth/login", s.login)
 	api.HandleFunc("POST /api/v1/auth/logout", s.logout)
 	api.HandleFunc("GET /api/v1/auth/me", s.me)
+	api.HandleFunc("GET /api/v1/auth/methods", s.authMethods)
+	api.HandleFunc("GET /api/v1/auth/oidc/login", s.oidcLogin)
+	api.HandleFunc("GET /api/v1/auth/oidc/callback", s.oidcCallback)
 	api.HandleFunc("GET /api/v1/tokens", s.listTokens)
 	api.HandleFunc("POST /api/v1/tokens", s.createToken)
 	api.HandleFunc("DELETE /api/v1/tokens/{id}", s.deleteToken)
@@ -287,6 +303,10 @@ type server struct {
 
 	publicURL     string
 	secureCookies bool
+	// oidc is the SSO client, nil when SSO is off.
+	oidc            *oidc.Client
+	oidcName        string
+	noPasswordLogin bool
 
 	stacksDir    string
 	stackRunner  func(env environments.Environment) stacks.Runner
