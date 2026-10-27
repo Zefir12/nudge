@@ -66,3 +66,57 @@ describe('LoginView', () => {
     setUnauthorizedHandler(null);
   });
 });
+
+describe('LoginView sign-in methods', () => {
+  it('offers SSO next to the password form', async () => {
+    stubApi({
+      'GET /setup': { body: { needed: false } },
+      'GET /auth/methods': { body: { password: true, oidc: { name: 'Authestra' } } },
+    });
+    const { wrapper } = await mountAt('/login?redirect=/env/local/stacks');
+    await flushPromises();
+    const sso = wrapper.find('a.sso');
+    expect(sso.text()).toBe('Log in with Authestra');
+    expect(sso.attributes('href')).toBe('/api/v1/auth/oidc/login?redirect=%2Fenv%2Flocal%2Fstacks');
+    expect(wrapper.find('form').exists()).toBe(true);
+  });
+
+  it('hides the password form when password login is off', async () => {
+    stubApi({
+      'GET /setup': { body: { needed: false } },
+      'GET /auth/methods': { body: { password: false, oidc: { name: 'SSO' } } },
+    });
+    const { wrapper } = await mountAt('/login?redirect=//evil.example');
+    await flushPromises();
+    expect(wrapper.find('form').exists()).toBe(false);
+    expect(wrapper.find('a.sso').attributes('href')).toBe('/api/v1/auth/oidc/login?redirect=%2F');
+  });
+
+  it('shows the password form for the break-glass admin with ?password', async () => {
+    stubApi({
+      'GET /setup': { body: { needed: false } },
+      'GET /auth/methods': { body: { password: false, oidc: { name: 'SSO' } } },
+    });
+    const { wrapper } = await mountAt('/login?password');
+    await flushPromises();
+    expect(wrapper.find('form').exists()).toBe(true);
+  });
+
+  it('shows a generic error after a failed SSO login', async () => {
+    stubApi({
+      'GET /setup': { body: { needed: false } },
+      'GET /auth/methods': { body: { password: true, oidc: { name: 'SSO' } } },
+    });
+    const { wrapper } = await mountAt('/login?error=sso');
+    await flushPromises();
+    expect(wrapper.find('[role=alert]').text()).toContain('Single sign-on failed');
+  });
+
+  it('keeps the password form when the methods fail to load', async () => {
+    stubApi({ 'GET /setup': { body: { needed: false } } });
+    const { wrapper } = await mountAt('/login');
+    await flushPromises();
+    expect(wrapper.find('form').exists()).toBe(true);
+    expect(wrapper.find('a.sso').exists()).toBe(false);
+  });
+});

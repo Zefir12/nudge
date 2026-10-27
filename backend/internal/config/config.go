@@ -56,7 +56,32 @@ type Server struct {
 	// UsageInterval is how often disk usage (volume sizes) is measured; zero turns the
 	// scheduled measurement off.
 	UsageInterval time.Duration
+	// OIDC is the single sign-on provider; zero when SSO is off.
+	OIDC OIDC
+	// NoPasswordLogin turns password login off for everyone but the local break-glass
+	// user "admin" (NUDGE_PASSWORD_LOGIN=false); it needs OIDC.
+	NoPasswordLogin bool
 }
+
+// OIDC is the OpenID Connect provider users sign in with.
+type OIDC struct {
+	// Issuer is the provider's issuer URL (https://), where discovery starts.
+	Issuer   string
+	ClientID string
+	// ClientSecret is environment only (NUDGE_OIDC_CLIENT_SECRET), like the admin password.
+	ClientSecret string
+	// Name labels the login button.
+	Name string
+	// AdminRole is the value of the ID token's roles claim that makes a user an admin.
+	AdminRole string
+	// RequireMFA refuses logins whose amr claim lacks "mfa".
+	RequireMFA bool
+	// SessionTTL caps the sessions of SSO logins, as the provider can't end them.
+	SessionTTL time.Duration
+}
+
+// Enabled reports whether SSO is configured.
+func (o OIDC) Enabled() bool { return o.Issuer != "" }
 
 // TLS reports whether the server serves HTTPS itself.
 func (c Server) TLS() bool { return c.TLSCert != "" }
@@ -91,10 +116,31 @@ func LoadServer(args []string, getenv func(string) string, out io.Writer) (Serve
 		return Server{}, fmt.Errorf("NUDGE_USAGE_INTERVAL %q: want a duration such as 15m or 1h", getenv("NUDGE_USAGE_INTERVAL"))
 	}
 	fs.DurationVar(&c.UsageInterval, "usage-interval", usage, "how often to measure volume sizes, 0 for never (NUDGE_USAGE_INTERVAL)")
+	fs.StringVar(&c.OIDC.Issuer, "oidc-issuer", getenv("NUDGE_OIDC_ISSUER"), "OpenID Connect issuer URL; turns on single sign-on with the client ID and secret (NUDGE_OIDC_ISSUER)")
+	fs.StringVar(&c.OIDC.ClientID, "oidc-client-id", getenv("NUDGE_OIDC_CLIENT_ID"), "OpenID Connect client ID (NUDGE_OIDC_CLIENT_ID)")
+	fs.StringVar(&c.OIDC.Name, "oidc-name", envOr(getenv, "NUDGE_OIDC_NAME", "SSO"), "label of the single sign-on button (NUDGE_OIDC_NAME)")
+	fs.StringVar(&c.OIDC.AdminRole, "oidc-admin-role", envOr(getenv, "NUDGE_OIDC_ADMIN_ROLE", "admin"), "value of the ID token's roles claim that makes a user an admin (NUDGE_OIDC_ADMIN_ROLE)")
+	requireMFA, err := strconv.ParseBool(envOr(getenv, "NUDGE_OIDC_REQUIRE_MFA", "false"))
+	if err != nil {
+		return Server{}, fmt.Errorf("NUDGE_OIDC_REQUIRE_MFA %q: want true or false", getenv("NUDGE_OIDC_REQUIRE_MFA"))
+	}
+	fs.BoolVar(&c.OIDC.RequireMFA, "oidc-require-mfa", requireMFA, "refuse single sign-on without a second factor (amr has no mfa) (NUDGE_OIDC_REQUIRE_MFA)")
+	ssoTTL, err := time.ParseDuration(envOr(getenv, "NUDGE_OIDC_SESSION_TTL", "12h"))
+	if err != nil {
+		return Server{}, fmt.Errorf("NUDGE_OIDC_SESSION_TTL %q: want a duration such as 12h", getenv("NUDGE_OIDC_SESSION_TTL"))
+	}
+	fs.DurationVar(&c.OIDC.SessionTTL, "oidc-session-ttl", ssoTTL, "how long a single sign-on session lasts (NUDGE_OIDC_SESSION_TTL)")
+	passwordLogin, err := strconv.ParseBool(envOr(getenv, "NUDGE_PASSWORD_LOGIN", "true"))
+	if err != nil {
+		return Server{}, fmt.Errorf("NUDGE_PASSWORD_LOGIN %q: want true or false", getenv("NUDGE_PASSWORD_LOGIN"))
+	}
+	fs.BoolVar(&passwordLogin, "password-login", passwordLogin, "allow password login; false leaves it only to the local admin user (NUDGE_PASSWORD_LOGIN)")
 	level := fs.String("log-level", envOr(getenv, "NUDGE_LOG_LEVEL", "info"), "debug, info, warn or error (NUDGE_LOG_LEVEL)")
 	if err := fs.Parse(args); err != nil {
 		return Server{}, err
 	}
+	c.NoPasswordLogin = !passwordLogin
+	c.OIDC.ClientSecret = getenv("NUDGE_OIDC_CLIENT_SECRET")
 	if fs.NArg() > 0 {
 		return Server{}, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
@@ -142,7 +188,40 @@ func LoadServer(args []string, getenv func(string) string, out io.Writer) (Serve
 	if c.TrustedProxies, err = parseProxies(*proxyList); err != nil {
 		return Server{}, err
 	}
+	if err := c.checkOIDC(); err != nil {
+		return Server{}, err
+	}
 	return c, nil
+}
+
+// checkOIDC refuses a half-set SSO configuration. Without SSO the OIDC settings are
+// cleared, so their defaults don't suggest it is on.
+func (c *Server) checkOIDC() error {
+	o := &c.OIDC
+	if o.Issuer == "" && o.ClientID == "" && o.ClientSecret == "" {
+		if c.NoPasswordLogin {
+			return errors.New("password login can only be turned off with single sign-on (NUDGE_OIDC_ISSUER)")
+		}
+		*o = OIDC{}
+		return nil
+	}
+	if o.Issuer == "" || o.ClientID == "" || o.ClientSecret == "" {
+		return errors.New("single sign-on needs the issuer, client ID and client secret (NUDGE_OIDC_ISSUER, NUDGE_OIDC_CLIENT_ID, NUDGE_OIDC_CLIENT_SECRET)")
+	}
+	u, err := url.Parse(o.Issuer)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("OIDC issuer %q: want an https:// URL", o.Issuer)
+	}
+	if !strings.HasPrefix(c.PublicURL, "https://") {
+		return errors.New("single sign-on needs an https:// public URL (NUDGE_PUBLIC_URL) for its redirect URI")
+	}
+	if o.Name == "" || o.AdminRole == "" {
+		return errors.New("OIDC name and admin role must not be empty")
+	}
+	if o.SessionTTL < 5*time.Minute {
+		return errors.New("OIDC session TTL must be at least 5m")
+	}
+	return nil
 }
 
 // parseProxies parses a comma-separated list of CIDRs and single addresses (as /32 or

@@ -23,11 +23,14 @@ watch(
 );
 
 async function onLogout() {
+  let providerLogout = '';
   try {
-    await logout();
+    providerLogout = (await logout())?.logout_url ?? '';
   } finally {
     currentUser.value = null;
-    await router.replace({ name: 'login' });
+    // An SSO user is signed out at the provider too, which shows its own page.
+    if (providerLogout) window.location.assign(providerLogout);
+    else await router.replace({ name: 'login' });
   }
 }
 </script>

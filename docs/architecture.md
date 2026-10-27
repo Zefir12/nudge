@@ -81,6 +81,18 @@ refuses `ws://` unless `NUDGE_INSECURE=1`.
   `internal/api` and enforced in the auth middleware; a new route of that kind goes on
   the list. Scopes stay a later option.
 - Login attempts are rate-limited per IP and username, with bounded memory.
+- Single sign-on (#110, internal/oidc): one OpenID Connect provider, nudge a confidential
+  client (authorization code + PKCE S256, `client_secret_basic`). Discovery, JWKS and ID
+  token checks are go-oidc's (RS256 only, issuer, audience, expiry against the injected
+  clock, one JWKS refetch on an unknown kid); nudge checks the nonce, `azp`, `iat`, the
+  admin role in `roles` and, optionally, `mfa` in `amr`. Discovery is lazy (nudge starts
+  while the provider is down) and retried at most every 30 s. Started logins live
+  server-side in a bounded map (10 minutes, keyed by state) and are bound to the browser
+  by a `SameSite=Lax` cookie; each state is used once. Every provider call has a timeout
+  and a capped body. Users are matched by issuer + `sub`, never by name or email; they
+  have no password, and their sessions are nudge sessions capped by
+  `NUDGE_OIDC_SESSION_TTL`. With SSO, setup is off; `NUDGE_PASSWORD_LOGIN=false` keeps
+  password login only for the local break-glass `admin`.
 - Deploy webhooks (`POST /api/v1/hooks/{id}`, internal/deployhooks): a public route whose
   credential is the webhook's own secret, as a bearer token or as the key of an
   HMAC-SHA256 body signature (Forgejo, Gitea, GitHub headers), compared in constant time.
