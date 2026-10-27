@@ -366,8 +366,9 @@ func TestOwnerLabelReserved(t *testing.T) {
 	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), ownerLabel) {
 		t.Errorf("spec = %d %s, want no owner label", rec.Code, rec.Body)
 	}
-	rec = do(t, ot.h, request{method: "POST", path: ot.path(ot.local, "/containers/mine/recreate"), cookie: ot.admin,
-		body: `{"spec":{"image":"nginx:1","labels":{"app":"api"}}}`})
+	// A user's container is recreated through the tenant builder, an admin's request too.
+	rec = do(t, ot.h, request{method: "POST", path: ot.path(ot.local, "/user-containers/mine/recreate"), cookie: ot.admin,
+		body: `{"image":"nginx:1","cpus_milli":500,"memory_bytes":268435456,"labels":{"app":"api"}}`})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("recreate = %d %s", rec.Code, rec.Body)
 	}

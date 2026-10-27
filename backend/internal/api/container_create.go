@@ -480,7 +480,9 @@ type replacement struct {
 	old      container.InspectResponse
 	oldImage image.InspectResponse
 	owner    string
-	done     func()
+	// tenant, if set, is the spec to rebuild the container from (tenant.go).
+	tenant *tenantSpec
+	done   func()
 }
 
 // errRecreating refuses a second recreate or update of a container while one runs.
@@ -622,7 +624,11 @@ func (s *server) replaceError(w http.ResponseWriter, r *http.Request, env enviro
 	var pf *pullFailure
 	var inf *internalFailure
 	var df *dockerFailure
+	var fe *fieldsError
 	switch {
+	case errors.As(err, &fe):
+		s.envs.Seen(r.Context(), &env)
+		s.writeFields(w, fe.fields)
 	case errors.Is(err, errRegistryDecrypt):
 		s.log.Error("registry credentials", "err", err)
 		s.writeError(w, http.StatusInternalServerError, "the stored registry password can't be decrypted (was secret.key replaced?): enter it again under Registries")
@@ -659,25 +665,43 @@ func pullAndWait(ctx context.Context, c docker.Client, ref string, opts client.I
 func (s *server) replace(ctx context.Context, rp *replacement, spec *containerSpec) (string, error) {
 	c, old := rp.c, rp.old
 	name := strings.TrimPrefix(old.Name, "/")
-	cfg, hc, nc := recreateSettings(old)
-	dropImageDefaults(cfg, rp.oldImage.Config)
-	if spec != nil {
-		// The spec can't set nudge's own labels (the owner): keep the old container's.
-		kept := maps.Clone(cfg.Labels)
-		maps.DeleteFunc(kept, func(k, _ string) bool { return !reservedKey(k) })
-		spec.apply(cfg, hc, nc, nc.EndpointsConfig)
-		if len(kept) > 0 {
-			cfg.Labels = maps.Clone(cfg.Labels)
-			if cfg.Labels == nil {
-				cfg.Labels = map[string]string{}
+	var cfg *container.Config
+	var hc *container.HostConfig
+	var nc *network.NetworkingConfig
+	var secrets []string
+	switch {
+	case rp.owner != "" && spec != nil:
+		return "", errAdminSpec
+	case rp.owner != "" || rp.tenant != nil:
+		// A user's container is always rebuilt by the tenant builder, never copied: its
+		// settings can only be ones the builder makes.
+		var err error
+		if cfg, hc, nc, name, err = s.tenantSettings(ctx, rp); err != nil {
+			return "", err
+		}
+		secrets = cfg.Env
+	default:
+		cfg, hc, nc = recreateSettings(old)
+		dropImageDefaults(cfg, rp.oldImage.Config)
+		if spec != nil {
+			// The spec can't set nudge's own labels (the owner): keep the old container's.
+			kept := maps.Clone(cfg.Labels)
+			maps.DeleteFunc(kept, func(k, _ string) bool { return !reservedKey(k) })
+			spec.apply(cfg, hc, nc, nc.EndpointsConfig)
+			if len(kept) > 0 {
+				cfg.Labels = maps.Clone(cfg.Labels)
+				if cfg.Labels == nil {
+					cfg.Labels = map[string]string{}
+				}
+				maps.Copy(cfg.Labels, kept)
 			}
-			maps.Copy(cfg.Labels, kept)
+			if spec.Name != "" {
+				name = spec.Name
+			}
+			secrets = spec.Env
 		}
-		if spec.Name != "" {
-			name = spec.Name
-		}
+		keepAnonymousVolumes(old, hc)
 	}
-	keepAnonymousVolumes(old, hc)
 	// Checked before the old container stops; it is left out of the user's total, so a
 	// bigger limit counts as the difference.
 	unlock, err := s.fitAllowance(ctx, rp.env.ID, c, rp.owner, cfg, hc, old.ID, true)
@@ -685,10 +709,6 @@ func (s *server) replace(ctx context.Context, rp *replacement, spec *containerSp
 		return "", err
 	}
 	defer unlock()
-	var secrets []string
-	if spec != nil {
-		secrets = spec.Env
-	}
 	secrets = append(secrets, old.Config.Env...)
 
 	wasRunning := old.State.Running || old.State.Restarting || old.State.Paused

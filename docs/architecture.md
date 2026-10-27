@@ -107,6 +107,17 @@ refuses `ws://` unless `NUDGE_INSECURE=1`.
   that can't be checked. Admins skip the checks (no extra Docker calls). The label
   namespace is reserved: requests can't set it, a recreate keeps it. Creating objects as
   a user (#114, #115) uses `server.ownerLabels`.
+- Tenant builder (#115, api/tenant.go): a user's container is built by the server from a
+  short strict spec (`tenantSpec`, unknown JSON fields refused), never from Docker's own
+  options, so privileged mode, binds, the host's namespaces, devices or the socket can't
+  be asked for at all. `buildTenant` is a pure function that adds the fixed hardening
+  (`NET_RAW` dropped, `no-new-privileges`, pids limit, log limits, init, private IPC) and
+  the owner label last. Volumes and networks must carry the user's owner label; images
+  are pulled without stored credentials, and an image with an uncovered `VOLUME` or a
+  reserved label is refused. `replace` (recreate, image update, deploy webhooks) rebuilds
+  any user's container through the builder from its settings read back as a spec
+  (`toTenantSpec`), so a setting the builder doesn't make can't survive a replace; the
+  admin spec is refused on a user's container.
 - Single sign-on (#110, internal/oidc): one OpenID Connect provider, nudge a confidential
   client (authorization code + PKCE S256, `client_secret_basic`). Discovery, JWKS and ID
   token checks are go-oidc's (RS256 only, issuer, audience, expiry against the injected
