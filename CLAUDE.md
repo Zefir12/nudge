@@ -24,7 +24,8 @@ mode of the same binary. Read PLAN.md for the roadmap and docs/ for decisions.
 - Standard library first. Approved dependencies: `github.com/moby/moby/client` (Docker),
   `modernc.org/sqlite` (pure-Go SQLite), `github.com/coder/websocket`,
   `github.com/hashicorp/yamux`, `golang.org/x/crypto` (argon2id), `vue-router`,
-  `yaml` (compose syntax in the stack editor). Any
+  `yaml` (compose syntax in the stack editor), `github.com/coreos/go-oidc/v3` with its
+  `github.com/go-jose/go-jose/v4` and `golang.org/x/oauth2` (OIDC login). Any
   other dependency only after asking zefir.
 - Lint: golangci-lint (backend/.golangci.yml), `vp check` and `vue-tsc`. Formatting:
   gofmt + goimports, `vp check --fix`.
