@@ -148,6 +148,13 @@ func TestFitAllowance(t *testing.T) {
 	if _, err := at.s.fitAllowance(t.Context(), at.local, at.fake, at.bobKey, cfg, hc, "", true); err == nil || !strings.Contains(err.Error(), "CPU limit") {
 		t.Errorf("without limits = %v", err)
 	}
+	// An image that sets the owner label would make the container the admins' and escape
+	// every later check.
+	cfg, hc = limits(100, mib)
+	cfg.Image = "sha256:forged"
+	if _, err := at.s.fitAllowance(t.Context(), at.local, at.fake, at.bobKey, cfg, hc, "", true); err == nil || !strings.Contains(err.Error(), "reserved for nudge") {
+		t.Errorf("image with the owner label = %v", err)
+	}
 }
 
 // Two creates that each fit what is left, but not together: only one passes.
@@ -335,6 +342,19 @@ func TestUpdatePullsWithinAllowance(t *testing.T) {
 	}
 	if got := pulls(); !slices.Equal(got, []string{"sha256:small"}) {
 		t.Errorf("pulls = %v, want the big one forgotten", got)
+	}
+
+	// An image already on the host (another user's or an admin's) isn't counted or removed.
+	at.fake.Images = []image.Summary{{ID: "sha256:shared"}}
+	pulled("sha256:shared", 1<<30)
+	if rec := update(); rec.Code != http.StatusOK {
+		t.Fatalf("update to a present image = %d %s", rec.Code, rec.Body)
+	}
+	if got := removed(); !slices.Equal(got, []string{"sha256:big"}) {
+		t.Errorf("removed = %v, want the present image kept", got)
+	}
+	if got := pulls(); !slices.Equal(got, []string{"sha256:small"}) {
+		t.Errorf("pulls = %v, want the present image not counted", got)
 	}
 
 	// The container runs the small one now; the next update removes it.

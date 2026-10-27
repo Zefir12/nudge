@@ -288,13 +288,16 @@ refuses with `409 over your allowance: ...` if the new total is over:
   whole allowance. A recreate leaves the old container out, so a bigger limit counts as
   the difference.
 - The container count includes it.
+- A user's container can't run an image that sets a `net.zefirlabs.nudge.` label (`400`):
+  it would make the container the admins' and escape every later check.
 - Host ports must be in the range; a binding without a host port gets the lowest one in
   the range that no container uses.
 - Disk: the writable layers of their containers, the volumes they own or their containers
   mount (anonymous ones from an image's `VOLUME` too; sizes from the last volume
   measurement) and the images their pulls brought. Once that reaches the allowance, creates,
   recreates and pulls are refused (a start is not). An image a user's pull brings counts
-  toward their disk; if it takes them over it is removed again and the change refused.
+  toward their disk (an image already on the host does not); if it takes them over it is
+  removed again and the change refused. A user's pulls run one at a time.
   After an update, the image the container ran before is removed if their pull brought it
   and nothing else uses it. Disk is not enforced by the kernel (yet).
 - Checks of one user in one environment run one at a time, through the create or start

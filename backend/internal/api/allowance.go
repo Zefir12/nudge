@@ -391,6 +391,13 @@ func (s *server) fitAllowance(ctx context.Context, env int64, c docker.Client, k
 	if key == "" {
 		return func() {}, nil
 	}
+	if create {
+		// An image that sets the owner label makes its container the admins' (see
+		// ownsContainer): a user's would escape every later check.
+		if err := refuseOwnerImage(ctx, c, cfg.Image); err != nil {
+			return nil, err
+		}
+	}
 	user, a, unlock, err := s.lockAllowance(ctx, env, key)
 	if err != nil {
 		return nil, err
@@ -409,6 +416,26 @@ func (s *server) fitAllowance(ctx context.Context, env int64, c docker.Client, k
 		return nil, err
 	}
 	return unlock, nil
+}
+
+// refuseOwnerImage refuses image if it sets nudge's owner label. A missing image is left
+// to the create to report.
+func refuseOwnerImage(ctx context.Context, c docker.Client, image string) error {
+	img, err := c.ImageInspect(ctx, image)
+	if docker.NotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect image: %w", err)
+	}
+	if img.Config != nil {
+		for k := range img.Config.Labels {
+			if reservedKey(k) {
+				return &statusError{code: http.StatusBadRequest, msg: "the image sets labels starting with " + reservedLabels + ", which are reserved for nudge"}
+			}
+		}
+	}
+	return nil
 }
 
 // fitStart checks that container id may start: a user's container must fit their
@@ -466,71 +493,64 @@ func inspectOwner(ctx context.Context, c docker.Client, id string) (container.In
 
 // pullOwned pulls ref for the user with owner key ("" pulls for an admin, unchecked).
 // A user's pull is refused when their disk allowance is used up; an image it brings counts
-// toward it, and one that takes them over is removed again and the pull refused.
+// toward it, and one that takes them over is removed again and the pull refused. The
+// user's lock is held throughout, so their parallel pulls can't overshoot together.
 func (s *server) pullOwned(ctx context.Context, env int64, c docker.Client, ref, key string) error {
 	if key == "" {
 		return s.pullWithAuth(ctx, c, ref)
-	}
-	before, err := s.checkPull(ctx, env, c, ref, key)
-	if err != nil {
-		return err
-	}
-	if err := s.pullWithAuth(ctx, c, ref); err != nil {
-		return err
 	}
 	user, a, unlock, err := s.lockAllowance(ctx, env, key)
 	if err != nil {
 		return err
 	}
 	defer unlock()
+	used, _, err := s.allowanceUsage(ctx, env, c, user, key, a, "")
+	if err != nil {
+		return err
+	}
+	if err := allowanceFailure(allowances.CheckPull(a, used, ref)); err != nil {
+		return err
+	}
+	// The images on the host before the pull: only one the pull brought is the user's
+	// to count, or to remove again.
+	list, err := c.ImageList(ctx, client.ImageListOptions{All: true})
+	if err != nil {
+		return fmt.Errorf("list images: %w", err)
+	}
+	present := map[string]bool{}
+	for _, img := range list.Items {
+		present[img.ID] = true
+	}
+	if err := s.pullWithAuth(ctx, c, ref); err != nil {
+		return err
+	}
 	img, err := c.ImageInspect(ctx, ref)
 	if err != nil {
 		return &dockerFailure{msg: "pull", err: fmt.Errorf("inspect pulled image: %w", err)}
 	}
-	if img.ID == before {
+	if present[img.ID] {
 		return nil
 	}
 	if err := s.allowances.RecordPull(ctx, user, env, img.ID); err != nil {
 		return &internalFailure{msg: "record pull", err: err}
 	}
-	used, _, err := s.allowanceUsage(ctx, env, c, user, key, a, "")
+	used, _, err = s.allowanceUsage(ctx, env, c, user, key, a, "")
+	if err == nil {
+		err = allowanceFailure(allowances.CheckDisk(a, used))
+		if err != nil {
+			if _, rerr := c.ImageRemove(ctx, img.ID, client.ImageRemoveOptions{}); rerr != nil {
+				s.log.Warn("remove image over the allowance", "env", env, "image", img.ID, "err", rerr)
+				return err
+			}
+		}
+	}
 	if err != nil {
+		if ferr := s.allowances.ForgetPull(ctx, user, env, img.ID); ferr != nil {
+			return &internalFailure{msg: "image pulls", err: ferr}
+		}
 		return err
 	}
-	if over := allowances.CheckDisk(a, used); over != nil {
-		if _, err := c.ImageRemove(ctx, img.ID, client.ImageRemoveOptions{}); err != nil {
-			s.log.Warn("remove image over the allowance", "env", env, "image", img.ID, "err", err)
-		} else if err := s.allowances.ForgetPull(ctx, user, env, img.ID); err != nil {
-			return &internalFailure{msg: "image pulls", err: err}
-		}
-		return allowanceFailure(over)
-	}
 	return nil
-}
-
-// checkPull refuses a pull the user's allowance doesn't leave room for and returns the
-// ID of the image ref names now, "" if none.
-func (s *server) checkPull(ctx context.Context, env int64, c docker.Client, ref, key string) (string, error) {
-	user, a, unlock, err := s.lockAllowance(ctx, env, key)
-	if err != nil {
-		return "", err
-	}
-	defer unlock()
-	used, _, err := s.allowanceUsage(ctx, env, c, user, key, a, "")
-	if err != nil {
-		return "", err
-	}
-	if err := allowanceFailure(allowances.CheckPull(a, used, ref)); err != nil {
-		return "", err
-	}
-	img, err := c.ImageInspect(ctx, ref)
-	if docker.NotFound(err) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("inspect image: %w", err)
-	}
-	return img.ID, nil
 }
 
 // dropPulledImage removes image, which a user's container ran before an update, if the
