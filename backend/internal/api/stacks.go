@@ -469,7 +469,8 @@ func (s *server) startStack(ctx context.Context, env environments.Environment, n
 }
 
 // startStackEdit is startStack with edit, if not nil, changing the stack's files once it
-// is claimed and before they sync; the change is written to the stacks directory.
+// is claimed and before they sync; the change is written to the stacks directory. If the
+// write or the sync fails, the files are put back before the stack is released.
 func (s *server) startStackEdit(ctx context.Context, env environments.Environment, name string, edit func(stacks.Files) stacks.Files) (stacks.Runner, func(), error) {
 	runner := s.stackRunner(env)
 	if runner == nil {
@@ -489,16 +490,28 @@ func (s *server) startStackEdit(ctx context.Context, env environments.Environmen
 		unlock()
 		return nil, nil, &internalFailure{msg: "read stack", err: err}
 	}
-	if edit != nil {
+	edited := edit != nil
+	original := f
+	if edited {
 		f = edit(f)
+	}
+	// fail puts back the files an edit changed, then releases the stack.
+	fail := func(err error) (stacks.Runner, func(), error) {
+		if edited {
+			if err := s.stackDir(env.ID).Update(name, original); err != nil {
+				s.log.Error("restore stack after a failed edit", "env", env.ID, "stack", name, "err", err)
+			}
+		}
+		unlock()
+		return nil, nil, err
+	}
+	if edited {
 		if err := s.stackDir(env.ID).Update(name, f); err != nil {
-			unlock()
-			return nil, nil, &internalFailure{msg: "write stack", err: err}
+			return fail(&internalFailure{msg: "write stack", err: err})
 		}
 	}
 	if err := runner.Sync(ctx, name, f); err != nil {
-		unlock()
-		return nil, nil, fmt.Errorf("sync stack: %w", err)
+		return fail(fmt.Errorf("sync stack: %w", err))
 	}
 	return runner, unlock, nil
 }

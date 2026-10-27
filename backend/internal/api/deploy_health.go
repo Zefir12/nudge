@@ -67,16 +67,13 @@ func (s *server) deployDeployment(ctx context.Context, d deployments.Deployment,
 	defer cancel()
 	var previous map[string]string
 	var original string
-	edited := false
+	// A failed write or sync puts the .env back itself, before releasing the stack.
 	runner, unlock, err := s.startStackEdit(ctx, env, d.Stack, func(f stacks.Files) stacks.Files {
-		original, edited = f.Env, true
+		original = f.Env
 		f.Env, previous = deployments.SetVariables(f.Env, run.Variables)
 		return f
 	})
 	if err != nil {
-		if edited {
-			s.restoreEnv(env, d, run, original)
-		}
 		return failed(err)
 	}
 	defer unlock()
