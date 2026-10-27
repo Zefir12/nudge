@@ -115,6 +115,8 @@ type Deployment struct {
 	Description string
 	// Variables are the .env variables a deploy may set.
 	Variables []string
+	// Health says when a run succeeded.
+	Health    Health
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	// Role is the actor's role; empty for an admin who isn't a member.
@@ -128,6 +130,7 @@ type Input struct {
 	Stack       string
 	Description string
 	Variables   []string
+	Health      Health
 }
 
 // Update is a change of a deployment; nil fields stay.
@@ -136,6 +139,7 @@ type Update struct {
 	Variables   []string
 	// SetVariables says whether Variables replaces the list (an empty list clears it).
 	SetVariables bool
+	Health       *Health
 }
 
 // Member is a user's role on a deployment.
@@ -252,7 +256,7 @@ func (in *Input) validate() error {
 		return err
 	}
 	in.Variables = vars
-	return nil
+	return in.Health.clean()
 }
 
 func (s *Service) now() int64 { return s.clock.Now().UnixMilli() }
@@ -263,6 +267,10 @@ func (s *Service) Create(ctx context.Context, actor Actor, in Input) (Deployment
 		return Deployment{}, err
 	}
 	vars, err := json.Marshal(in.Variables)
+	if err != nil {
+		return Deployment{}, fmt.Errorf("create deployment: %w", err)
+	}
+	health, err := json.Marshal(in.Health)
 	if err != nil {
 		return Deployment{}, fmt.Errorf("create deployment: %w", err)
 	}
@@ -281,9 +289,9 @@ func (s *Service) Create(ctx context.Context, actor Actor, in Input) (Deployment
 	}
 	// Names are unique across every user, so a taken one is reported even when the
 	// actor can't see that deployment.
-	res, err := tx.ExecContext(ctx, `INSERT INTO deployments (name, environment_id, stack, description, variables, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (name) DO NOTHING`,
-		in.Name, in.Environment, in.Stack, in.Description, string(vars), now, now)
+	res, err := tx.ExecContext(ctx, `INSERT INTO deployments (name, environment_id, stack, description, variables, health, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (name) DO NOTHING`,
+		in.Name, in.Environment, in.Stack, in.Description, string(vars), string(health), now, now)
 	if err != nil {
 		return Deployment{}, fmt.Errorf("create deployment: %w", err)
 	}
@@ -306,19 +314,22 @@ func (s *Service) Create(ctx context.Context, actor Actor, in Input) (Deployment
 	return s.Authorize(ctx, actor, in.Name, ActionView)
 }
 
-const columns = `d.id, d.name, d.environment_id, d.stack, d.description, d.variables, d.created_at, d.updated_at, COALESCE(m.role, '')`
+const columns = `d.id, d.name, d.environment_id, d.stack, d.description, d.variables, d.health, d.created_at, d.updated_at, COALESCE(m.role, '')`
 
 type scanner interface{ Scan(dest ...any) error }
 
 func scan(row scanner) (Deployment, error) {
 	var d Deployment
-	var vars string
+	var vars, health string
 	var created, updated int64
-	if err := row.Scan(&d.ID, &d.Name, &d.Environment, &d.Stack, &d.Description, &vars, &created, &updated, &d.Role); err != nil {
+	if err := row.Scan(&d.ID, &d.Name, &d.Environment, &d.Stack, &d.Description, &vars, &health, &created, &updated, &d.Role); err != nil {
 		return Deployment{}, err
 	}
 	if err := json.Unmarshal([]byte(vars), &d.Variables); err != nil {
 		return Deployment{}, fmt.Errorf("deployment %s variables: %w", d.Name, err)
+	}
+	if err := json.Unmarshal([]byte(health), &d.Health); err != nil {
+		return Deployment{}, fmt.Errorf("deployment %s health: %w", d.Name, err)
 	}
 	d.CreatedAt = time.UnixMilli(created).UTC()
 	d.UpdatedAt = time.UnixMilli(updated).UTC()
@@ -395,12 +406,27 @@ func (s *Service) Change(ctx context.Context, actor Actor, name string, u Update
 		}
 		d.Variables = vars
 	}
+	if u.Health != nil {
+		h := *u.Health
+		if h.HTTP != nil {
+			c := *h.HTTP
+			h.HTTP = &c
+		}
+		if err := h.clean(); err != nil {
+			return Deployment{}, err
+		}
+		d.Health = h
+	}
 	vars, err := json.Marshal(d.Variables)
 	if err != nil {
 		return Deployment{}, fmt.Errorf("change deployment: %w", err)
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE deployments SET description = ?, variables = ?, updated_at = ? WHERE id = ?`,
-		d.Description, string(vars), s.now(), d.ID); err != nil {
+	health, err := json.Marshal(d.Health)
+	if err != nil {
+		return Deployment{}, fmt.Errorf("change deployment: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE deployments SET description = ?, variables = ?, health = ?, updated_at = ? WHERE id = ?`,
+		d.Description, string(vars), string(health), s.now(), d.ID); err != nil {
 		return Deployment{}, fmt.Errorf("change deployment: %w", err)
 	}
 	return s.Authorize(ctx, actor, name, ActionView)

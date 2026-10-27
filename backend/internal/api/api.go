@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/netip"
 	"sync"
+	"time"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/audit"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
@@ -74,6 +75,9 @@ type Options struct {
 	// SecureCookies marks the session cookie Secure on every response, not only on
 	// requests that came over HTTPS (set when nudge serves TLS or PublicURL is https).
 	SecureCookies bool
+	// After is time.After outside tests: the deployments' stability window and the
+	// keepalives of their progress streams.
+	After func(time.Duration) <-chan time.Time
 	// TrustedProxies are the reverse proxies whose X-Forwarded-For (client IP for the
 	// login limiter and logs) and X-Forwarded-Proto are believed; empty means none.
 	TrustedProxies []netip.Prefix
@@ -126,6 +130,10 @@ func New(opts Options) http.Handler {
 	}
 	if opts.Context != nil {
 		s.done = opts.Context
+	}
+	s.after = opts.After
+	if s.after == nil {
+		s.after = time.After
 	}
 	if s.stackRunner == nil {
 		s.stackRunner = func(environments.Environment) stacks.Runner { return nil }
@@ -286,6 +294,8 @@ type server struct {
 	recreating map[string]bool
 	// stackBusy holds stackKey of the stacks being changed or deployed now.
 	stackBusy map[string]bool
+	// after is Options.After.
+	after func(time.Duration) <-chan time.Time
 }
 
 // protect requires a session or an API token for every route outside publicRoutes.

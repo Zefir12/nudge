@@ -14,6 +14,7 @@ const shop = (can: string[] = all, role = 'owner') => ({
   stack: 'web',
   description: '',
   variables: ['API_IMAGE'],
+  health: { wait_seconds: 0, stable_seconds: 0, rollback: false },
   created_at: '2026-10-26T12:00:00Z',
   updated_at: '2026-10-26T12:00:00Z',
   role,
@@ -32,6 +33,8 @@ const run = (id: number, status: string) => ({
   image_before: '',
   image_after: 'app=sha256:2',
   error: status === 'failed' ? 'compose exited with code 1' : '',
+  step: status === 'running' ? 'checking' : '',
+  warnings: [] as string[],
 });
 const member = { user_id: 1, username: 'admin', role: 'owner' };
 
@@ -116,11 +119,64 @@ describe('DeploymentView', () => {
     await flushPromises();
     expect(posts(fetch, '/deployments/shop/tokens')).toHaveLength(1);
     expect(wrapper.find('.secret').text()).toBe('nudge_dt_ABCDsecret');
-    expect(wrapper.find('.snippet').text()).toContain('/api/v1/deployments/shop/deploys?wait=1');
+    expect(wrapper.find('.snippet').text()).toContain('/api/v1/deployments/shop/deploys?stream=1');
     expect(wrapper.find('.snippet').text()).toContain('"API_IMAGE":"<api_image>"');
+    await wrapper.findAll('[role=tab]')[1]?.trigger('click');
+    expect(wrapper.find('.snippet').text()).toContain('deploy \\\n      --server');
+    expect(wrapper.find('.snippet').text()).toContain(
+      '--deployment shop \\\n      --var API_IMAGE=<api_image>',
+    );
     await button(wrapper, 'Done')?.trigger('click');
     expect(wrapper.find('.secret').exists()).toBe(false);
     expect(wrapper.text()).toContain('nudge_dt_ABCD…');
+  });
+
+  it('shows the step of a running run and the warnings of a finished one', async () => {
+    const warned = {
+      ...run(1, 'succeeded'),
+      warnings: ['the agent is too old for HTTP checks; the check was skipped'],
+    };
+    vi.useFakeTimers();
+    stubApi({
+      'GET /deployments/shop': { body: shop() },
+      'GET /deployments/shop/deploys': { body: [run(2, 'running'), warned] },
+      'GET /deployments/shop/members': { body: [member] },
+      'GET /deployments/shop/tokens': { body: [] },
+    });
+    const { wrapper } = await mountView();
+    const rows = wrapper.findAll('tbody tr');
+    expect(rows[0]?.text()).toContain('running · checking');
+    expect(rows[1]?.find('.warning').text()).toContain('too old for HTTP checks');
+    wrapper.unmount();
+    vi.useRealTimers();
+  });
+
+  it('saves the health checks', async () => {
+    const fetch = stubApi({
+      'GET /deployments/shop': { body: shop() },
+      'GET /deployments/shop/deploys': { body: [] },
+      'GET /deployments/shop/members': { body: [member] },
+      'GET /deployments/shop/tokens': { body: [] },
+      'PATCH /deployments/shop': { body: shop() },
+    });
+    const { wrapper } = await mountView();
+    await wrapper.find('input[name="wait"]').setValue('60');
+    await wrapper.find('input[name="http"]').setValue(true);
+    await wrapper.find('input[name="http-service"]').setValue('web');
+    await wrapper.find('input[name="http-port"]').setValue('8080');
+    await wrapper.find('input[name="http-path"]').setValue('/health');
+    await wrapper.find('input[name="rollback"]').setValue(true);
+    await wrapper.find('form.health').trigger('submit');
+    await flushPromises();
+    const patch = fetch.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH');
+    expect(JSON.parse(String((patch?.[1] as RequestInit).body))).toEqual({
+      health: {
+        wait_seconds: 60,
+        stable_seconds: 0,
+        http: { service: 'web', port: 8080, path: '/health', status: 200, timeout_seconds: 5 },
+        rollback: true,
+      },
+    });
   });
 
   it('shows a viewer only what a viewer may do', async () => {

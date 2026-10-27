@@ -19,6 +19,11 @@ const (
 	MaxRuns = 10000
 	// maxValue bounds a variable's value.
 	maxValue = 512
+	// maxWarnings bounds the warnings a run keeps.
+	maxWarnings = 10
+	// followBuffer is how much progress a slow follower may lag behind; beyond it, it
+	// misses some (the run's end is never missed).
+	followBuffer = 64
 )
 
 // ErrClosed means the Service is shutting down.
@@ -41,6 +46,34 @@ const (
 	// StatusRolledBack failed and redeployed what ran before.
 	StatusRolledBack Status = "rolled_back"
 )
+
+// Step is where a running deploy is.
+type Step string
+
+// The steps of a run, in order; a run that fails a check and rolls back ends at
+// StepRollingBack.
+const (
+	// StepPulling pulls the images.
+	StepPulling Step = "pulling"
+	// StepDeploying creates and starts the containers (and waits for them, if set).
+	StepDeploying Step = "deploying"
+	// StepChecking runs the health checks.
+	StepChecking Step = "checking"
+	// StepRollingBack redeploys the replaced values.
+	StepRollingBack Step = "rolling_back"
+)
+
+// Progress is news from a running deploy: the step it is at, the service a message is
+// about, and the message, safe to show. A Warning is also kept on the run.
+type Progress struct {
+	Step    Step
+	Service string
+	Message string
+	Warning bool
+}
+
+// Report sends a deploy's progress.
+type Report func(Progress)
 
 // Finished reports whether a run in status s is over.
 func (s Status) Finished() bool { return s != StatusQueued && s != StatusRunning }
@@ -71,6 +104,10 @@ type Run struct {
 	ImageAfter  string
 	// Error says why a run failed, in words safe to show: never a daemon's message.
 	Error string
+	// Step is the last step the run reached; empty before it starts.
+	Step Step
+	// Warnings are things the run skipped or worked around, safe to show.
+	Warnings []string
 }
 
 // Request is a deploy someone asked for.
@@ -91,8 +128,8 @@ type Outcome struct {
 	Error string
 }
 
-// DeployFunc deploys run r of d. ctx ends at Close.
-type DeployFunc func(ctx context.Context, d Deployment, r Run) Outcome
+// DeployFunc deploys run r of d and tells its progress to report. ctx ends at Close.
+type DeployFunc func(ctx context.Context, d Deployment, r Run, report Report) Outcome
 
 // active is a run that is running or queued, in memory.
 type active struct {
@@ -100,6 +137,8 @@ type active struct {
 	d      Deployment
 	deploy DeployFunc
 	done   chan struct{}
+	// followers get the progress; guarded by Service.mu, closed when the run ends.
+	followers map[chan Progress]struct{}
 }
 
 // slot is a deployment's run under way and the one queued after it.
@@ -112,6 +151,7 @@ type slot struct {
 type Ticket struct {
 	RunID int64
 	done  <-chan struct{}
+	a     *active
 }
 
 // Done is closed when the run is over.
@@ -156,13 +196,13 @@ func (s *Service) Deploy(ctx context.Context, d Deployment, req Request, deploy 
 		return Ticket{}, err
 	}
 	run.ID = id
-	a := &active{run: run, d: d, deploy: deploy, done: make(chan struct{})}
+	a := &active{run: run, d: d, deploy: deploy, done: make(chan struct{}), followers: map[chan Progress]struct{}{}}
 
 	s.mu.Lock()
 	if s.closed || s.ctx.Err() != nil {
 		s.mu.Unlock()
 		s.finish(context.WithoutCancel(ctx), a, Outcome{Status: StatusFailed, Error: "nudge shut down before the run started"})
-		close(a.done)
+		s.end(a)
 		return Ticket{}, ErrClosed
 	}
 	sl := s.slots[d.ID]
@@ -193,9 +233,76 @@ func (s *Service) Deploy(ctx context.Context, d Deployment, req Request, deploy 
 			}
 		}
 		s.finish(bg, replaced, Outcome{Status: StatusSuperseded, Error: fmt.Sprintf("replaced by run %d before it started; its variables went into that run", id)})
-		close(replaced.done)
+		s.end(replaced)
 	}
-	return Ticket{RunID: id, done: a.done}, nil
+	return Ticket{RunID: id, done: a.done, a: a}, nil
+}
+
+// end closes a's followers and marks it done, in one step under mu, so a Follow sees
+// either a follower to close or a run that is over.
+func (s *Service) end(a *active) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for ch := range a.followers {
+		close(ch)
+		delete(a.followers, ch)
+	}
+	close(a.done)
+}
+
+// Follow returns the progress of t's run as it happens, starting with the step it is
+// at, until the run ends and the channel closes (at once for a run already over). stop
+// ends following early; call it in any case.
+func (s *Service) Follow(t Ticket) (progress <-chan Progress, stop func()) {
+	ch := make(chan Progress, followBuffer)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	select {
+	case <-t.done:
+		close(ch)
+		return ch, func() {}
+	default:
+	}
+	a := t.a
+	if a.run.Step != "" {
+		ch <- Progress{Step: a.run.Step}
+	}
+	a.followers[ch] = struct{}{}
+	return ch, func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if _, ok := a.followers[ch]; ok {
+			delete(a.followers, ch)
+			close(ch)
+		}
+	}
+}
+
+// report records p on a (a new step, a warning) and passes it to a's followers.
+func (s *Service) report(a *active, p Progress) {
+	s.mu.Lock()
+	changed := p.Step != "" && p.Step != a.run.Step
+	if changed {
+		a.run.Step = p.Step
+	}
+	if p.Step == "" {
+		p.Step = a.run.Step
+	}
+	if p.Warning && len(a.run.Warnings) < maxWarnings {
+		a.run.Warnings = append(a.run.Warnings, p.Message)
+	}
+	for ch := range a.followers {
+		select {
+		case ch <- p:
+		default:
+		}
+	}
+	s.mu.Unlock()
+	if changed {
+		if _, err := s.db.ExecContext(context.WithoutCancel(s.ctx), `UPDATE deployment_runs SET step = ? WHERE id = ?`, string(p.Step), a.run.ID); err != nil {
+			s.log.Error("deployment run step", "deployment", a.d.ID, "run", a.run.ID, "err", err)
+		}
+	}
 }
 
 // loop runs a and then the run queued meanwhile, until none is left.
@@ -215,7 +322,7 @@ func (s *Service) loop(id int64, sl *slot, a *active) {
 // execute runs a's deploy and records the outcome; at shutdown it fails the run
 // without starting it.
 func (s *Service) execute(a *active) {
-	defer close(a.done)
+	defer s.end(a)
 	// The bookkeeping outlives a shutdown, so the run doesn't stay "running".
 	ctx := context.WithoutCancel(s.ctx)
 	exists := true
@@ -235,7 +342,7 @@ func (s *Service) execute(a *active) {
 		s.log.Error("deployment run start", "deployment", a.d.ID, "run", a.run.ID, "err", err)
 	}
 	a.run.Status, a.run.StartedAt = StatusRunning, &start
-	out := a.deploy(s.ctx, a.d, a.run)
+	out := a.deploy(s.ctx, a.d, a.run, func(p Progress) { s.report(a, p) })
 	if s.ctx.Err() != nil && out.Status == StatusFailed {
 		out.Error = "nudge shut down during the run"
 	}
@@ -257,9 +364,15 @@ func (s *Service) finish(ctx context.Context, a *active, out Outcome) {
 	if err != nil {
 		previous = []byte("{}")
 	}
+	s.mu.Lock()
+	warnings, err := json.Marshal(append([]string{}, a.run.Warnings...))
+	s.mu.Unlock()
+	if err != nil {
+		warnings = []byte("[]")
+	}
 	if _, err := s.db.ExecContext(ctx, `
-		UPDATE deployment_runs SET status = ?, finished_at = ?, previous = ?, image_before = ?, image_after = ?, error = ? WHERE id = ?`,
-		string(out.Status), s.clock.Now().UnixMilli(), string(previous), out.ImageBefore, out.ImageAfter, out.Error, a.run.ID); err != nil {
+		UPDATE deployment_runs SET status = ?, finished_at = ?, previous = ?, image_before = ?, image_after = ?, error = ?, warnings = ? WHERE id = ?`,
+		string(out.Status), s.clock.Now().UnixMilli(), string(previous), out.ImageBefore, out.ImageAfter, out.Error, string(warnings), a.run.ID); err != nil {
 		s.log.Error("deployment run finish", "deployment", a.d.ID, "run", a.run.ID, "err", err)
 	}
 	s.log.Info("deployment run", "deployment", a.d.Name, "run", a.run.ID, "actor", a.run.ActorKind+":"+a.run.ActorName, "status", out.Status)
@@ -321,15 +434,18 @@ func (s *Service) Wait(ctx context.Context, d Deployment, t Ticket, maxWait time
 	return run, finished, err
 }
 
-const runColumns = `id, deployment_id, actor_kind, actor_name, status, variables, previous, queued_at, started_at, finished_at, image_before, image_after, error`
+const runColumns = `id, deployment_id, actor_kind, actor_name, status, variables, previous, queued_at, started_at, finished_at, image_before, image_after, error, step, warnings`
 
 func scanRun(row scanner) (Run, error) {
 	var r Run
-	var vars, prev string
+	var vars, prev, warnings string
 	var queued int64
 	var started, finished sql.NullInt64
-	if err := row.Scan(&r.ID, &r.Deployment, &r.ActorKind, &r.ActorName, &r.Status, &vars, &prev, &queued, &started, &finished, &r.ImageBefore, &r.ImageAfter, &r.Error); err != nil {
+	if err := row.Scan(&r.ID, &r.Deployment, &r.ActorKind, &r.ActorName, &r.Status, &vars, &prev, &queued, &started, &finished, &r.ImageBefore, &r.ImageAfter, &r.Error, &r.Step, &warnings); err != nil {
 		return Run{}, err
+	}
+	if err := json.Unmarshal([]byte(warnings), &r.Warnings); err != nil {
+		return Run{}, fmt.Errorf("run %d warnings: %w", r.ID, err)
 	}
 	if err := json.Unmarshal([]byte(vars), &r.Variables); err != nil {
 		return Run{}, fmt.Errorf("run %d variables: %w", r.ID, err)

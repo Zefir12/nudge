@@ -167,7 +167,7 @@ func TestLocalChecksBinds(t *testing.T) {
 					return ms, !tt.outside, nil
 				}
 			}
-			_, err := NewLocal(opts).Up(context.Background(), "web", false, func(Line) {})
+			_, err := NewLocal(opts).Up(context.Background(), "web", UpOptions{}, func(Line) {})
 			if !slices.Equal(ex.calls, tt.wantCalls) {
 				t.Errorf("compose runs = %q, want %q", ex.calls, tt.wantCalls)
 			}
@@ -211,7 +211,7 @@ func TestLocalBindCheckFailures(t *testing.T) {
 			var logs bytes.Buffer
 			ex := &configExec{config: tt.config, configErr: tt.configErr}
 			l := NewLocal(LocalOptions{Dir: d, Exec: ex.exec, Mounts: tt.mounts, Log: slog.New(slog.NewTextHandler(&logs, nil))})
-			if _, err := l.Up(context.Background(), "web", false, func(Line) {}); err != nil {
+			if _, err := l.Up(context.Background(), "web", UpOptions{}, func(Line) {}); err != nil {
 				t.Errorf("Up = %v, want the deploy to go on", err)
 			}
 			if !slices.Equal(ex.calls, []string{"config", "up"}) {

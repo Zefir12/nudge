@@ -399,7 +399,7 @@ func (s *server) upStack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.runStack(w, r, "up", func(ctx context.Context, run stackRun) (int, error) {
-		return run.runner.Up(ctx, run.name, req.Pull, run.out)
+		return run.runner.Up(ctx, run.name, stacks.UpOptions{Pull: req.Pull}, run.out)
 	})
 }
 
@@ -525,6 +525,8 @@ type stackRun struct {
 	name   string
 	// out sends a line of compose's output.
 	out func(stacks.Line)
+	// wait, if set, has compose wait for running and healthy services (deployments).
+	wait time.Duration
 }
 
 // runStack syncs a stack to its environment's runner and runs compose, streaming the

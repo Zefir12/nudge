@@ -1147,6 +1147,25 @@ export const listDeployHookRuns = (env: string, id: string) =>
 export type DeploymentAction = 'view' | 'deploy' | 'edit' | 'manage_tokens' | 'manage_members' | 'delete';
 export type DeploymentRole = 'viewer' | 'deployer' | 'maintainer' | 'owner';
 
+// DeploymentHealth says when a deployment's run succeeded: compose waits up to
+// wait_seconds for healthy services, every container keeps running for stable_seconds,
+// then the HTTP check runs; rollback redeploys the replaced values when one fails.
+export interface DeploymentHealth {
+  wait_seconds: number;
+  stable_seconds: number;
+  http?: DeploymentHttpCheck;
+  rollback: boolean;
+}
+
+// DeploymentHttpCheck is a GET of http://127.0.0.1:port/path inside a container of service.
+export interface DeploymentHttpCheck {
+  service: string;
+  port: number;
+  path: string;
+  status: number;
+  timeout_seconds: number;
+}
+
 export interface Deployment {
   name: string;
   environment: number;
@@ -1154,6 +1173,7 @@ export interface Deployment {
   description: string;
   // variables are the stack's .env variables a deploy may set.
   variables: string[];
+  health: DeploymentHealth;
   created_at: string;
   updated_at: string;
   // role is the caller's ('' for an admin who isn't a member); can what it may do.
@@ -1167,6 +1187,7 @@ export interface DeploymentInput {
   stack: string;
   description: string;
   variables: string[];
+  health?: DeploymentHealth;
 }
 
 export interface DeploymentMember {
@@ -1206,6 +1227,9 @@ export interface DeploymentRun {
   image_before: string;
   image_after: string;
   error: string;
+  // step is the last step the run reached; warnings are what it skipped or worked around.
+  step: '' | 'pulling' | 'deploying' | 'checking' | 'rolling_back';
+  warnings: string[];
 }
 
 const depPath = (name: string, rest = '') => `/deployments/${enc(name)}${rest}`;
@@ -1213,8 +1237,10 @@ const depPath = (name: string, rest = '') => `/deployments/${enc(name)}${rest}`;
 export const listDeployments = () => apiFetch<Deployment[]>('/deployments');
 export const getDeployment = (name: string) => apiFetch<Deployment>(depPath(name));
 export const createDeployment = (d: DeploymentInput) => apiFetch<Deployment>('/deployments', post(d));
-export const changeDeployment = (name: string, change: { description?: string; variables?: string[] }) =>
-  apiFetch<Deployment>(depPath(name), { method: 'PATCH', body: JSON.stringify(change) });
+export const changeDeployment = (
+  name: string,
+  change: { description?: string; variables?: string[]; health?: DeploymentHealth },
+) => apiFetch<Deployment>(depPath(name), { method: 'PATCH', body: JSON.stringify(change) });
 export const deleteDeployment = (name: string) => apiFetch<void>(depPath(name), { method: 'DELETE' });
 
 export const listDeploymentMembers = (name: string) =>

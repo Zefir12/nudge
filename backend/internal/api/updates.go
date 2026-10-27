@@ -192,7 +192,7 @@ func (s *server) pullAndDeploy(ctx context.Context, run stackRun, user string) (
 		// The update can go on; only its history is lost.
 		s.log.Warn("stack update: list containers", "env", run.env.ID, "stack", run.name, "err", err)
 	}
-	code, err := run.runner.Up(ctx, run.name, true, run.out)
+	code, err := run.runner.Up(ctx, run.name, stacks.UpOptions{Pull: true, Wait: run.wait}, run.out)
 	// Even a failed or cut-short run may have replaced some services.
 	var changes []updates.Change
 	if before != nil {

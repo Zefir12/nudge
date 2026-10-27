@@ -9,9 +9,12 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"strconv"
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"git.zefirlabs.net/zefir/nudge/backend/internal/probe"
 )
 
 // DefaultCompose is where the image has the docker-compose binary.
@@ -63,6 +66,8 @@ type LocalOptions struct {
 	Mounts MountsFunc
 	// Log gets the bind check's warnings; nil discards them.
 	Log *slog.Logger
+	// Probe runs HTTP checks on this daemon (probe.Prober.Run); nil means it can't.
+	Probe func(ctx context.Context, project string, r probe.Request) error
 }
 
 // Local runs compose here, on stacks in a directory of this machine.
@@ -75,12 +80,13 @@ type Local struct {
 	configDir   string
 	mounts      MountsFunc
 	log         *slog.Logger
+	probe       func(ctx context.Context, project string, r probe.Request) error
 }
 
 // NewLocal returns a runner for the stacks in opts.Dir.
 func NewLocal(opts LocalOptions) *Local {
 	l := &Local{dir: opts.Dir, compose: opts.Compose, dockerHost: opts.DockerHost, exec: opts.Exec,
-		credentials: opts.Credentials, configDir: opts.ConfigDir, mounts: opts.Mounts, log: opts.Log}
+		credentials: opts.Credentials, configDir: opts.ConfigDir, mounts: opts.Mounts, log: opts.Log, probe: opts.Probe}
 	if l.log == nil {
 		l.log = slog.New(slog.DiscardHandler)
 	}
@@ -100,9 +106,10 @@ func (l *Local) Sync(_ context.Context, name string, f Files) error {
 	return l.dir.Write(name, f)
 }
 
-// Up runs `up -d --remove-orphans`, with `--pull always` when pull is set. With
-// LocalOptions.Mounts it first checks the stack's binds (checkBinds).
-func (l *Local) Up(ctx context.Context, name string, pull bool, out func(Line)) (int, error) {
+// Up runs `up -d --remove-orphans`, with `--pull always` when opts.Pull is set and
+// `--wait --wait-timeout` with opts.Wait. With LocalOptions.Mounts it first checks the
+// stack's binds (checkBinds).
+func (l *Local) Up(ctx context.Context, name string, opts UpOptions, out func(Line)) (int, error) {
 	if _, err := l.dir.Read(name); err != nil {
 		return 0, err
 	}
@@ -110,8 +117,11 @@ func (l *Local) Up(ctx context.Context, name string, pull bool, out func(Line)) 
 		return 0, err
 	}
 	args := []string{"up", "--detach", "--remove-orphans"}
-	if pull {
+	if opts.Pull {
 		args = append(args, "--pull", "always")
+	}
+	if opts.Wait > 0 {
+		args = append(args, "--wait", "--wait-timeout", strconv.Itoa(int(opts.Wait.Round(time.Second)/time.Second)))
 	}
 	return l.run(ctx, name, args, out)
 }
@@ -123,6 +133,17 @@ func (l *Local) Down(ctx context.Context, name string, volumes bool, out func(Li
 		args = append(args, "--volumes")
 	}
 	return l.run(ctx, name, args, out)
+}
+
+// Probe runs r with LocalOptions.Probe.
+func (l *Local) Probe(ctx context.Context, name string, r probe.Request) error {
+	if !ValidName(name) {
+		return fmt.Errorf("stack name %q is invalid", name)
+	}
+	if l.probe == nil {
+		return probe.ErrNoSelf
+	}
+	return l.probe(ctx, name, r)
 }
 
 // Remove deletes the stack's directory.

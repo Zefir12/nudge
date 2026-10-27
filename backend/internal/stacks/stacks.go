@@ -12,6 +12,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"time"
+
+	"git.zefirlabs.net/zefir/nudge/backend/internal/probe"
 )
 
 // File names inside a stack's directory.
@@ -191,13 +194,28 @@ type Line struct {
 	Text   string
 }
 
+// UpOptions are the choices of a compose up.
+type UpOptions struct {
+	// Pull pulls every image first.
+	Pull bool
+	// Wait, if set, makes compose wait up to this long for the services to be running
+	// and healthy (`--wait --wait-timeout`), failing if they aren't.
+	Wait time.Duration
+}
+
+// Prober is a Runner that can run an HTTP check inside its environment.
+type Prober interface {
+	// Probe runs r for stack name; see probe.Prober.Run for the errors.
+	Probe(ctx context.Context, name string, r probe.Request) error
+}
+
 // Runner deploys stacks to one environment's daemon.
 type Runner interface {
 	// Sync makes the runner's copy of stack name match f.
 	Sync(ctx context.Context, name string, f Files) error
-	// Up runs compose up, with pull also pulling every image first, and returns
-	// compose's exit code. out gets each output line, from one goroutine.
-	Up(ctx context.Context, name string, pull bool, out func(Line)) (int, error)
+	// Up runs compose up as opts says and returns compose's exit code. out gets each
+	// output line, from one goroutine.
+	Up(ctx context.Context, name string, opts UpOptions, out func(Line)) (int, error)
 	// Down runs compose down, with volumes also removing the project's volumes.
 	Down(ctx context.Context, name string, volumes bool, out func(Line)) (int, error)
 	// Remove deletes the runner's copy of stack name.
