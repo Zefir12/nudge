@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"git.zefirlabs.net/zefir/nudge/backend/internal/allowances"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/audit"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/deployhooks"
@@ -79,7 +80,8 @@ func newTestHandlerOpts(t *testing.T, connect environments.ConnectFunc, mod func
 	opts := Options{
 		Log: slog.New(slog.DiscardHandler), Version: "v1.0.0", Auth: svc, Envs: envs, Registries: regs, Audit: aud, Updates: upd,
 		Webhooks: hooks, DeployHooks: deploys, Deployments: deps, Web: web,
-		Usage: usage.New(usage.Options{DB: st.DB(), Envs: envs, Clock: fixedClock{now}}),
+		Usage:      usage.New(usage.Options{DB: st.DB(), Envs: envs, Clock: fixedClock{now}}),
+		Allowances: allowances.New(allowances.Options{DB: st.DB(), Now: func() time.Time { return now }}),
 	}
 	if mod != nil {
 		mod(&opts)

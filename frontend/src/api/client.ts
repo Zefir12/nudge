@@ -224,6 +224,44 @@ export const setUserEnvironments = (id: number, environments: number[]) =>
     body: JSON.stringify({ environments }),
   });
 
+// AllowanceLimits is what a user's containers may take in total in one environment.
+export interface AllowanceLimits {
+  cpus_milli: number;
+  memory_bytes: number;
+  disk_bytes: number;
+  max_containers: number;
+  // port_min..port_max are the host ports the user may publish; both 0 allows none.
+  port_min: number;
+  port_max: number;
+  // images are image patterns (nginx, ghcr.io/me/*); empty allows any.
+  images: string[];
+  updated_at?: string;
+}
+
+export interface AllowanceUsage {
+  cpus_milli: number;
+  memory_bytes: number;
+  disk_bytes: number;
+  containers: number;
+}
+
+// Allowance is a user's allowance (null without one), what they use and what is left.
+export interface Allowance {
+  user: number;
+  limits: AllowanceLimits | null;
+  used: AllowanceUsage;
+  left: AllowanceUsage | null;
+}
+
+// user is for admins; a user gets their own.
+const allowancePath = (env: string, user?: number) =>
+  `/environments/${env}/allowance${user === undefined ? '' : `?user=${user}`}`;
+export const getAllowance = (env: string, user?: number) => apiFetch<Allowance>(allowancePath(env, user));
+export const setAllowance = (env: string, user: number, limits: AllowanceLimits) =>
+  apiFetch<AllowanceLimits>(allowancePath(env, user), { method: 'PUT', body: JSON.stringify(limits) });
+export const deleteAllowance = (env: string, user: number) =>
+  apiFetch<void>(allowancePath(env, user), { method: 'DELETE' });
+
 export const listRegistries = () => apiFetch<Registry[]>('/registries');
 export const getRegistry = (id: number) => apiFetch<Registry>(`/registries/${id}`);
 export const createRegistry = (r: RegistryInput) => apiFetch<Registry>('/registries', post(r));

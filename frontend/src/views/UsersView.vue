@@ -14,6 +14,7 @@ import {
   type Environment,
   type Role,
 } from '../api/client';
+import AllowanceForm from '../components/AllowanceForm.vue';
 import { formatDate } from '../format';
 import { currentUser } from '../session';
 
@@ -30,6 +31,8 @@ const newPassword = ref('');
 const granting = ref<Account | null>(null);
 const allEnvironments = ref<Environment[]>([]);
 const granted = ref<number[]>([]);
+// allowing is the user whose allowances the allowance form edits, null when it is closed.
+const allowing = ref<Account | null>(null);
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -129,6 +132,16 @@ async function onEnvironmentsSubmit() {
   }
 }
 
+async function onAllowance(u: Account) {
+  error.value = '';
+  try {
+    allEnvironments.value = await listEnvironments();
+    allowing.value = u;
+  } catch (e) {
+    error.value = message(e);
+  }
+}
+
 async function onDelete(u: Account) {
   if (!window.confirm(`Delete ${u.username}? Their sessions, tokens and webhooks go with them.`)) return;
   error.value = '';
@@ -136,6 +149,7 @@ async function onDelete(u: Account) {
     await deleteUser(u.id);
     if (resetting.value?.id === u.id) resetting.value = null;
     if (granting.value?.id === u.id) granting.value = null;
+    if (allowing.value?.id === u.id) allowing.value = null;
     await load();
   } catch (e) {
     error.value = message(e);
@@ -150,7 +164,8 @@ onMounted(load);
   <p class="muted">
     Admins can do everything; users only what is open to them: the deployments they are a member of, and in
     the environments given to them only their own containers, volumes and networks. SSO users get their role
-    from the provider on every login, so here they can only be disabled.
+    from the provider on every login, so here they can only be disabled. A user's allowance caps what all
+    their containers in an environment may take together.
   </p>
 
   <section class="card">
@@ -207,6 +222,13 @@ onMounted(load);
       <button type="submit" class="primary" :disabled="busy">Save</button>
       <button type="button" @click="granting = null">Cancel</button>
     </form>
+    <AllowanceForm
+      v-if="allowing"
+      :key="allowing.id"
+      :user="allowing"
+      :environments="allEnvironments"
+      @close="allowing = null"
+    />
     <p v-if="error" class="error" role="alert">{{ error }}</p>
   </section>
 
@@ -249,6 +271,7 @@ onMounted(load);
             <td class="wide-only">{{ formatDate(u.created_at) }}</td>
             <td class="row-actions">
               <button v-if="u.role === 'user'" type="button" @click="onEnvironments(u)">Environments</button>
+              <button v-if="u.role === 'user'" type="button" @click="onAllowance(u)">Allowance</button>
               <button v-if="!u.sso" type="button" @click="onReset(u)">Reset password</button>
               <button type="button" @click="onDisable(u)">{{ u.disabled ? 'Enable' : 'Disable' }}</button>
               <button type="button" class="danger" @click="onDelete(u)">Delete</button>

@@ -216,6 +216,20 @@ func (s *Service) breakGlass(a Account) bool {
 	return s.adminOnly && !a.SSO && strings.EqualFold(a.Username, AdminUsername)
 }
 
+// OwnerID returns the id of the user whose owner key is key, ErrUserNotFound if no user
+// has it (any more).
+func (s *Service) OwnerID(ctx context.Context, key string) (int64, error) {
+	var id int64
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM users WHERE owner_key = ?`, key).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrUserNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("owner: %w", err)
+	}
+	return id, nil
+}
+
 // OwnerKey returns the value of the owner label on the objects user id owns: random per
 // user, so a user created later never inherits a deleted user's objects.
 func (s *Service) OwnerKey(ctx context.Context, id int64) (string, error) {

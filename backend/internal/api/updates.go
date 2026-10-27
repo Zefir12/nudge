@@ -149,7 +149,7 @@ func (s *server) updateContainerImage(ctx context.Context, env environments.Envi
 	if digest.MatchString(ref) || strings.Contains(ref, "@") || !validPullRef(ref) {
 		return containerUpdate{}, errPinnedImage
 	}
-	if err := s.pullWithAuth(ctx, rp.c, ref); err != nil {
+	if err := s.pullOwned(ctx, rp.env.ID, rp.c, ref, rp.owner); err != nil {
 		return containerUpdate{}, err
 	}
 	ictx, cancel := context.WithTimeout(ctx, dockerTimeout)
@@ -168,6 +168,7 @@ func (s *server) updateContainerImage(ctx context.Context, env environments.Envi
 	if err != nil {
 		return containerUpdate{}, err
 	}
+	s.dropPulledImage(ctx, rp.env.ID, rp.c, rp.owner, rp.old.Image)
 	s.recordUpdates(ctx, user, []updates.Change{{
 		Environment: rp.env.ID, Kind: updates.KindContainer, Target: strings.TrimPrefix(rp.old.Name, "/"), Image: ref,
 		OldImageID: rp.old.Image, OldDigest: updates.DigestFor(ref, rp.oldImage.RepoDigests),

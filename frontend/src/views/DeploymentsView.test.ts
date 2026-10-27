@@ -47,14 +47,57 @@ async function mountView() {
 }
 
 describe('DeploymentsView', () => {
-  it('shows a user the list without the create form or environments', async () => {
+  it('shows a user the list and their allowance without the create form', async () => {
     currentUser.value = user;
-    // No GET /environments stub: a user's view must not ask for them.
-    stubApi({ 'GET /deployments': { body: [{ ...shop, role: 'deployer' }] } });
+    stubApi({
+      'GET /deployments': { body: [{ ...shop, role: 'deployer' }] },
+      // The environments are only asked for the allowance card.
+      'GET /environments': { body: [local] },
+      'GET /environments/1/allowance': {
+        body: {
+          user: 2,
+          limits: {
+            cpus_milli: 1000,
+            memory_bytes: 8 * 1024 ** 3,
+            disk_bytes: 20 * 1024 ** 3,
+            max_containers: 5,
+            port_min: 8000,
+            port_max: 8009,
+            images: [],
+          },
+          used: { cpus_milli: 500, memory_bytes: 512 * 1024 ** 2, disk_bytes: 0, containers: 2 },
+          left: { cpus_milli: 500, memory_bytes: 7.5 * 1024 ** 3, disk_bytes: 20 * 1024 ** 3, containers: 3 },
+        },
+      },
+    });
     const { wrapper } = await mountView();
     expect(wrapper.find('form.create').exists()).toBe(false);
     expect(wrapper.find('[role="alert"]').exists()).toBe(false);
     expect(wrapper.find('tbody tr').text()).toContain('deployer');
+    const card = wrapper.text();
+    expect(card).toContain('Your allowance');
+    expect(card).toContain('0.5 / 1');
+    expect(card).toContain('512 MiB / 8 GiB');
+    expect(card).toContain('2 / 5');
+    expect(card).toContain('8000–8009');
+  });
+
+  it('tells a user without an allowance what that means', async () => {
+    currentUser.value = user;
+    stubApi({
+      'GET /deployments': { body: [] },
+      'GET /environments': { body: [local] },
+      'GET /environments/1/allowance': {
+        body: {
+          user: 2,
+          limits: null,
+          used: { cpus_milli: 0, memory_bytes: 0, disk_bytes: 0, containers: 0 },
+          left: null,
+        },
+      },
+    });
+    const { wrapper } = await mountView();
+    expect(wrapper.text()).toContain("No allowance here: you can't create or start containers.");
   });
 
   it('lists deployments', async () => {

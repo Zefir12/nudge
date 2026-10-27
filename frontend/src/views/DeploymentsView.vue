@@ -9,6 +9,7 @@ import {
   type Deployment,
   type StackSummary,
 } from '../api/client';
+import MyAllowances from '../components/MyAllowances.vue';
 import { environments, loadEnvironments } from '../environments';
 import { currentUser } from '../session';
 
@@ -159,6 +160,8 @@ onMounted(() => {
       </table>
     </div>
   </section>
+
+  <MyAllowances v-if="!isAdmin" />
 </template>
 
 <style scoped>
