@@ -21,13 +21,13 @@ dumping long views.
 
 ## Sanity check
     fj version                   # must be 0.6.x (Go, gh-style)
-    fj api user --jq .login      # must print klodzik; if not, stop and tell zefir
+    fj api user --jq .login      # must print this machine's bot login; if it fails, stop and tell zefir
 
 This is the Go `fj` 0.6 with gh-style commands. Some machines may still have the older
 Rust forgejo-cli 0.7, also called `fj`: there, `fj version` and `fj api` are unknown
 commands, and it has `fj whoami` and `fj issue search`. If you find that one, don't work
 around it with the old syntax. Stop and ask zefir to install the Go fj 0.6 on that
-machine (logged in as klodzik, config in `~/.config/fj/config.yaml`). The gh-style
+machine (logged in as that machine's bot, config in `~/.config/fj/config.yaml`). The gh-style
 `--json`/`--jq` output is why: it saves tokens on every issue and PR read.
 
 ## Issues
