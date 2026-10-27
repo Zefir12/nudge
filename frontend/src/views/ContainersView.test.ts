@@ -5,7 +5,7 @@ import { createMemoryHistory } from 'vue-router';
 import type { ContainerSummary } from '../api/client';
 import { createAppRouter } from '../router';
 import { currentUser } from '../session';
-import { admin, stubApi, stubSockets, type FakeWebSocket } from '../test-utils';
+import { admin, user, stubApi, stubSockets, type FakeWebSocket } from '../test-utils';
 import ContainersView from './ContainersView.vue';
 
 const base: ContainerSummary = {
@@ -245,5 +245,14 @@ describe('ContainersView', () => {
     await router.push('/env/2/containers');
     await flushPromises();
     expect(wrapper.findAll('tbody tr')).toHaveLength(1);
+  });
+
+  it('offers a user the deploy form instead of the admin one', async () => {
+    currentUser.value = user;
+    stubApi({ 'GET /environments/1/containers': { body: containers } });
+    const { wrapper } = await mountAt('/env/1/containers');
+    expect(wrapper.find('a.primary').text()).toBe('Deploy');
+    expect(wrapper.find('a.primary').attributes('href')).toBe('/env/1/deploy');
+    expect(wrapper.text()).not.toContain('Check for updates');
   });
 });

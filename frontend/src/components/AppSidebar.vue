@@ -46,33 +46,41 @@ const globalItems = [
 const isAdmin = computed(() => !!currentUser.value?.admin);
 const visibleItems = computed(() => globalItems.filter((item) => isAdmin.value || item.users));
 
+// users: sections open to users without the admin role.
 const sections = [
   { name: 'stacks', label: 'Stacks', icon: 'M12 2L2 7l10 5 10-5zM2 17l10 5 10-5M2 12l10 5 10-5' },
   {
     name: 'containers',
     label: 'Containers',
+    users: true,
     icon: 'M21 16V8l-9-5-9 5v8l9 5 9-5zM3.3 7L12 12l8.7-5M12 22V12',
   },
   { name: 'images', label: 'Images', icon: 'M3 3h18v18H3zM3 9h18M9 21V9' },
   {
     name: 'volumes',
     label: 'Volumes',
+    users: true,
     icon: 'M22 12H2M5.5 5h13L22 12v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6zM6 16h.01M10 16h.01',
   },
   {
     name: 'networks',
     label: 'Networks',
+    users: true,
     icon: 'M18 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 22a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM8.6 13.5l6.8 4M15.4 6.5l-6.8 4',
   },
-  { name: 'events', label: 'Events', icon: 'M22 12h-4l-3 9L9 3l-3 9H2' },
+  { name: 'events', label: 'Events', users: true, icon: 'M22 12h-4l-3 9L9 3l-3 9H2' },
 ];
+const visibleSections = computed(() => sections.filter((s) => isAdmin.value || s.users));
 const overviewIcon = 'M12 14l4-4M3.3 19a10 10 0 1 1 17.4 0';
 
 const envInfo = computed(() => environments.value?.find((e) => String(e.id) === props.env));
 
-// A section is active on its list and on its detail and form pages (stack, stack-new).
+// A section is active on its list and on its detail and form pages (stack, stack-new);
+// the tenant form's pages are the containers'.
 function sectionActive(name: string) {
-  return !!route.params.env && String(route.name ?? '').startsWith(name.slice(0, -1));
+  const here = String(route.name ?? '');
+  if (!route.params.env) return false;
+  return here.startsWith(name.slice(0, -1)) || (name === 'containers' && here.startsWith('tenant-'));
 }
 
 // A global page is active on itself and below it (/registries/3).
@@ -96,7 +104,7 @@ function globalActive(to: string, exact?: boolean) {
       </button>
     </div>
 
-    <EnvSwitcher v-if="isAdmin" />
+    <EnvSwitcher />
 
     <nav aria-label="Global">
       <span class="group">Global</span>
@@ -112,7 +120,7 @@ function globalActive(to: string, exact?: boolean) {
       </RouterLink>
     </nav>
 
-    <nav v-if="env && isAdmin" class="env" :aria-label="`Environment ${envInfo?.name ?? env}`">
+    <nav v-if="env" class="env" :aria-label="`Environment ${envInfo?.name ?? env}`">
       <span class="group">
         <span class="lamp" :class="{ on: envInfo?.online }" aria-hidden="true" />
         {{ envInfo?.name ?? env }}
@@ -126,7 +134,7 @@ function globalActive(to: string, exact?: boolean) {
         Overview
       </RouterLink>
       <RouterLink
-        v-for="s in sections"
+        v-for="s in visibleSections"
         :key="s.name"
         :to="{ name: s.name, params: { env } }"
         :class="{ active: sectionActive(s.name) }"

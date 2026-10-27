@@ -1,11 +1,17 @@
 import { flushPromises, mount } from '@vue/test-utils';
-import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 
-import { stubApi } from '../test-utils';
+import { currentUser } from '../session';
+import { admin, stubApi, user } from '../test-utils';
 import VolumeCreate from './VolumeCreate.vue';
+
+beforeEach(() => {
+  currentUser.value = admin;
+});
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  currentUser.value = null;
 });
 
 const media = {
@@ -59,5 +65,14 @@ describe('VolumeCreate', () => {
     await flushPromises();
     expect(wrapper.find('[role=alert]').text()).toBe('the Docker host has no such volume driver');
     expect(wrapper.emitted('created')).toBeUndefined();
+  });
+
+  it('asks a user only for a name and labels', async () => {
+    currentUser.value = user;
+    const wrapper = mount(VolumeCreate, { props: { env: '1' } });
+    expect(wrapper.find('input[name=name]').attributes('required')).toBeDefined();
+    expect(wrapper.find('input[name=driver]').exists()).toBe(false);
+    expect(wrapper.find('textarea[name=options]').exists()).toBe(false);
+    expect(wrapper.find('textarea[name=labels]').exists()).toBe(true);
   });
 });

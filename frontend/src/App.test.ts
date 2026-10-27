@@ -21,13 +21,17 @@ async function mountApp(path: string) {
 }
 
 describe('App', () => {
-  it("shows a user 'not allowed' on an admin page without asking the API", async () => {
-    currentUser.value = user;
-    const fetch = stubApi({});
-    const wrapper = await mountApp('/registries');
-    expect(wrapper.find('main [role="alert"]').text()).toContain('Not allowed');
-    expect(fetch).not.toHaveBeenCalled();
-  });
+  it.each(['/registries', '/env/1/images', '/env/1/stacks', '/env/1/containers/new'])(
+    "shows a user 'not allowed' on the admin page %s without asking the API",
+    async (path) => {
+      currentUser.value = user;
+      const fetch = stubApi({ 'GET /environments': { body: [] } });
+      const wrapper = await mountApp(path);
+      expect(wrapper.find('main [role="alert"]').text()).toContain('Not allowed');
+      // Only the sidebar's environment switcher asks.
+      expect(fetch.mock.calls.every(([url]) => url === '/api/v1/environments')).toBe(true);
+    },
+  );
 
   it('shows a user the pages open to users', async () => {
     currentUser.value = user;

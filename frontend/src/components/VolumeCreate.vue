@@ -1,12 +1,16 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 
 import { createVolume, type Volume } from '../api/client';
 import { parsePairs } from '../format';
+import { currentUser } from '../session';
 
 const props = defineProps<{ env: string }>();
 const emit = defineEmits<{ created: [volume: Volume] }>();
 
+// A user's volumes are local, without driver options, and named (the server prefixes the
+// name with theirs).
+const isAdmin = computed(() => !!currentUser.value?.admin);
 const name = ref('');
 const driver = ref('');
 const options = ref('');
@@ -42,15 +46,22 @@ async function onSubmit() {
     <div class="row">
       <label>
         Name
-        <input v-model="name" name="name" maxlength="255" placeholder="generated if empty" :disabled="busy" />
+        <input
+          v-model="name"
+          name="name"
+          maxlength="255"
+          :placeholder="isAdmin ? 'generated if empty' : 'data'"
+          :required="!isAdmin"
+          :disabled="busy"
+        />
       </label>
-      <label>
+      <label v-if="isAdmin">
         Driver
         <input v-model="driver" name="driver" maxlength="255" placeholder="local" :disabled="busy" />
       </label>
     </div>
     <div class="row">
-      <label>
+      <label v-if="isAdmin">
         Driver options (one key=value per line)
         <textarea
           v-model="options"

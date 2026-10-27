@@ -5,7 +5,7 @@ import { createMemoryHistory } from 'vue-router';
 import type { EnvironmentDetail } from '../api/client';
 import { createAppRouter } from '../router';
 import { currentUser } from '../session';
-import { admin, stubApi, stubSockets } from '../test-utils';
+import { admin, user, stubApi, stubSockets } from '../test-utils';
 import DashboardView from './DashboardView.vue';
 
 const env: EnvironmentDetail = {
@@ -94,5 +94,45 @@ describe('DashboardView', () => {
     const wrapper = await mountAt('/env/1');
     expect(wrapper.find('[role=alert]').text()).toContain('the environment is offline');
     expect(wrapper.find('.attention').exists()).toBe(false);
+  });
+
+  it('shows a user their allowance instead of the host and images', async () => {
+    currentUser.value = user;
+    const MiB = 1024 * 1024;
+    stubApi({
+      'GET /environments/1': { body: { ...env, docker: { ...env.docker, images: 0, name: '' } } },
+      'GET /environments/1/volumes': { body: [{}] },
+      'GET /environments/1/networks': { body: [{}] },
+      'GET /environments/1/allowance': {
+        body: {
+          user: 2,
+          limits: {
+            cpus_milli: 2000,
+            memory_bytes: 2048 * MiB,
+            disk_bytes: 0,
+            max_containers: 5,
+            port_min: 0,
+            port_max: 0,
+            images: [],
+          },
+          used: { cpus_milli: 500, memory_bytes: 0, disk_bytes: 0, containers: 1 },
+          left: { cpus_milli: 1500, memory_bytes: 2048 * MiB, disk_bytes: 0, containers: 4 },
+        },
+      },
+      'GET /environments/1/stats': {
+        body: { containers: [], total: { cpu_percent: 0, memory_usage: 0, network_rx: 0, network_tx: 0 } },
+      },
+    });
+    const wrapper = await mountAt('/env/1');
+    expect(wrapper.text()).toContain('Your allowance');
+    expect(wrapper.text()).toContain('0.5 / 2');
+    expect(wrapper.find('a.primary').attributes('href')).toBe('/env/1/deploy');
+    expect(wrapper.findAll('.count .label').map((l) => l.text())).toEqual([
+      'Containers',
+      'Volumes',
+      'Networks',
+    ]);
+    expect(wrapper.find('.attention').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain('Host name');
   });
 });

@@ -12,12 +12,15 @@ import { useLoad } from '../composables/useLoad';
 import { useParams } from '../composables/params';
 import { useUpdates } from '../composables/useUpdates';
 import { formatPort, matches } from '../format';
+import { currentUser } from '../session';
 
 const { env } = useParams();
 const { data, error, reload } = useLoad(env, listContainers);
 // Docker events refresh the list, so changes made elsewhere show up by themselves.
 useLiveReload(env, ['container'], reload);
 const { updateFor, check, checking, checkError } = useUpdates(env);
+// Users deploy through the tenant form; update checks are for admins.
+const isAdmin = computed(() => !!currentUser.value?.admin);
 
 const query = ref('');
 // "stopped" groups the states of containers that aren't running.
@@ -37,11 +40,14 @@ const shown = computed(() =>
   <div class="title">
     <h1>Containers</h1>
     <div class="title-actions">
-      <button type="button" :disabled="checking" @click="check">
+      <button v-if="isAdmin" type="button" :disabled="checking" @click="check">
         {{ checking ? 'Checking for updates…' : 'Check for updates' }}
       </button>
-      <RouterLink class="button primary" :to="{ name: 'container-new', params: { env } }"
+      <RouterLink v-if="isAdmin" class="button primary" :to="{ name: 'container-new', params: { env } }"
         >New container</RouterLink
+      >
+      <RouterLink v-else class="button primary" :to="{ name: 'tenant-deploy', params: { env } }"
+        >Deploy</RouterLink
       >
     </div>
   </div>

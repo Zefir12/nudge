@@ -55,8 +55,15 @@ describe('AppSidebar', () => {
     const wrapper = await mountSidebar('/deployments', '1');
     expect(wrapper.find('.account .role').text()).toBe('User');
     expect(labels(wrapper.findAll('nav[aria-label="Global"] a'))).toEqual(['Deployments', 'API tokens']);
-    expect(wrapper.find('nav.env').exists()).toBe(false);
-    expect(wrapper.find('.switcher').exists()).toBe(false);
+    // Their environment pages: no stacks or images, which stay with admins.
+    expect(labels(wrapper.findAll('nav.env a'))).toEqual([
+      'Overview',
+      'Containers',
+      'Volumes',
+      'Networks',
+      'Events',
+    ]);
+    expect(wrapper.find('.switcher').exists()).toBe(true);
   });
 
   it('leaves out the environment part when there is no environment', async () => {
@@ -70,6 +77,8 @@ describe('AppSidebar', () => {
     { path: '/env/1', env: '1', want: 'Overview' },
     { path: '/env/1/containers/abc', env: '1', want: 'Containers' },
     { path: '/env/1/new-stack', env: '1', want: 'Stacks' },
+    { path: '/env/1/deploy', env: '1', want: 'Containers' },
+    { path: '/env/1/containers/abc/redeploy', env: '1', want: 'Containers' },
   ])('marks $want active on $path', async ({ path, env, want }) => {
     const wrapper = await mountSidebar(path, env);
     expect(labels(wrapper.findAll('a[aria-current="page"]'))).toEqual([want]);

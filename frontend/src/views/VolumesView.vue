@@ -9,8 +9,11 @@ import { useLiveReload } from '../composables/useEvents';
 import { useLoad } from '../composables/useLoad';
 import { useParams } from '../composables/params';
 import { formatBytes, formatDate, matches } from '../format';
+import { currentUser } from '../session';
 
 const { env } = useParams();
+// Prunes (and measuring) are for admins.
+const isAdmin = computed(() => !!currentUser.value?.admin);
 const { data, error, reload } = useLoad(env, listVolumes);
 // Docker events refresh the list, so changes made elsewhere show up by themselves.
 useLiveReload(env, ['volume'], reload);
@@ -81,7 +84,7 @@ function sizeTitle(v: Volume): string {
     <VolumeCreate :env="env" @created="reload" />
   </section>
   <section class="card">
-    <div class="prune">
+    <div v-if="isAdmin" class="prune">
       <button type="button" :disabled="pruning" @click="onPrune(false)">Prune anonymous</button>
       <button type="button" class="danger" :disabled="pruning" @click="onPrune(true)">Prune unused</button>
       <button type="button" :disabled="measuring" @click="onMeasure">
