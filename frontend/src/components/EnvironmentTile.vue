@@ -1,18 +1,47 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onMounted, onUnmounted } from 'vue';
 import { RouterLink } from 'vue-router';
 
-import { getEnvironment, type Environment } from '../api/client';
+import { getEnvironment, getEnvironmentSummary, type Environment } from '../api/client';
 import { useLoad } from '../composables/useLoad';
 import { formatBytes, formatDate } from '../format';
 
 // EnvironmentTile is one environment on the global dashboard; it opens that environment.
-// An online environment's Docker info fills in the counts once it arrives.
+// An online environment's Docker info fills in the counts once it arrives, and its usage
+// summary the CPU and memory bars.
 const props = defineProps<{ env: Environment }>();
+
+// refreshMs is how often the bars are asked for again; the server samples at most every
+// 30 s, so asking more often would repeat the same numbers.
+const refreshMs = 30_000;
 
 const id = computed(() => (props.env.online ? String(props.env.id) : ''));
 const { data, error } = useLoad(id, getEnvironment);
 const docker = computed(() => data.value?.docker);
+const { data: usage, reload: reloadUsage } = useLoad(id, getEnvironmentSummary);
+
+let timer: ReturnType<typeof setInterval> | undefined;
+onMounted(() => {
+  timer = setInterval(() => {
+    if (id.value && document.visibilityState !== 'hidden') void reloadUsage();
+  }, refreshMs);
+});
+onUnmounted(() => clearInterval(timer));
+
+// bars are the usage against the host: CPU against every CPU, memory against all of it.
+const bars = computed(() => {
+  const d = docker.value;
+  const u = usage.value;
+  if (!d || !u || !d.ncpu || !d.mem_total) return null;
+  const cpu = Math.min(100, u.cpu_percent / d.ncpu);
+  const mem = Math.min(100, (u.memory_usage / d.mem_total) * 100);
+  return {
+    cpu,
+    mem,
+    cpuLabel: `${cpu.toFixed(cpu < 10 ? 1 : 0)}%`,
+    memLabel: `${formatBytes(u.memory_usage)} / ${formatBytes(d.mem_total)}`,
+  };
+});
 
 const waiting = computed(() => props.env.kind === 'agent' && !props.env.agent?.enrolled);
 const address = computed(() =>
@@ -61,8 +90,20 @@ const status = computed(() => {
           <dd>{{ formatBytes(docker.mem_total) }}</dd>
         </div>
       </dl>
-      <p v-else-if="error" class="note error">Could not read the Docker host: {{ error }}</p>
-      <p v-else class="note muted">Loading…</p>
+      <div v-if="bars" class="bars">
+        <label>
+          <span>CPU</span>
+          <meter class="cpu" min="0" max="100" :value="bars.cpu" />
+          <span class="val">{{ bars.cpuLabel }}</span>
+        </label>
+        <label>
+          <span>Memory</span>
+          <meter class="mem" min="0" max="100" :value="bars.mem" />
+          <span class="val">{{ bars.memLabel }}</span>
+        </label>
+      </div>
+      <p v-if="!docker && error" class="note error">Could not read the Docker host: {{ error }}</p>
+      <p v-else-if="!docker" class="note muted">Loading…</p>
     </template>
     <div v-else class="away">
       <template v-if="waiting">
@@ -188,6 +229,32 @@ dd {
 
 .note {
   margin: 0;
+}
+
+.bars {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.bars label {
+  display: grid;
+  grid-template-columns: 4.5rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.bars meter {
+  width: 100%;
+  height: 0.5rem;
+}
+
+.bars .val {
+  font-family: var(--mono);
+  color: var(--text);
+  white-space: nowrap;
 }
 
 .away {

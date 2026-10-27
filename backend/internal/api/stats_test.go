@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -157,6 +158,12 @@ type statsTest struct {
 
 func newStatsTest(t *testing.T) statsTest {
 	t.Helper()
+	return newStatsTestOpts(t, nil)
+}
+
+// newStatsTestOpts is newStatsTest with mod changing the API's options, if not nil.
+func newStatsTestOpts(t *testing.T, mod func(*Options)) statsTest {
+	t.Helper()
 	running := &container.State{Running: true}
 	fake := &dockertest.Fake{Resources: dockertest.Resources{
 		Containers: []container.Summary{
@@ -181,11 +188,11 @@ func newStatsTest(t *testing.T) statsTest {
 		ContainerDetails: map[string]container.InspectResponse{"web": {State: running}},
 		StatsErr:         errors.New("daemon: secret-detail"),
 	}}
-	et := newEnvTest(t, map[string]*dockertest.Fake{
+	et := newEnvTestOpts(t, map[string]*dockertest.Fake{
 		"local":  fake,
 		"down":   {Resources: dockertest.Resources{ResourceErr: &net.OpError{Op: "dial", Err: errors.New("connection refused")}}},
 		"broken": broken,
-	})
+	}, mod)
 	srv := httptest.NewServer(et.h)
 	t.Cleanup(srv.Close)
 	return statsTest{envTest: et, srv: srv, fake: fake}
@@ -275,6 +282,8 @@ func TestContainerStatsRefused(t *testing.T) {
 		{name: "stopped", path: st.path("local", "/containers/stopped/stats"), cookie: true, code: http.StatusConflict, want: "container is not running"},
 		{name: "offline", path: st.path("down", "/containers/web/stats"), cookie: true, code: http.StatusServiceUnavailable, want: "the environment is offline"},
 		{name: "environment offline", path: st.path("down", "/stats"), cookie: true, code: http.StatusServiceUnavailable, want: "the environment is offline"},
+		{name: "summary offline", path: st.path("down", "/stats/summary"), cookie: true, code: http.StatusServiceUnavailable, want: "the environment is offline"},
+		{name: "summary without session", path: st.path("local", "/stats/summary"), code: http.StatusUnauthorized, want: "authentication required"},
 		{name: "environment without session", path: st.path("local", "/stats"), code: http.StatusUnauthorized, want: "authentication required"},
 	}
 	for _, tt := range tests {
@@ -323,5 +332,127 @@ func TestEnvironmentStats(t *testing.T) {
 		if o != (client.ContainerStatsOptions{IncludePreviousSample: true}) {
 			t.Errorf("options = %+v, want one-shot with a previous sample", o)
 		}
+	}
+}
+
+// fakeClock is a settable Options.Now.
+type fakeClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *fakeClock) Add(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+// The summary samples the environment once per summaryFresh, shares a sampling between
+// concurrent callers and reuses what an overview sampled.
+func TestEnvironmentSummary(t *testing.T) {
+	t.Parallel()
+	clock := &fakeClock{now: time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)}
+	st := newStatsTestOpts(t, func(o *Options) { o.Now = clock.Now })
+	// Each sampling records the stats calls of the two containers that have stats.
+	samplings := func() int { return len(st.fake.StatsOptions()) / 2 }
+	get := func() usageSummary {
+		t.Helper()
+		rec := do(t, st.h, request{method: "GET", path: st.path("local", "/stats/summary"), cookie: st.cookie})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("code = %d (%s)", rec.Code, rec.Body)
+		}
+		var got usageSummary
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	var wg sync.WaitGroup
+	for range 5 {
+		wg.Go(func() { get() })
+	}
+	wg.Wait()
+	want := usageSummary{SampledAt: clock.Now(), CPUPercent: 200, MemoryUsage: 512 << 20, Containers: 2}
+	if got := get(); got != want {
+		t.Errorf("summary = %+v, want %+v", got, want)
+	}
+	if n := samplings(); n != 1 {
+		t.Errorf("samplings = %d, want 1", n)
+	}
+
+	clock.Add(summaryFresh - time.Second)
+	get()
+	if n := samplings(); n != 1 {
+		t.Errorf("samplings while fresh = %d, want 1", n)
+	}
+
+	clock.Add(time.Second)
+	if got := get(); !got.SampledAt.Equal(clock.Now()) {
+		t.Errorf("sampled at %v, want a new sample at %v", got.SampledAt, clock.Now())
+	}
+	if n := samplings(); n != 2 {
+		t.Errorf("samplings when stale = %d, want 2", n)
+	}
+
+	clock.Add(summaryFresh)
+	if rec := do(t, st.h, request{method: "GET", path: st.path("local", "/stats"), cookie: st.cookie}); rec.Code != http.StatusOK {
+		t.Fatalf("overview code = %d (%s)", rec.Code, rec.Body)
+	}
+	if got := get(); !got.SampledAt.Equal(clock.Now()) {
+		t.Errorf("sampled at %v, want the overview's %v", got.SampledAt, clock.Now())
+	}
+	if n := samplings(); n != 3 {
+		t.Errorf("samplings after an overview = %d, want 3 (the overview's)", n)
+	}
+}
+
+// Summaries nobody refreshed for summaryKeep are dropped when another is stored.
+func TestEnvironmentSummaryEviction(t *testing.T) {
+	t.Parallel()
+	clock := &fakeClock{now: time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)}
+	s := &server{summaries: map[int64]*summaryEntry{}, now: clock.Now}
+	s.storeSummary(1, environmentStats{})
+	clock.Add(summaryKeep)
+	s.storeSummary(2, environmentStats{})
+	if len(s.summaries) != 2 {
+		t.Fatalf("summaries = %d, want 2 before summaryKeep passed", len(s.summaries))
+	}
+	clock.Add(time.Second)
+	s.storeSummary(2, environmentStats{})
+	if _, ok := s.summaries[1]; ok || len(s.summaries) != 1 {
+		t.Errorf("summaries = %v, want only environment 2", s.summaries)
+	}
+}
+
+// A sampling cut short, or one that sampled none of the listed containers, is not kept.
+func TestIncomplete(t *testing.T) {
+	t.Parallel()
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	tests := []struct {
+		name  string
+		ctx   context.Context
+		stats environmentStats
+		bad   bool
+	}{
+		{name: "whole", ctx: context.Background(), stats: environmentStats{Containers: []containerUsage{{}}, Skipped: 1}},
+		{name: "no containers", ctx: context.Background(), stats: environmentStats{}},
+		{name: "none sampled", ctx: context.Background(), stats: environmentStats{Skipped: 2}, bad: true},
+		{name: "cut short", ctx: cancelled, stats: environmentStats{Containers: []containerUsage{{}}}, bad: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if err := incomplete(tt.ctx, tt.stats); (err != nil) != tt.bad {
+				t.Errorf("incomplete = %v, want error %v", err, tt.bad)
+			}
+		})
 	}
 }
