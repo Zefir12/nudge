@@ -266,8 +266,9 @@ above stays admin-only.
   other users") also the user's cgroup parent, the sandboxed runtime and a disk cap on
   the writable layer (where the storage driver supports it).
 - With a runtime configured, a daemon that doesn't list it is `409` on create, recreate
-  and update, and starting or restarting a user's container is `409` when the daemon
-  lacks the runtime or the container doesn't run under it (recreate it).
+  and update. Starting or restarting a user's container is `409` when the daemon lacks
+  the runtime, or the container wasn't made with the current tenant settings (its runtime,
+  cgroup parent or, where the storage driver can set one, disk cap differ): recreate it.
 - The image is always pulled first, without any stored registry credentials (so only
   public images), and must fit the allowance (its image patterns and disk). An image that
   sets a label in the `net.zefirlabs.nudge.` namespace is refused, and so is one with a

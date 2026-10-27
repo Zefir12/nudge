@@ -56,27 +56,40 @@ func errNoRuntime(name string) error {
 // admin's): refused if the daemon doesn't list the runtime, without the disk cap if its
 // storage driver can't set one (logged).
 func (s *server) tenantHosting(ctx context.Context, c docker.Client, owner tenantOwner) (TenantHosting, error) {
-	h := s.tenant
 	if owner.key == "" {
 		return TenantHosting{}, nil
 	}
+	h, driver, err := s.daemonHosting(ctx, c)
+	if err != nil {
+		return TenantHosting{}, err
+	}
+	if s.tenant.StorageSize > 0 && h.StorageSize == 0 {
+		s.log.Warn("the storage driver can't limit a container's disk: users' containers get no disk cap", "driver", driver)
+	}
+	return h, nil
+}
+
+// daemonHosting returns the hardening c's daemon gives users' containers and its storage
+// driver: refused if it doesn't list the runtime, without the disk cap if its storage
+// driver can't set one.
+func (s *server) daemonHosting(ctx context.Context, c docker.Client) (TenantHosting, string, error) {
+	h := s.tenant
 	if h.Runtime == "" && h.StorageSize == 0 {
-		return h, nil
+		return h, "", nil
 	}
 	res, err := c.Info(ctx, client.InfoOptions{})
 	if err != nil {
-		return TenantHosting{}, &dockerFailure{msg: "docker info", err: err}
+		return TenantHosting{}, "", &dockerFailure{msg: "docker info", err: err}
 	}
 	if h.Runtime != "" {
 		if _, ok := res.Info.Runtimes[h.Runtime]; !ok {
-			return TenantHosting{}, errNoRuntime(h.Runtime)
+			return TenantHosting{}, "", errNoRuntime(h.Runtime)
 		}
 	}
 	if h.StorageSize > 0 && !storageSizeSupported(res.Info) {
-		s.log.Warn("the storage driver can't limit a container's disk: users' containers get no disk cap", "driver", res.Info.Driver)
 		h.StorageSize = 0
 	}
-	return h, nil
+	return h, res.Info.Driver, nil
 }
 
 // storageSizeSupported reports whether the daemon's storage driver takes a container's
@@ -98,22 +111,35 @@ func storageSizeSupported(info system.Info) bool {
 	return false
 }
 
-// checkStartRuntime refuses to start a user's container (owner key != "") when a runtime
-// is configured and the daemon doesn't list it, or the container was made without it
-// (before it was configured): recreating it builds it with the runtime.
-func (s *server) checkStartRuntime(ctx context.Context, c docker.Client, key string, hc *container.HostConfig) error {
-	if key == "" || s.tenant.Runtime == "" {
+// checkStartHosting refuses to start a user's container (owner key != "") on a daemon
+// without the configured runtime, or that was made with other hosting than a user's
+// container gets now (before a setting was configured or changed): its runtime, cgroup
+// parent and, where the storage driver can set one, disk cap. Recreating it builds it
+// with the current ones.
+func (s *server) checkStartHosting(ctx context.Context, c docker.Client, key string, hc *container.HostConfig) error {
+	if key == "" || s.tenant == (TenantHosting{}) {
 		return nil
 	}
-	if hc.Runtime != s.tenant.Runtime {
-		return &statusError{code: http.StatusConflict, msg: fmt.Sprintf("users' containers run with runtime %q here: recreate the container to start it", s.tenant.Runtime)}
-	}
-	res, err := c.Info(ctx, client.InfoOptions{})
+	owner, err := s.tenantOwnerOf(ctx, key)
 	if err != nil {
-		return fmt.Errorf("docker info: %w", err)
+		return err
 	}
-	if _, ok := res.Info.Runtimes[s.tenant.Runtime]; !ok {
-		return errNoRuntime(s.tenant.Runtime)
+	h, _, err := s.daemonHosting(ctx, c)
+	if err != nil {
+		return err
 	}
-	return nil
+	var want container.HostConfig
+	h.hostSettings(&want, owner)
+	var stale string
+	switch {
+	case h.Runtime != "" && hc.Runtime != want.Runtime:
+		stale = fmt.Sprintf("run with runtime %q", h.Runtime)
+	case h.CgroupParent != "" && hc.CgroupParent != want.CgroupParent:
+		stale = fmt.Sprintf("run in cgroup parent %q", want.CgroupParent)
+	case h.StorageSize > 0 && hc.StorageOpt["size"] != want.StorageOpt["size"]:
+		stale = fmt.Sprintf("have a disk cap of %d bytes", h.StorageSize)
+	default:
+		return nil
+	}
+	return &statusError{code: http.StatusConflict, msg: "users' containers " + stale + " here: recreate the container to start it"}
 }

@@ -249,6 +249,11 @@ opt-in because each needs host setup nudge can't do itself, and they apply to us
 containers only, in every environment: each host (the server's and every agent's) needs
 the same setup. Admins' containers are left as they are.
 
+nudge refuses (409) to start or restart a user's container made with other settings than
+the current ones, for example one made before a setting was added or changed: its
+runtime, cgroup parent and disk cap (where the storage driver can set one) must match.
+Recreating it (the edit form, or an update) builds it with the current settings.
+
 ### A cgroup slice per user
 With `NUDGE_TENANT_CGROUP_PARENT=nudge-u{id}.slice` every container of user 7 goes into
 `nudge-u7.slice`, so the kernel caps the user's total even if nudge's own allowance check
@@ -282,10 +287,8 @@ reach. Install it and register it with the daemon (`runsc install`, which adds i
 `/etc/docker/daemon.json`, then restart Docker); `docker info` lists it under Runtimes.
 Kata Containers (`kata-runtime`, a small VM per container) works the same way.
 
-nudge refuses to create a user's container (409) on a daemon that doesn't list the
-runtime, and to start or restart one that doesn't run under it, for example one made
-before the setting: recreating it (the edit form, or an update) builds it with the
-runtime. The trade-offs: gVisor costs some speed on system-call-heavy work (I/O,
+nudge refuses to create, start or restart a user's container (409) on a daemon that
+doesn't list the runtime. The trade-offs: gVisor costs some speed on system-call-heavy work (I/O,
 networking) and doesn't run everything (some `/proc` and `ioctl` uses); Kata needs
 hardware virtualisation.
 

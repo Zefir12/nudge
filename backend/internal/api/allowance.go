@@ -439,7 +439,7 @@ func refuseOwnerImage(ctx context.Context, c docker.Client, image string) error 
 }
 
 // fitStart checks that container id may start: a user's container must have the
-// configured runtime (checkStartRuntime), fit their allowance (if it was lowered since the
+// configured hosting (checkStartHosting), fit their allowance (if it was lowered since the
 // container was created) and its ports their range.
 func (s *server) fitStart(ctx context.Context, env int64, c docker.Client, id string) (func(), error) {
 	ct, key, err := inspectOwner(ctx, c, id)
@@ -449,7 +449,7 @@ func (s *server) fitStart(ctx context.Context, env int64, c docker.Client, id st
 	if key != "" && ct.HostConfig == nil {
 		return nil, errors.New("inspect: incomplete container settings")
 	}
-	if err := s.checkStartRuntime(ctx, c, key, ct.HostConfig); err != nil {
+	if err := s.checkStartHosting(ctx, c, key, ct.HostConfig); err != nil {
 		return nil, err
 	}
 	return s.fitAllowance(ctx, env, c, key, ct.Config, ct.HostConfig, ct.ID, false)
