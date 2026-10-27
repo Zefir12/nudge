@@ -1,7 +1,9 @@
-# Agent configuration (`nudge agent`)
+# Agent configuration (`nudge-agent`)
 
 The agent runs on a remote Docker host and dials out to the server, so it needs no
-inbound port (docs/architecture.md has the design). "Add environment" in the UI prints
+inbound port (docs/architecture.md has the design). It has its own image,
+`registrydedic.zefirlabs.net/nudge-agent`, with the same tags as the server's: only the
+agent and docker-compose, none of the server's API, database or web UI. "Add environment" in the UI prints
 the command below with the server URL and a join token filled in.
 
 ```sh
@@ -9,8 +11,14 @@ docker run -d --name nudge-agent --restart unless-stopped \
   -v /var/run/docker.sock:/var/run/docker.sock -v nudge-agent:/data \
   -e NUDGE_SERVER_URL=https://nudge.example.net \
   -e NUDGE_JOIN_TOKEN=<from the UI> \
-  registrydedic.zefirlabs.net/nudge:latest agent
+  registrydedic.zefirlabs.net/nudge-agent:latest agent
 ```
+
+The server image still runs `nudge agent` for hosts set up before the split, with a
+warning at start. To move one, change its image to `nudge-agent` and keep the same
+`/data` volume (the agent's credentials are in `agent.json` there), no new join token
+needed. Keep the server and the agents on the same tag; the tunnel's protocol version
+refuses an agent the server can't talk to.
 
 It also shows the same agent as a compose file:
 [deploy/agent.compose.yml](../../deploy/agent.compose.yml) with the values filled in.

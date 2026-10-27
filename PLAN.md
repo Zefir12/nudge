@@ -1,7 +1,7 @@
 # Plan
 
 nudge: a self-hosted Docker manager. One privileged-socket container serves an API and a
-Vue UI; remote hosts join through `nudge agent`. Design: docs/architecture.md.
+Vue UI; remote hosts join through the agent (`nudge-agent`). Design: docs/architecture.md.
 
 Each task below becomes one issue (one branch, one PR). Tasks within a phase are in
 dependency order. Every task includes tests, docs (docs/api.md, docs/config/, README) and

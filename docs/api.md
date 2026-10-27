@@ -380,7 +380,7 @@ refuses with `409 over your allowance: ...` if the new total is over:
 - `POST /api/v1/environments` `{"name": "nas", "kind": "agent"}` creates an agent
   environment (`kind` must be `agent`: the local one is created automatically) and answers
   `201` with the environment plus its join token:
-  `"join_token": {"token": "nudge_join_…", "expires_at": "...", "docker_run": "docker run -d … nudge:latest agent", "compose": "services:\n  nudge-agent: …"}`.
+  `"join_token": {"token": "nudge_join_…", "expires_at": "...", "docker_run": "docker run -d … nudge-agent:latest agent", "compose": "services:\n  nudge-agent: …"}`.
   `docker_run` starts the agent on the remote host, and `compose` is the same agent as a
   compose file (deploy/agent.compose.yml with the values filled in, quoted and with `$`
   escaped). In both, `NUDGE_SERVER_URL` is

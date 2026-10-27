@@ -1,6 +1,6 @@
 // Package probe runs a deployment's HTTP check from inside the environment: a short-lived
-// container from nudge's own image joins the target container's network namespace and
-// runs `nudge probe` against 127.0.0.1, so the check needs no published port, no shared
+// container from nudge's own image (the server's or the agent's) joins the target
+// container's network namespace and runs its `probe` subcommand against 127.0.0.1, so the check needs no published port, no shared
 // network and no HTTP client in the target's image.
 package probe
 

@@ -102,8 +102,8 @@ onMounted(load);
 <template>
   <h1>Environments</h1>
   <p class="muted">
-    Each environment is a Docker host. Remote hosts run <code>nudge agent</code>, which connects out to this
-    server.
+    Each environment is a Docker host. Remote hosts run the agent (<code>nudge-agent</code>), which connects
+    out to this server.
   </p>
 
   <JoinTokenCard v-if="shown" :name="shown.name" :join-token="shown.joinToken" @done="shown = null" />

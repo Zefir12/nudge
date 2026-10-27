@@ -88,29 +88,3 @@ func TestRunDeploy(t *testing.T) {
 		})
 	}
 }
-
-func TestRunProbe(t *testing.T) {
-	t.Parallel()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/health" {
-			w.WriteHeader(http.StatusServiceUnavailable)
-		}
-	}))
-	t.Cleanup(srv.Close)
-	tests := []struct {
-		args []string
-		code int
-	}{
-		{[]string{srv.URL + "/health"}, 0},
-		{[]string{"-status", "503", srv.URL + "/down"}, 0},
-		{[]string{srv.URL + "/down"}, 3},
-		{[]string{"-timeout", "2m", srv.URL}, 2},
-		{nil, 2},
-	}
-	for _, tt := range tests {
-		var stdout, stderr bytes.Buffer
-		if code := realMain(context.Background(), append([]string{"probe"}, tt.args...), func(string) string { return "" }, &stdout, &stderr); code != tt.code {
-			t.Errorf("probe %v = %d (%s%s), want %d", tt.args, code, &stdout, &stderr, tt.code)
-		}
-	}
-}

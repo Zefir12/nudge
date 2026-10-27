@@ -312,6 +312,6 @@ filesystem, `rootflags=pquota` on the kernel command line).
   (`DOCKER_HOST=unix:///run/user/<uid>/docker.sock`); ports below 1024, some network
   drivers and cgroup limits need extra setup (cgroup v2 with delegation).
 - **One VM per user** is the strongest: give each untrusted user their own small VM
-  running `nudge agent`, and grant them only that environment (Users, environment
+  running `nudge-agent`, and grant them only that environment (Users, environment
   access). A kernel bug then reaches only their own VM. It costs a VM per user, and
   nudge doesn't provision them.

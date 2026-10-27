@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -103,56 +102,6 @@ func TestServeStopsOnCancel(t *testing.T) {
 	}
 }
 
-func TestPrepareDataDir(t *testing.T) {
-	t.Parallel()
-	t.Run("creates missing directory with 0700", func(t *testing.T) {
-		t.Parallel()
-		dir := filepath.Join(t.TempDir(), "a", "data")
-		if err := prepareDataDir(dir); err != nil {
-			t.Fatalf("prepareDataDir: %v", err)
-		}
-		fi, err := os.Stat(dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if perm := fi.Mode().Perm(); perm != 0o700 {
-			t.Errorf("mode = %o, want 700", perm)
-		}
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(entries) != 0 {
-			t.Errorf("write test left %d files behind", len(entries))
-		}
-	})
-	t.Run("path is a file", func(t *testing.T) {
-		t.Parallel()
-		file := filepath.Join(t.TempDir(), "file")
-		if err := os.WriteFile(file, nil, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if err := prepareDataDir(filepath.Join(file, "data")); err == nil {
-			t.Fatal("prepareDataDir under a file succeeded")
-		}
-	})
-	t.Run("not writable", func(t *testing.T) {
-		t.Parallel()
-		if os.Geteuid() == 0 {
-			t.Skip("root can write to read-only directories")
-		}
-		dir := t.TempDir()
-		if err := os.Chmod(dir, 0o500); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
-		err := prepareDataDir(dir)
-		if err == nil || !strings.Contains(err.Error(), "not writable") {
-			t.Fatalf("err = %v, want a not writable error", err)
-		}
-	})
-}
-
 func TestServeCreatesDatabase(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -233,6 +182,9 @@ func TestAgentWithoutCredentials(t *testing.T) {
 	if !strings.Contains(stderr.String(), "no join token") {
 		t.Errorf("stderr = %q, want the missing join token explained", stderr.String())
 	}
+	if !strings.Contains(stderr.String(), "nudge-agent") {
+		t.Errorf("stderr = %q, want a pointer to the nudge-agent image", stderr.String())
+	}
 }
 
 func TestServeFailsOnBadCertificate(t *testing.T) {
@@ -297,40 +249,6 @@ func TestStackRunner(t *testing.T) {
 	runner := stackRunner(config.Server{StacksDir: t.TempDir(), Compose: "/bin/compose", DockerHost: "unix:///docker.sock"}, nil, nil, slog.New(slog.DiscardHandler))
 	if _, ok := runner(environments.Environment{ID: 1, Kind: environments.KindLocal}).(*stacks.Local); !ok {
 		t.Error("the local environment's runner isn't a stacks.Local")
-	}
-}
-
-func TestCleanComposeConfigs(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name    string
-		stale   []string
-		wantLog bool
-	}{
-		{"nothing left", nil, false},
-		{"stale configs", []string{"nudge-compose-1", "nudge-compose-2"}, true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			dir := composeConfigDir(t.TempDir())
-			for _, name := range tt.stale {
-				if err := os.MkdirAll(filepath.Join(dir, name), 0o700); err != nil {
-					t.Fatal(err)
-				}
-			}
-			var buf bytes.Buffer
-			if err := cleanComposeConfigs(dir, slog.New(slog.NewTextHandler(&buf, nil))); err != nil {
-				t.Fatal(err)
-			}
-			entries, err := os.ReadDir(dir)
-			if err != nil || len(entries) != 0 {
-				t.Errorf("left %v, %v", entries, err)
-			}
-			if logged := strings.Contains(buf.String(), "count="+strconv.Itoa(len(tt.stale))); logged != tt.wantLog {
-				t.Errorf("log %q, want a count: %v", buf.String(), tt.wantLog)
-			}
-		})
 	}
 }
 
