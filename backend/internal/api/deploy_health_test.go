@@ -3,6 +3,7 @@ package api
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -121,6 +122,25 @@ func TestDeployHealth(t *testing.T) {
 			},
 			code: 502, status: "failed", err: "deploying: service app: a container exited with code 3",
 			calls: []string{"up web pull=true wait=1m0s"}, env: envV1,
+		},
+		{
+			name: "sync fails", health: `{"wait_seconds":60}`,
+			setup: func(ht *healthTest) { ht.runner.syncErr = errors.New("agent gone") },
+			code:  502, status: "failed", env: envV1,
+			check: func(t *testing.T, ht *healthTest, _ deploymentRunJSON) {
+				// The stack was released, and its next start syncs the values that worked.
+				ht.runner.mu.Lock()
+				ht.runner.syncErr = nil
+				ht.runner.mu.Unlock()
+				if code, body := ht.do(t, "POST", "local", "/web/up", ""); code != http.StatusOK {
+					t.Fatalf("up after the failed run = %d %s", code, body)
+				}
+				ht.runner.mu.Lock()
+				defer ht.runner.mu.Unlock()
+				if got := ht.runner.synced["web"].Env; got != envV1 {
+					t.Errorf("agent's .env on the next up = %q", got)
+				}
+			},
 		},
 		{
 			name: "stays up", health: `{"stable_seconds":30}`,

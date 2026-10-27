@@ -47,6 +47,8 @@ type fakeRunner struct {
 	// probes are the HTTP checks asked for; probeErr is their answer.
 	probes   []probe.Request
 	probeErr error
+	// syncErr, if set, fails every sync after recording it.
+	syncErr error
 }
 
 func (f *fakeRunner) Sync(_ context.Context, name string, files stacks.Files) error {
@@ -56,7 +58,7 @@ func (f *fakeRunner) Sync(_ context.Context, name string, files stacks.Files) er
 		f.synced = map[string]stacks.Files{}
 	}
 	f.synced[name] = files
-	return nil
+	return f.syncErr
 }
 
 func (f *fakeRunner) run(ctx context.Context, call string, out func(stacks.Line)) (int, error) {
@@ -598,5 +600,38 @@ func TestCheckStackBusy(t *testing.T) {
 	}
 	if code := check(); code != http.StatusOK {
 		t.Errorf("check after the others finished = %d, want 200", code)
+	}
+}
+
+// A failed sync puts the edited files back before the stack is released, so nothing
+// claims the stack while the edit is still on disk.
+func TestStartStackEditSyncFails(t *testing.T) {
+	t.Parallel()
+	runner := &fakeRunner{syncErr: errors.New("agent gone")}
+	s := &server{stacksDir: t.TempDir(), stackBusy: map[string]bool{}, stackRunner: func(environments.Environment) stacks.Runner { return runner }}
+	env := environments.Environment{ID: 1, Name: "local"}
+	original := stacks.Files{Compose: "services: {}\n", Env: "A=1\n"}
+	if err := s.stackDir(env.ID).Create("web", original); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := s.startStackEdit(t.Context(), env, "web", func(f stacks.Files) stacks.Files {
+		f.Env = "A=2\n"
+		return f
+	})
+	if err == nil || !strings.Contains(err.Error(), "agent gone") {
+		t.Fatalf("startStackEdit = %v, want the sync's error", err)
+	}
+	if got := runner.synced["web"].Env; got != "A=2\n" {
+		t.Errorf("synced .env = %q, want the edit", got)
+	}
+	f, err := s.stackDir(env.ID).Read("web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f != original {
+		t.Errorf("files after the failed sync = %+v, want %+v", f, original)
+	}
+	if !s.lockStack(stackKey(env.ID, "web")) {
+		t.Error("the stack is still claimed")
 	}
 }
