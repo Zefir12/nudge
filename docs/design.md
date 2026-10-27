@@ -20,7 +20,8 @@ only the variables, never raw colours.
 - **Global dashboard** (`/`): one large tile per environment (`EnvironmentTile`), plus an
   "Add environment" tile for admins. A tile opens `/env/:env`.
 - **Environment dashboard** (`/env/:env`): lamp, name and kind chip, a mono host line,
-  stat tiles, live usage, host details.
+  stat tiles, then Needs attention (updates available, stopped containers, untagged images) beside
+  Recent events, live usage with the busiest containers, host details.
 - At 720px and below the sidebar stacks above the content and its links wrap.
 
 ## Tokens

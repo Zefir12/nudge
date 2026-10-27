@@ -5,6 +5,8 @@ import { getEnvironment, listNetworks, listVolumes } from '../api/client';
 import EnvironmentUsage from '../components/EnvironmentUsage.vue';
 import KeyValues from '../components/KeyValues.vue';
 import LoadState from '../components/LoadState.vue';
+import NeedsAttention from '../components/NeedsAttention.vue';
+import RecentEvents from '../components/RecentEvents.vue';
 import { useLoad } from '../composables/useLoad';
 import { useParams } from '../composables/params';
 import { formatBytes } from '../format';
@@ -61,6 +63,10 @@ const { data, error, reload } = useLoad(env, async (id) => {
           <span class="number">{{ data.networks }}</span>
         </RouterLink>
       </section>
+      <div v-if="data.detail.online" class="panels">
+        <NeedsAttention :env="env" />
+        <RecentEvents :env="env" />
+      </div>
       <EnvironmentUsage :env="env" />
       <section class="card">
         <h2>Host</h2>
@@ -143,6 +149,13 @@ h1 {
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.14em;
+}
+
+.panels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+  gap: 1rem;
+  margin-bottom: 1rem;
 }
 
 .card + .card {
