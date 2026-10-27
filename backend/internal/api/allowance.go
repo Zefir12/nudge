@@ -491,7 +491,8 @@ func inspectOwner(ctx context.Context, c docker.Client, id string) (container.In
 	return ct, containerOwner(ct, labels), nil
 }
 
-// pullOwned pulls ref for the user with owner key ("" pulls for an admin, unchecked).
+// pullOwned pulls ref for the user with owner key ("" pulls for an admin, unchecked, with
+// the registry's stored credentials; a user's pull goes without any).
 // A user's pull is refused when their disk allowance is used up; an image it brings counts
 // toward it, and one that takes them over is removed again and the pull refused. The
 // user's lock is held throughout, so their parallel pulls can't overshoot together.
@@ -521,8 +522,13 @@ func (s *server) pullOwned(ctx context.Context, env int64, c docker.Client, ref,
 	for _, img := range list.Items {
 		present[img.ID] = true
 	}
-	if err := s.pullWithAuth(ctx, c, ref); err != nil {
-		return err
+	// Never with the admins' stored registry credentials: they would let a user run a
+	// private image.
+	pctx, cancel := context.WithTimeout(ctx, pullTimeout)
+	err = pullAndWait(pctx, c, ref, client.ImagePullOptions{})
+	cancel()
+	if err != nil {
+		return &pullFailure{err: err}
 	}
 	img, err := c.ImageInspect(ctx, ref)
 	if err != nil {

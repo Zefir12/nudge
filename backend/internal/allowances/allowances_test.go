@@ -3,6 +3,7 @@ package allowances
 import (
 	"context"
 	"errors"
+	"math"
 	"reflect"
 	"sync"
 	"testing"
@@ -36,6 +37,8 @@ func TestCheck(t *testing.T) {
 		{"fits exactly", oneCPU8G, Usage{CPUsMilli: 750, MemoryBytes: 7 * gib, Containers: 4}, small, ""},
 		{"over by memory", oneCPU8G, Usage{MemoryBytes: 7*gib + 1}, small, "memory"},
 		{"over by cpu", oneCPU8G, Usage{CPUsMilli: 751}, small, "cpus"},
+		{"memory that overflows the sum", oneCPU8G, Usage{MemoryBytes: gib}, with(func(r *Request) { r.MemoryBytes = math.MaxInt64 }), "memory"},
+		{"cpus that overflow the sum", oneCPU8G, Usage{CPUsMilli: 1}, with(func(r *Request) { r.CPUsMilli = math.MaxInt64 }), "cpus"},
 		{"over by container count", oneCPU8G, Usage{Containers: 5}, small, "containers"},
 		{"no memory limit", oneCPU8G, Usage{}, with(func(r *Request) { r.MemoryBytes = 0 }), "memory"},
 		{"no cpu limit", oneCPU8G, Usage{}, with(func(r *Request) { r.CPUsMilli = 0 }), "cpus"},

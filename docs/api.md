@@ -61,6 +61,9 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | POST | `/api/v1/environments/{env}/containers` | session | create (and start) a container; `201`; see Container create and recreate |
 | GET | `/api/v1/environments/{env}/containers/{id}/spec` | session | a container's settings in the create shape |
 | POST | `/api/v1/environments/{env}/containers/{id}/recreate` | session | replace a container, optionally pulling first or with changed settings |
+| POST | `/api/v1/environments/{env}/user-containers` | user | create (and start) a container from a tenant spec; `201`; see User containers |
+| GET | `/api/v1/environments/{env}/user-containers/{id}/spec` | user | an owned container's settings as a tenant spec |
+| POST | `/api/v1/environments/{env}/user-containers/{id}/recreate` | user | pull the spec's image and replace an owned container with one built from the spec |
 | POST | `/api/v1/environments/{env}/containers/{id}/update` | user | pull the container's image and recreate it if that brought a newer one; see Image updates |
 | GET | `/api/v1/environments/{env}/containers/{id}/logs` | user | WebSocket: a container's logs, one JSON frame per line; see Container logs |
 | GET | `/api/v1/environments/{env}/containers/{id}/stats` | user | WebSocket: a running container's usage, a sample about every second; see Stats |
@@ -226,6 +229,57 @@ the host answered (updated at most once a minute, `null` if it never did).
 "storage_driver": "overlay2", "docker_root_dir": "/var/lib/docker"}`
 (`mem_total` in bytes). Only these fields are passed on; Docker's proxy and registry
 settings are not.
+
+### User containers
+Users create and change containers only through a tenant spec, which the server turns into
+Docker's settings itself (api/tenant.go). Admins may use these routes too; the admin spec
+above stays admin-only.
+
+```json
+{"image": "nginx:1.29", "name": "web", "command": [], "entrypoint": [], "env": ["MODE=prod"],
+ "cpus_milli": 500, "memory_bytes": 268435456,
+ "ports": [{"host_port": 0, "container_port": 80, "protocol": "tcp"}],
+ "mounts": [{"volume": "u3-data", "target": "/data", "read_only": false}],
+ "networks": ["u3-front"], "restart_policy": "unless-stopped",
+ "healthcheck": {"command": ["/bin/check"], "interval_seconds": 30, "timeout_seconds": 5,
+                 "start_period_seconds": 10, "retries": 3},
+ "labels": {"app": "web"}}
+```
+
+- The JSON is decoded strictly: any other field (`privileged`, `cap_add`, `binds`,
+  `network_mode`, `pid`, `devices`, `security_opt`, `runtime`, `cgroup_parent`,
+  `volumes_from`, a mount's `type`, …) is `400 unknown field "…"`. Invalid values are `400`
+  with a message per field, like the admin spec.
+- `image` is a reference, never an image ID. `name` is required on create and gets the
+  user's `u<id>-` prefix; on a recreate an empty one keeps the name. `cpus_milli` (at most
+  1000000) and `memory_bytes` (6 MiB to 1 TiB) are required. At most 64 ports, mounts,
+  networks and labels and 256 environment entries; labels in Docker's `com.docker.`
+  namespace (compose projects) are refused like nudge's own. `host_port` 0 takes the lowest free port of
+  the user's range. `mounts` name the user's own volumes; `networks` the user's own
+  networks by name (empty: their default network). `healthcheck` runs its command in exec
+  form; null keeps the image's.
+- The server sets, and nobody can change: capabilities Docker's default without
+  `NET_RAW`, `no-new-privileges`, 512 processes, the `json-file` log driver with
+  `max-size` 10m and `max-file` 3, an init process, a private IPC namespace, swap no larger
+  than the memory limit, no binds, no devices, the default seccomp and AppArmor profiles,
+  and the owner label.
+- The image is always pulled first, without any stored registry credentials (so only
+  public images), and must fit the allowance (its image patterns and disk). An image that
+  sets a label in the `net.zefirlabs.nudge.` namespace is refused, and so is one with a
+  `VOLUME` no mount covers (`fields.mounts` names the paths): Docker would make an
+  anonymous volume nobody owns.
+- Someone else's volume or network is `400` on its field; going over the allowance or
+  outside the port range is `409`.
+- `POST .../user-containers` with a spec plus `"start": true` answers `201` with
+  `{"id", "warnings"}`. `POST .../user-containers/{id}/recreate` with a spec pulls, then
+  replaces the container like the admin recreate (stop, rename aside, create, start,
+  remove; rolled back on failure) and answers `200`.
+- A user's container is always rebuilt by the builder, whatever the path: an image update
+  (`.../containers/{id}/update`, deploy webhooks) and an admin recreate without a spec read
+  its settings back as a tenant spec and build it again. An admin recreate with the admin
+  spec is `409` for a user's container. The tenant spec and recreate routes answer `409` for an admin's
+  container (the builder would drop its binds, capabilities and devices), and an update
+  of a user's container whose old image is gone is `409` (recreate it with its spec).
 
 ### Ownership
 Users (role `user`) reach only what is theirs; admins reach everything.

@@ -155,8 +155,8 @@ var userRoutes = map[string]bool{
 	"GET /api/v1/deployments/{name}/deploys":           true,
 	"GET /api/v1/deployments/{name}/deploys/{run}":     true,
 	// The environments an admin gave them, and in those only the containers, volumes and
-	// networks they own (scope): someone else's are 404. Creating containers, recreating
-	// (any settings) and images, stacks and prunes stay with admins.
+	// networks they own (scope): someone else's are 404. Creating and recreating containers
+	// with the admin spec, images, stacks and prunes stay with admins.
 	"GET /api/v1/environments":                                true,
 	"GET /api/v1/environments/{env}":                          true,
 	"GET /api/v1/environments/{env}/containers":               true,
@@ -181,6 +181,10 @@ var userRoutes = map[string]bool{
 	"GET /api/v1/environments/{env}/networks":         true,
 	"GET /api/v1/environments/{env}/networks/{id}":    true,
 	"DELETE /api/v1/environments/{env}/networks/{id}": true,
+	// Their own containers, built by the server from the strict tenant spec (tenant.go).
+	"POST /api/v1/environments/{env}/user-containers":               true,
+	"GET /api/v1/environments/{env}/user-containers/{id}/spec":      true,
+	"POST /api/v1/environments/{env}/user-containers/{id}/recreate": true,
 	// Their own networks and volumes: bridge and local only, named with their prefix.
 	"POST /api/v1/environments/{env}/volumes":  true,
 	"POST /api/v1/environments/{env}/networks": true,
@@ -241,6 +245,9 @@ var routes = []route{
 	{"GET /api/v1/environments/{env}/containers/{id}", (*server).getContainer},
 	{"GET /api/v1/environments/{env}/containers/{id}/spec", (*server).getContainerSpec},
 	{"POST /api/v1/environments/{env}/containers/{id}/recreate", (*server).recreateContainer},
+	{"POST /api/v1/environments/{env}/user-containers", (*server).createTenantContainer},
+	{"GET /api/v1/environments/{env}/user-containers/{id}/spec", (*server).getTenantSpec},
+	{"POST /api/v1/environments/{env}/user-containers/{id}/recreate", (*server).recreateTenantContainer},
 	{"POST /api/v1/environments/{env}/containers/{id}/update", (*server).updateContainer},
 	{"DELETE /api/v1/environments/{env}/containers/{id}", (*server).removeContainer},
 	{"POST /api/v1/environments/{env}/containers/{id}/start", (*server).startContainer},
