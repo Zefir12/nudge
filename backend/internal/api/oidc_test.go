@@ -151,6 +151,40 @@ func TestSSOLoginFailures(t *testing.T) {
 	}
 }
 
+// TestSSOUserRole signs in with the provider's user role: a nudge user, refused on
+// admin routes; a later login with the admin role makes them an admin, and a disabled
+// one is refused.
+func TestSSOUserRole(t *testing.T) {
+	t.Parallel()
+	h, svc, db, idp := newSSOHandler(t, func(o *oidc.Options) { o.UserRole = "user" })
+	idp.Edit(func(_, c map[string]any) { c["roles"] = []string{"user"} })
+	session := sessionCookieOf(t, ssoLogin(t, h, idp, "/", true))
+	if me := do(t, h, request{method: http.MethodGet, path: "/api/v1/auth/me", cookie: session}); !strings.Contains(me.Body.String(), `"role":"user"`) {
+		t.Errorf("me = %d %s", me.Code, me.Body)
+	}
+	if rec := do(t, h, request{method: http.MethodGet, path: "/api/v1/environments", cookie: session}); rec.Code != http.StatusForbidden {
+		t.Errorf("user on an admin route = %d", rec.Code)
+	}
+
+	idp.Edit(func(_, c map[string]any) { c["roles"] = []string{"admin"} })
+	session = sessionCookieOf(t, ssoLogin(t, h, idp, "/", true))
+	if rec := do(t, h, request{method: http.MethodGet, path: "/api/v1/environments", cookie: session}); rec.Code != http.StatusOK {
+		t.Errorf("admin on an admin route = %d %s", rec.Code, rec.Body)
+	}
+
+	users, err := svc.ListUsers(context.Background())
+	if err != nil || len(users) != 1 {
+		t.Fatalf("users = %+v, %v", users, err)
+	}
+	if _, err := db.Exec(`UPDATE users SET disabled = 1`); err != nil {
+		t.Fatal(err)
+	}
+	rec := ssoLogin(t, h, idp, "/", true)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "disabled") {
+		t.Errorf("disabled: %d %s", rec.Code, rec.Body)
+	}
+}
+
 func TestSetupRefusedWithSSO(t *testing.T) {
 	t.Parallel()
 	h, _, _, _ := newSSOHandler(t, nil)

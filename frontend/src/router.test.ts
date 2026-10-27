@@ -5,7 +5,7 @@ import { createMemoryHistory } from 'vue-router';
 import { listTokens, setUnauthorizedHandler } from './api/client';
 import { createAppRouter, redirectOnUnauthorized } from './router';
 import { apiError, currentUser } from './session';
-import { admin, stubApi, type Routes } from './test-utils';
+import { admin, stubApi, user, type Routes } from './test-utils';
 
 beforeEach(() => {
   currentUser.value = null;
@@ -43,6 +43,19 @@ describe('router guard', () => {
       routes: { 'GET /auth/me': { body: admin } },
       to: '/tokens',
       want: '/tokens',
+    },
+    {
+      name: "a user's home is the deployments",
+      routes: { 'GET /auth/me': { body: user } },
+      to: '/',
+      want: '/deployments',
+    },
+    {
+      // App shows the "not allowed" state; the URL stays.
+      name: 'a user reaches an admin page',
+      routes: { 'GET /auth/me': { body: user } },
+      to: '/registries',
+      want: '/registries',
     },
     {
       name: 'setup after setup goes to login',

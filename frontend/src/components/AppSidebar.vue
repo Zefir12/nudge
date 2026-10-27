@@ -14,10 +14,11 @@ const emit = defineEmits<{ logout: [] }>();
 const route = useRoute();
 
 // Icons are 24×24 stroke paths.
+// users: open to users without the admin role; the others are hidden from them.
 const globalItems = [
   { to: '/', label: 'Dashboard', exact: true, icon: 'M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z' },
   { to: '/environments', label: 'Environments', icon: 'M4 4h16v6H4zM4 14h16v6H4zM8 7h.01M8 17h.01' },
-  { to: '/deployments', label: 'Deployments', icon: 'M12 3v12M7 10l5 5 5-5M4 21h16' },
+  { to: '/deployments', label: 'Deployments', users: true, icon: 'M12 3v12M7 10l5 5 5-5M4 21h16' },
   {
     to: '/registries',
     label: 'Registries',
@@ -31,10 +32,19 @@ const globalItems = [
   {
     to: '/tokens',
     label: 'API tokens',
+    users: true,
     icon: 'M7.5 19a4 4 0 1 1 0-8 4 4 0 0 1 0 8zM10.5 12L20 2.5M16 6.5l3 3M13.5 9l2 2',
+  },
+  {
+    to: '/users',
+    label: 'Users',
+    icon: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8',
   },
   { to: '/audit', label: 'Audit log', icon: 'M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01' },
 ];
+
+const isAdmin = computed(() => !!currentUser.value?.admin);
+const visibleItems = computed(() => globalItems.filter((item) => isAdmin.value || item.users));
 
 const sections = [
   { name: 'stacks', label: 'Stacks', icon: 'M12 2L2 7l10 5 10-5zM2 17l10 5 10-5M2 12l10 5 10-5' },
@@ -86,12 +96,12 @@ function globalActive(to: string, exact?: boolean) {
       </button>
     </div>
 
-    <EnvSwitcher />
+    <EnvSwitcher v-if="isAdmin" />
 
     <nav aria-label="Global">
       <span class="group">Global</span>
       <RouterLink
-        v-for="item in globalItems"
+        v-for="item in visibleItems"
         :key="item.to"
         :to="item.to"
         :class="{ active: globalActive(item.to, item.exact) }"
@@ -102,7 +112,7 @@ function globalActive(to: string, exact?: boolean) {
       </RouterLink>
     </nav>
 
-    <nav v-if="env" class="env" :aria-label="`Environment ${envInfo?.name ?? env}`">
+    <nav v-if="env && isAdmin" class="env" :aria-label="`Environment ${envInfo?.name ?? env}`">
       <span class="group">
         <span class="lamp" :class="{ on: envInfo?.online }" aria-hidden="true" />
         {{ envInfo?.name ?? env }}

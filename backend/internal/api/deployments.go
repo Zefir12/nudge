@@ -127,7 +127,7 @@ func (s *server) deploymentsReady(w http.ResponseWriter) bool {
 // deploymentActor is r's user as a deployments actor.
 func (s *server) deploymentActor(r *http.Request) deployments.Actor {
 	u, _ := userFrom(r.Context())
-	return deployments.Actor{UserID: u.ID, Username: u.Username, Admin: s.isAdmin(u)}
+	return deployments.Actor{UserID: u.ID, Username: u.Username, Admin: isAdmin(u)}
 }
 
 func (s *server) deploymentError(w http.ResponseWriter, msg string, err error) {
@@ -433,7 +433,7 @@ func (s *server) userDeployCaller(w http.ResponseWriter, r *http.Request, a depl
 	u, _ := userFrom(r.Context())
 	return deployCaller{
 		d: d, req: deployments.Request{ActorKind: deployments.ActorUser, ActorName: u.Username}, user: u.Username,
-		showPrevious: s.isAdmin(u) || d.Role.Allows(deployments.ActionEdit),
+		showPrevious: isAdmin(u) || d.Role.Allows(deployments.ActionEdit),
 	}, true
 }
 
@@ -606,8 +606,7 @@ func (s *server) tokenRoute(sc deployments.Scope, next func(http.ResponseWriter,
 		if sc == deployments.ScopeDeploy {
 			need = deployments.ActionDeploy
 		}
-		creator := auth.User{ID: t.CreatorID, Username: t.CreatedBy}
-		if !s.isAdmin(creator) && !t.CreatorRole.Allows(need) {
+		if !t.CreatorAdmin && !t.CreatorRole.Allows(need) {
 			s.writeError(w, http.StatusForbidden, "the token's creator may no longer do that on this deployment")
 			return
 		}

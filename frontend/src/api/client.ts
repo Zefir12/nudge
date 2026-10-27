@@ -70,10 +70,13 @@ export interface Health {
 
 export const getHealth = () => apiFetch<Health>('/health');
 
+export type Role = 'admin' | 'user';
+
 export interface User {
   id: number;
   username: string;
   created_at: string;
+  role: Role;
   // admin: the user may do admin-only actions (the UI hides them otherwise).
   admin: boolean;
 }
@@ -186,6 +189,32 @@ export interface RegistryInput {
   owners?: string[];
   plain_http?: boolean;
 }
+
+// Account is a user in the user management (admins only).
+export interface Account {
+  id: number;
+  username: string;
+  role: Role;
+  disabled: boolean;
+  // sso: signs in through the SSO provider, which sets the role; no password in nudge.
+  sso: boolean;
+  display_name: string;
+  email: string;
+  created_at: string;
+}
+
+export interface AccountChange {
+  role?: Role;
+  disabled?: boolean;
+  password?: string;
+}
+
+export const listUsers = () => apiFetch<Account[]>('/users');
+export const createUser = (u: { username: string; password: string; role: Role }) =>
+  apiFetch<Account>('/users', post(u));
+export const updateUser = (id: number, change: AccountChange) =>
+  apiFetch<Account>(`/users/${id}`, { method: 'PATCH', body: JSON.stringify(change) });
+export const deleteUser = (id: number) => apiFetch<void>(`/users/${id}`, { method: 'DELETE' });
 
 export const listRegistries = () => apiFetch<Registry[]>('/registries');
 export const getRegistry = (id: number) => apiFetch<Registry>(`/registries/${id}`);

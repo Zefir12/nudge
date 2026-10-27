@@ -32,7 +32,7 @@ func TestSSOLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	id := Identity{Issuer: "https://auth.example.net", Subject: "u-1", Username: "zefir", DisplayName: "Zefir", Email: "zefir@example.net"}
+	id := Identity{Issuer: "https://auth.example.net", Subject: "u-1", Username: "zefir", DisplayName: "Zefir", Email: "zefir@example.net", Role: RoleAdmin}
 	sess, err := s.SSOLogin(ctx, id)
 	if err != nil {
 		t.Fatal(err)
@@ -62,8 +62,41 @@ func TestSSOLogin(t *testing.T) {
 		t.Errorf("profile = %q %q, %v", display, email, err)
 	}
 
+	// The role is the provider's on every login; a disabled user is refused.
+	if sess.User.Role != RoleAdmin {
+		t.Errorf("first login role = %q", sess.User.Role)
+	}
+	id.Role = RoleUser
+	if again, err = s.SSOLogin(ctx, id); err != nil || again.User.Role != RoleUser {
+		t.Errorf("login with the user role = %+v, %v", again.User, err)
+	}
+	if got, err := s.SessionUser(ctx, sess.Token); err != nil || got.Role != RoleUser {
+		t.Errorf("older session's role = %+v, %v; want the new one", got, err)
+	}
+	if _, err := s.SSOLogin(ctx, Identity{Issuer: "https://auth.example.net", Subject: "u-1"}); err == nil {
+		t.Error("login without a role succeeded")
+	}
+	if _, err := s.db.Exec(`UPDATE users SET disabled = 1 WHERE id = ?`, sess.User.ID); err != nil {
+		t.Fatal(err)
+	}
+	id.Role = RoleAdmin
+	if _, err := s.SSOLogin(ctx, id); !errors.Is(err, ErrDisabled) {
+		t.Errorf("disabled user's login err = %v, want ErrDisabled", err)
+	}
+	var role Role
+	if err := s.db.QueryRow(`SELECT role FROM users WHERE id = ?`, sess.User.ID).Scan(&role); err != nil || role != RoleUser {
+		t.Errorf("refused login changed the role to %q, %v", role, err)
+	}
+	id.Role = RoleUser
+	if _, err := s.SessionUser(ctx, sess.Token); !errors.Is(err, ErrNoSession) {
+		t.Errorf("disabled user's session err = %v", err)
+	}
+	if _, err := s.db.Exec(`UPDATE users SET disabled = 0 WHERE id = ?`, sess.User.ID); err != nil {
+		t.Fatal(err)
+	}
+
 	// The same subject from another issuer is someone else.
-	other, err := s.SSOLogin(ctx, Identity{Issuer: "https://other.example.net", Subject: "u-1", Email: "zefir@example.net"})
+	other, err := s.SSOLogin(ctx, Identity{Issuer: "https://other.example.net", Subject: "u-1", Email: "zefir@example.net", Role: RoleUser})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +134,7 @@ func TestSSOUsernames(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			s, _ := newSSOService(t, Options{})
-			tt.id.Issuer = "https://auth.example.net"
+			tt.id.Issuer, tt.id.Role = "https://auth.example.net", RoleUser
 			sess, err := s.SSOLogin(ctx, tt.id)
 			if err != nil {
 				t.Fatal(err)
@@ -119,7 +152,7 @@ func TestSSOLoginConcurrentFirstLogin(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	s, _ := newSSOService(t, Options{})
-	id := Identity{Issuer: "https://auth.example.net", Subject: "u-1", Username: "alice"}
+	id := Identity{Issuer: "https://auth.example.net", Subject: "u-1", Username: "alice", Role: RoleUser}
 	var wg sync.WaitGroup
 	ids := make([]int64, 8)
 	for i := range ids {

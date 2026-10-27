@@ -74,6 +74,8 @@ type OIDC struct {
 	Name string
 	// AdminRole is the value of the ID token's roles claim that makes a user an admin.
 	AdminRole string
+	// UserRole is the value of the roles claim that makes a user a (non-admin) user.
+	UserRole string
 	// RequireMFA refuses logins whose amr claim lacks "mfa".
 	RequireMFA bool
 	// SessionTTL caps the sessions of SSO logins, as the provider can't end them.
@@ -120,6 +122,7 @@ func LoadServer(args []string, getenv func(string) string, out io.Writer) (Serve
 	fs.StringVar(&c.OIDC.ClientID, "oidc-client-id", getenv("NUDGE_OIDC_CLIENT_ID"), "OpenID Connect client ID (NUDGE_OIDC_CLIENT_ID)")
 	fs.StringVar(&c.OIDC.Name, "oidc-name", envOr(getenv, "NUDGE_OIDC_NAME", "SSO"), "label of the single sign-on button (NUDGE_OIDC_NAME)")
 	fs.StringVar(&c.OIDC.AdminRole, "oidc-admin-role", envOr(getenv, "NUDGE_OIDC_ADMIN_ROLE", "admin"), "value of the ID token's roles claim that makes a user an admin (NUDGE_OIDC_ADMIN_ROLE)")
+	fs.StringVar(&c.OIDC.UserRole, "oidc-user-role", envOr(getenv, "NUDGE_OIDC_USER_ROLE", "user"), "value of the ID token's roles claim that makes a user a (non-admin) user; empty signs in admins only (NUDGE_OIDC_USER_ROLE)")
 	requireMFA, err := strconv.ParseBool(envOr(getenv, "NUDGE_OIDC_REQUIRE_MFA", "false"))
 	if err != nil {
 		return Server{}, fmt.Errorf("NUDGE_OIDC_REQUIRE_MFA %q: want true or false", getenv("NUDGE_OIDC_REQUIRE_MFA"))
@@ -217,6 +220,9 @@ func (c *Server) checkOIDC() error {
 	}
 	if o.Name == "" || o.AdminRole == "" {
 		return errors.New("OIDC name and admin role must not be empty")
+	}
+	if o.UserRole == o.AdminRole {
+		return errors.New("OIDC user role must differ from the admin role")
 	}
 	if o.SessionTTL < 5*time.Minute {
 		return errors.New("OIDC session TTL must be at least 5m")

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -268,20 +267,5 @@ func TestClientIP(t *testing.T) {
 		if got := clientIP(r); got != tt.want {
 			t.Errorf("clientIP(%q) = %q, want %q", tt.remote, got, tt.want)
 		}
-	}
-}
-
-func TestMeReportsAdmin(t *testing.T) {
-	t.Parallel()
-	for _, admin := range []bool{true, false} {
-		t.Run(fmt.Sprint(admin), func(t *testing.T) {
-			t.Parallel()
-			bt := newBrowseTest(t, admin)
-			code, body := bt.call(t, "GET", "/api/v1/auth/me")
-			want := fmt.Sprintf(`"admin":%t`, admin)
-			if code != http.StatusOK || !strings.Contains(body, want) || !strings.Contains(body, `"username":"admin"`) {
-				t.Errorf("me = %d %s, want %s", code, body, want)
-			}
-		})
 	}
 }

@@ -81,11 +81,23 @@ refuses `ws://` unless `NUDGE_INSECURE=1`.
   `internal/api` and enforced in the auth middleware; a new route of that kind goes on
   the list. Scopes stay a later option.
 - Login attempts are rate-limited per IP and username, with bounded memory.
+- Roles (#111): every user is an `admin` or a `user` (`users.role`; users created before
+  roles are admins, setup and `NUDGE_ADMIN_PASSWORD` create admins). One place decides:
+  `userRoutes` in `internal/api` lists the routes open to users, and the auth middleware
+  answers every other authenticated route with `403 admins only` (audited) for a user's
+  session or API token, so a new route is admin-only until it is listed. The routes open
+  to users check the object themselves (deployments: `deployments.Authorize` with the
+  user's role on the deployment). `TestRoutesForUsers` walks every registered route. An
+  API token has its owner's role; a deploy token or deploy webhook acts for its creator
+  and stops while they are disabled. A disabled user's sessions end and their
+  credentials stop working; the last enabled admin can't be demoted, disabled or
+  deleted (checked in the writing statement). SSO users get their role from the
+  provider on each login.
 - Single sign-on (#110, internal/oidc): one OpenID Connect provider, nudge a confidential
   client (authorization code + PKCE S256, `client_secret_basic`). Discovery, JWKS and ID
   token checks are go-oidc's (RS256 only, issuer, audience, expiry against the injected
   clock, one JWKS refetch on an unknown kid); nudge checks the nonce, `azp`, `iat`, the
-  admin role in `roles` and, optionally, `mfa` in `amr`. Discovery is lazy (nudge starts
+  admin or user role in `roles` and, optionally, `mfa` in `amr`. Discovery is lazy (nudge starts
   while the provider is down) and retried at most every 30 s. Started logins live
   server-side in a bounded map (10 minutes, keyed by state) and are bound to the browser
   by a `SameSite=Lax` cookie; each state is used once. Every provider call has a timeout

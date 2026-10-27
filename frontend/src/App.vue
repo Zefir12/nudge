@@ -55,7 +55,11 @@ async function onLogout() {
     <div class="layout">
       <AppSidebar :env="env" @logout="onLogout" />
       <main class="content">
-        <RouterView />
+        <RouterView v-if="currentUser?.admin || route.meta.users" />
+        <section v-else class="card" role="alert">
+          <h1>Not allowed</h1>
+          <p class="muted">This page is for admins. Ask an admin if you need access.</p>
+        </section>
       </main>
     </div>
   </div>

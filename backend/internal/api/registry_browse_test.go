@@ -77,7 +77,6 @@ func newBrowseTest(t *testing.T, admin bool) *browseTest {
 		return &dockertest.Fake{}, nil
 	}, func(o *Options) {
 		o.RegistryClient = fake
-		o.Admin = func(auth.User) bool { return admin }
 	})
 	if _, err := svc.CreateFirstUser(t.Context(), "admin", "longenough"); err != nil {
 		t.Fatal(err)
@@ -87,6 +86,9 @@ func newBrowseTest(t *testing.T, admin bool) *browseTest {
 		body: `{"name":"Forge","address":"git.example.com","username":"bot","password":"tok","kind":"forgejo","owners":["zefir"]}`})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create registry: %d %s", rec.Code, rec.Body)
+	}
+	if !admin {
+		cookie = addUser(t, h, cookie, "bob", auth.RoleUser)
 	}
 	return &browseTest{h: h, cookie: cookie, fake: fake}
 }
@@ -242,18 +244,12 @@ func TestRegistryBrowsePermissions(t *testing.T) {
 		bt := newBrowseTest(t, false)
 		bt.fake.manifest = registryclient.Manifest{Digest: testDigest, MediaType: registryclient.MediaDockerV2}
 		for _, p := range paths {
-			want := http.StatusOK
-			if p.method == "DELETE" {
-				want = http.StatusForbidden
-			}
-			if code, body := bt.call(t, p.method, p.path); code != want {
-				t.Errorf("%s %s as a user: %d %s, want %d", p.method, p.path, code, body, want)
+			if code, body := bt.call(t, p.method, p.path); code != http.StatusForbidden {
+				t.Errorf("%s %s as a user: %d %s, want 403", p.method, p.path, code, body)
 			}
 		}
-		for _, c := range bt.fake.calls {
-			if strings.HasPrefix(c, "delete") {
-				t.Errorf("non-admin reached the registry: %s", c)
-			}
+		if len(bt.fake.calls) != 0 {
+			t.Errorf("a user reached the registry: %v", bt.fake.calls)
 		}
 	})
 }

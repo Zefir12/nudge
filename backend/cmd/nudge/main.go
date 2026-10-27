@@ -169,7 +169,7 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 		sso = oidc.New(oidc.Options{
 			Issuer: cfg.OIDC.Issuer, ClientID: cfg.OIDC.ClientID, ClientSecret: cfg.OIDC.ClientSecret,
 			RedirectURL: cfg.PublicURL + "/api/v1/auth/oidc/callback",
-			AdminRole:   cfg.OIDC.AdminRole, RequireMFA: cfg.OIDC.RequireMFA, Log: log,
+			AdminRole:   cfg.OIDC.AdminRole, UserRole: cfg.OIDC.UserRole, RequireMFA: cfg.OIDC.RequireMFA, Log: log,
 		})
 		log.Info("single sign-on on", "issuer", cfg.OIDC.Issuer, "password_login", !cfg.NoPasswordLogin)
 	}

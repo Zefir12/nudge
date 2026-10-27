@@ -9,9 +9,11 @@ Auth: the `nudge_session` cookie set by login or setup, or `Authorization: Beare
 with an API token (see Tokens). When an `Authorization` header is present it alone
 decides; the cookie is ignored. Routes marked *public* need neither; every other route
 answers `401 {"error":"authentication required"}` without a valid session or token.
-Routes marked *admin* are meant to answer `403 {"error":"admins only"}` to other users,
-but nudge has no roles yet: for now "admins only" means every logged-in user (and every
-API token).
+Users have a role, `admin` or `user` (see Users). Every authenticated route is for admins
+only and answers `403 {"error":"admins only"}` to a user's session or API token, except
+the routes marked *user* below: `GET /auth/me`, logout, the user's own API tokens and the
+deployments (whose handlers check the user's role on each deployment). An API token has
+its owner's role.
 
 Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must carry
 `Sec-Fetch-Site: same-origin`, or an `Origin` whose host matches `Host`, or neither header
@@ -26,13 +28,17 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | POST | `/api/v1/setup` | public | create the admin and log in; see below |
 | POST | `/api/v1/auth/login` | public | log in; see below |
 | POST | `/api/v1/auth/logout` | public | end the session and clear the cookie; `204` (a no-op for API tokens), or `200 {"logout_url": "..."}` for a single sign-on user: the provider's sign-out page to visit next |
-| GET | `/api/v1/auth/me` | session | the logged-in user |
+| GET | `/api/v1/auth/me` | user | the logged-in user |
 | GET | `/api/v1/auth/methods` | public | the login page's ways to sign in; see Single sign-on |
 | GET | `/api/v1/auth/oidc/login` | public | start a single sign-on login (a browser navigation); see Single sign-on |
 | GET | `/api/v1/auth/oidc/callback` | public | the provider's redirect back; starts the session |
-| GET | `/api/v1/tokens` | session | the user's API tokens, oldest first; see below |
-| POST | `/api/v1/tokens` | session | create an API token `{"name": "ci"}`; `201` |
-| DELETE | `/api/v1/tokens/{id}` | session | revoke one of the user's tokens; `204`, or `404` |
+| GET | `/api/v1/tokens` | user | the user's API tokens, oldest first; see below |
+| POST | `/api/v1/tokens` | user, session only | create an API token `{"name": "ci"}`; `201` |
+| DELETE | `/api/v1/tokens/{id}` | user | revoke one of the user's tokens; `204`, or `404` |
+| GET | `/api/v1/users` | admin | every user by name; see Users |
+| POST | `/api/v1/users` | admin, session only | create a local user `{"username", "password", "role"}`; `201` |
+| PATCH | `/api/v1/users/{id}` | admin, session only | change `{"role", "disabled", "password"}` (each optional); `200` with the user |
+| DELETE | `/api/v1/users/{id}` | admin | delete a user with their sessions, tokens and webhooks; `204` |
 | GET | `/api/v1/audit` | session | the audit log, newest first, paged and filtered; see Audit log |
 | GET | `/api/v1/registries` | session | registry credentials for pulls, by name; see below |
 | POST | `/api/v1/registries` | session | add registry credentials; `201` |
@@ -88,7 +94,7 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | GET | `/api/v1/environments/{env}/webhooks/{id}/runs` | session | a deploy webhook's runs, newest first |
 | POST | `/api/v1/hooks/{id}` | public (webhook secret) | trigger a deploy webhook: pull and redeploy its target; see Webhooks |
 | GET | `/api/v1/deployments` | session | the deployments you may view (`?environment=` narrows), by name; see Deployments |
-| POST | `/api/v1/deployments` | session | create a deployment on a stack; `201`, you become its owner |
+| POST | `/api/v1/deployments` | admin | create a deployment on a stack; `201`, you become its owner |
 | GET | `/api/v1/deployments/{name}` | session | one deployment, with your `role` and what you `can` do |
 | PATCH | `/api/v1/deployments/{name}` | session | change `description`, `variables` or `health` (maintainer) |
 | DELETE | `/api/v1/deployments/{name}` | session | delete a deployment with its tokens and runs (owner); the stack stays; `204` |
@@ -118,7 +124,7 @@ With an OpenID Connect provider configured (docs/config/server.md, Single sign-o
 - `GET /api/v1/auth/oidc/callback?state=...&code=...` needs the state (one use, 10
   minutes) and the binding cookie of the browser that started the login. Success sets the
   session cookie and answers `302` to the saved path. A failure answers `302` to
-  `/login?error=sso`; a valid sign-in without the admin role (or without `mfa` in `amr`
+  `/login?error=sso`; a valid sign-in without the admin or user role (or without `mfa` in `amr`
   when MFA is required) answers a `403` page. Both are audited as
   `GET /api/v1/auth/oidc/callback` with the subject as target. Every attempt counts against
   the per-IP login limit until it succeeds.
@@ -131,15 +137,15 @@ With an OpenID Connect provider configured (docs/config/server.md, Single sign-o
 ### Setup and login
 `POST /api/v1/setup` and `POST /api/v1/auth/login` take
 `{"username": "admin", "password": "..."}` and answer with the user
-`{"id": 1, "username": "admin", "created_at": "2026-10-24T12:00:00Z", "admin": true}`
+`{"id": 1, "username": "admin", "created_at": "2026-10-24T12:00:00Z", "role": "admin", "admin": true}`
 (`201` for setup,
 `200` for login) plus the session cookie: `HttpOnly`, `SameSite=Strict`, `Path=/`,
 `Secure` when nudge serves TLS or `NUDGE_PUBLIC_URL` is `https://`, else when the request
 came over HTTPS (or with `X-Forwarded-Proto: https` from a trusted proxy,
 `NUDGE_TRUSTED_PROXIES`),
 valid for 7 days. `GET /api/v1/auth/me` returns the same user object. `admin` says
-whether the user may use the *admin* routes (true for every user until nudge has roles);
-the web UI hides admin-only actions when it is false.
+whether the user may use the admin routes (`role` is `admin`); the web UI hides
+admin-only pages and actions when it is false. Setup creates an admin.
 
 - Setup works only while no user exists, else `409`. The username is 1 to 64 bytes
   without control characters or surrounding spaces; the password at least 8 characters
@@ -173,6 +179,28 @@ nudge stores its SHA-256 hash. `GET /api/v1/tokens` lists the same objects witho
   user (`409` otherwise). A user can hold at most 100 tokens (`409` beyond that).
 - `last_used_at` is updated at most once a minute.
 - Deleting a user deletes their tokens.
+
+### Users
+`GET /api/v1/users` lists
+`{"id": 2, "username": "bob", "role": "user", "disabled": false, "sso": false,
+"display_name": "", "email": "", "created_at": "..."}` by username.
+
+- `POST /api/v1/users` creates a local user with a password (the rules of setup) and a
+  role, `admin` or `user`; a taken name is `409`.
+- `PATCH /api/v1/users/{id}` changes the given fields only. Disabling ends the user's
+  sessions; their API tokens, deploy tokens and deploy webhooks stop working until they
+  are enabled again, and they can't log in (`401`, as for a wrong password). A password
+  reset ends their sessions too.
+- SSO users get their role from the provider on every login: changing it, or setting a
+  password, is `400`; they can be disabled (their next login gets a 403 page).
+- With password login off (`NUDGE_PASSWORD_LOGIN=false`) the local break-glass `admin`
+  can't be demoted, disabled or deleted either (`409`); its password can be reset.
+- The last enabled admin can't be demoted, disabled or deleted: `409`. Concurrent changes
+  can't get around this (each change checks it in the statement that writes).
+- Creating a user and changing one are session-only, as a password is a credential.
+- `DELETE /api/v1/users/{id}` removes the user and everything they own: sessions, API
+  tokens, deploy tokens, deploy webhooks and deployment memberships.
+- Every change is in the audit log with the username as the target.
 
 ### Environments
 An environment is a Docker host; `{env}` in paths is its numeric `id`.

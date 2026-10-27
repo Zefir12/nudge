@@ -326,10 +326,8 @@ func TestServerURL(t *testing.T) {
 func TestDeleteEnvironment(t *testing.T) {
 	t.Parallel()
 	stacksDir := t.TempDir()
-	admin := true
 	et := newEnvTestOpts(t, map[string]*dockertest.Fake{"local": {}}, func(o *Options) {
 		o.StacksDir = stacksDir
-		o.Admin = func(auth.User) bool { return admin }
 	})
 	created := createAgentEnv(t, et, "nas")
 	path := fmt.Sprintf("/api/v1/environments/%d", created.ID)
@@ -361,11 +359,10 @@ func TestDeleteEnvironment(t *testing.T) {
 		})
 	}
 
-	admin = false
-	if rec := do(t, et.h, request{method: "DELETE", path: path, cookie: et.cookie}); rec.Code != http.StatusForbidden {
+	user := addUser(t, et.h, et.cookie, "bob", auth.RoleUser)
+	if rec := do(t, et.h, request{method: "DELETE", path: path, cookie: user}); rec.Code != http.StatusForbidden {
 		t.Errorf("not an admin: code = %d, want 403 (%s)", rec.Code, rec.Body)
 	}
-	admin = true
 	if rec := do(t, et.h, request{method: "DELETE", path: path, cookie: et.cookie}); rec.Code != http.StatusNoContent {
 		t.Fatalf("delete: code = %d (%s)", rec.Code, rec.Body)
 	}
