@@ -86,7 +86,7 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | GET | `/api/v1/deployments` | session | the deployments you may view (`?environment=` narrows), by name; see Deployments |
 | POST | `/api/v1/deployments` | session | create a deployment on a stack; `201`, you become its owner |
 | GET | `/api/v1/deployments/{name}` | session | one deployment, with your `role` and what you `can` do |
-| PATCH | `/api/v1/deployments/{name}` | session | change `description` or `variables` (maintainer) |
+| PATCH | `/api/v1/deployments/{name}` | session | change `description`, `variables` or `health` (maintainer) |
 | DELETE | `/api/v1/deployments/{name}` | session | delete a deployment with its tokens and runs (owner); the stack stays; `204` |
 | GET | `/api/v1/deployments/{name}/members` | session | members and their roles |
 | POST | `/api/v1/deployments/{name}/members` | session | `{"username", "role"}` adds a member or changes their role (owner) |
@@ -94,7 +94,7 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | GET | `/api/v1/deployments/{name}/tokens` | session | deploy tokens, without their values (maintainer) |
 | POST | `/api/v1/deployments/{name}/tokens` | session only | create a deploy token `{"name", "scopes", "expires_at"}`; `201` with its value, shown once |
 | DELETE | `/api/v1/deployments/{name}/tokens/{id}` | session | revoke a deploy token; `204` |
-| POST | `/api/v1/deployments/{name}/deploys` | session or deploy token (`deploy`) | queue a run `{"variables": {...}}`; `?wait=1` waits for it; see Deployments |
+| POST | `/api/v1/deployments/{name}/deploys` | session or deploy token (`deploy`) | queue a run `{"variables": {...}}`; `?wait=1` waits for it, `?stream=1` streams its progress; see Deployments |
 | GET | `/api/v1/deployments/{name}/deploys` | session or deploy token (`runs:read`) | runs, newest first (the last 100) |
 | GET | `/api/v1/deployments/{name}/deploys/{run}` | session or deploy token (`runs:read`) | one run |
 
@@ -839,7 +839,27 @@ even when you can't see that deployment); at most 1000 deployments.
   `status` is `queued`, `running`, `succeeded`, `failed`, `superseded` or `rolled_back`;
   `image_before`/`image_after` list the changed services as `service=ID`. `previous` (the
   values a run replaced) is shown to maintainers and owners only, `{}` otherwise.
-  `error` is nudge's own words, never the daemon's.
+  `error` is nudge's own words, never the daemon's. `step` is the last step the run
+  reached (`pulling`, `deploying`, `checking`, `rolling_back`) and `warnings` what it
+  skipped or worked around (say, a check an older agent can't run).
+- **Health.** `health` (on create and `PATCH`; a `PATCH` replaces all of it) says when a
+  run succeeded: `{"wait_seconds": 0-1800, "stable_seconds": 0-600, "http": {"service",
+  "port", "path": "/", "status": 200, "timeout_seconds": 5}, "rollback": false}`, `http`
+  optional, the defaults shown. `wait_seconds` has compose wait for the services to run
+  and pass their healthchecks (`up --wait`). `stable_seconds` then requires every
+  container to keep running without a restart (a container that exited with 0 is a
+  finished one-off job). `http` then GETs `http://127.0.0.1:port/path` inside a running
+  container of `service`, without following redirects, and expects `status`. A failure
+  ends the run `failed` with an `error` naming the step and the service, and puts the
+  `.env` back; with `rollback` the replaced values are also deployed again (recorded in
+  the update history) and the run ends `rolled_back` (`502` like a failure). Agents built
+  before a check skip it with a warning. docs/deployments.md is the how-to.
+- **Progress stream.** `POST .../deploys?stream=1` answers `200` with JSON lines once the
+  run is queued (errors before that are ordinary JSON errors): `{"run": 7, "message":
+  "queued"}`, then progress `{"step", "service", "message", "warning"}`, an empty `{}`
+  every 25 s while nothing happens, and finally `{"status", "run", "step", "error",
+  "warnings"}`. CI passes only if the last line's `status` is `succeeded`. Leaving early
+  doesn't stop the run. Steps can be skipped in the stream when the run gets ahead of it.
 
 ### Audit log
 Every `POST`, `PUT`, `PATCH` and `DELETE` that reaches a route is recorded after it is

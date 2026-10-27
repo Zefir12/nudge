@@ -170,6 +170,16 @@ to the UI as they are.
     `{"stream": "stdout"|"stderr", "line": "..."}` frames, then `{"exit_code": N}`.
     Cancelling the request kills the process.
   - `POST /v1/stacks/{name}/down` `{"volumes": bool}`: the same output format.
+  - `up` also takes `"wait_seconds"` (left out when zero), compose's `--wait
+    --wait-timeout`. An agent from before it refuses the field with `400`, and the server
+    deploys again without waiting and warns.
+  - `POST /v1/stacks/{name}/probe` `{"container", "port", "path", "status", "timeout"}`
+    (timeout in nanoseconds): a deployment's HTTP check. The agent starts a helper
+    container from its own image with `network_mode: container:<id>` running `nudge
+    probe` against `127.0.0.1`, and answers `{"failed": "..."}` (empty when it passed);
+    `409` when the agent doesn't run in a container of that daemon. An agent from before
+    it answers `404`, and the server skips the check with a warning. The local
+    environment runs the same helper through the server's own container.
   - `DELETE /v1/stacks/{name}`: removes the files after `down`.
   - Not built yet: `GET /v1/stacks` with names and a SHA-256 of each project's files, so
     the server can show a stack that differs from what it last sent.

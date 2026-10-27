@@ -50,6 +50,11 @@ Remote hosts run the same image as `nudge agent` with `NUDGE_SERVER_URL` and
 `NUDGE_JOIN_TOKEN` (the UI's "Add environment" prints the `docker run` command and a
 compose file, as in [deploy/agent.compose.yml](deploy/agent.compose.yml)).
 
+CI deploys a deployment with `nudge deploy --server URL --deployment NAME --var
+NAME=value` (token in `NUDGE_DEPLOY_TOKEN`, server also from `NUDGE_SERVER_URL`); it
+prints the progress and exits 0 only when the run succeeded. See
+[docs/deployments.md](docs/deployments.md).
+
 Details: [docs/config/server.md](docs/config/server.md), agents:
 [docs/config/agent.md](docs/config/agent.md). API: [docs/api.md](docs/api.md).
 

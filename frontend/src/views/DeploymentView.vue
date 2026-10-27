@@ -22,7 +22,10 @@ import {
   type DeploymentRun,
   type DeployScope,
   type DeployToken,
+  type DeploymentHealth,
 } from '../api/client';
+import DeploymentHealthForm from '../components/DeploymentHealthForm.vue';
+import DeploySnippets from '../components/DeploySnippets.vue';
 import { formatDate } from '../format';
 
 const route = useRoute();
@@ -109,6 +112,10 @@ const onSave = () =>
       variables: editVariables.value.split(/[\s,]+/).filter((v) => v !== ''),
     });
   });
+const onSaveHealth = (health: DeploymentHealth) =>
+  run(async () => {
+    await changeDeployment(name.value, { health });
+  });
 
 function onDelete() {
   if (!window.confirm(`Delete the deployment "${name.value}"? Its tokens stop working. The stack stays.`))
@@ -138,20 +145,6 @@ function onRevokeToken(t: DeployToken) {
     if (created.value?.id === t.id) created.value = null;
   });
 }
-
-// curlCommand is a CI step that deploys and fails when the deploy does.
-const curlCommand = computed(() => {
-  const d = deployment.value;
-  if (!d) return '';
-  const vars = Object.fromEntries(d.variables.map((v) => [v, `<${v.toLowerCase()}>`]));
-  return [
-    'curl -fsS -X POST \\',
-    '  -H "Authorization: Bearer $NUDGE_DEPLOY_TOKEN" \\',
-    '  -H "Content-Type: application/json" \\',
-    `  -d '${JSON.stringify({ variables: vars })}' \\`,
-    `  "${window.location.origin}/api/v1/deployments/${d.name}/deploys?wait=1"`,
-  ].join('\n');
-});
 
 // Members.
 const roles: DeploymentRole[] = ['viewer', 'deployer', 'maintainer', 'owner'];
@@ -229,7 +222,11 @@ const varsText = (vars: Record<string, string>) =>
               <td>#{{ r.id }}</td>
               <td>
                 <span class="status" :class="r.status">{{ r.status.replace('_', ' ') }}</span>
+                <span v-if="r.status === 'running' && r.step" class="muted">
+                  · {{ r.step.replace('_', ' ') }}</span
+                >
                 <div v-if="r.error" class="muted">{{ r.error }}</div>
+                <div v-for="(w, i) in r.warnings ?? []" :key="i" class="warning">{{ w }}</div>
               </td>
               <td>{{ r.actor_kind === 'token' ? `token ${r.actor}` : r.actor }}</td>
               <td class="break">
@@ -253,8 +250,7 @@ const varsText = (vars: Record<string, string>) =>
       <div v-if="created" class="created" aria-live="polite">
         <p>Token "{{ created.name }}" created. Copy it now: it is shown only once.</p>
         <code class="secret">{{ created.token }}</code>
-        <p>A CI step that deploys and fails when the deploy fails:</p>
-        <pre class="snippet">{{ curlCommand }}</pre>
+        <p>Store it as the CI secret <code>NUDGE_DEPLOY_TOKEN</code> for the step below.</p>
         <button type="button" @click="created = null">Done</button>
       </div>
       <form class="row" @submit.prevent="onCreateToken">
@@ -274,6 +270,7 @@ const varsText = (vars: Record<string, string>) =>
         >
         <button type="submit" :disabled="busy || tokenScopes.length === 0">Create token</button>
       </form>
+      <DeploySnippets :name="deployment.name" :variables="deployment.variables" />
       <div v-if="tokens.length" class="table-wrap">
         <table>
           <thead>
@@ -366,6 +363,12 @@ const varsText = (vars: Record<string, string>) =>
         </label>
         <button type="submit" :disabled="busy">Save</button>
       </form>
+      <DeploymentHealthForm
+        v-if="can('edit')"
+        :health="deployment.health"
+        :busy="busy"
+        @save="onSaveHealth"
+      />
       <button v-if="can('delete')" type="button" class="danger" :disabled="busy" @click="onDelete">
         Delete deployment
       </button>
@@ -407,8 +410,7 @@ const varsText = (vars: Record<string, string>) =>
   margin: 0.75rem 0;
 }
 
-.secret,
-.snippet {
+.secret {
   display: block;
   overflow-x: auto;
   margin: 0.5rem 0;
@@ -422,5 +424,9 @@ const varsText = (vars: Record<string, string>) =>
 .status.failed,
 .status.rolled_back {
   color: var(--danger);
+}
+
+.warning {
+  color: var(--warn);
 }
 </style>

@@ -21,6 +21,7 @@ import (
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker/dockertest"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/probe"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/stacks"
 )
 
@@ -41,6 +42,11 @@ type fakeRunner struct {
 	cancelled chan struct{}
 	// onRun, if set, is called as a run ends, so a test can change the Docker fake.
 	onRun func()
+	// upErrs, if set, are the errors of the next ups before they run (nil runs it).
+	upErrs []error
+	// probes are the HTTP checks asked for; probeErr is their answer.
+	probes   []probe.Request
+	probeErr error
 }
 
 func (f *fakeRunner) Sync(_ context.Context, name string, files stacks.Files) error {
@@ -77,8 +83,32 @@ func (f *fakeRunner) run(ctx context.Context, call string, out func(stacks.Line)
 	return f.code, f.err
 }
 
-func (f *fakeRunner) Up(ctx context.Context, name string, pull bool, out func(stacks.Line)) (int, error) {
-	return f.run(ctx, fmt.Sprintf("up %s pull=%v", name, pull), out)
+func (f *fakeRunner) Up(ctx context.Context, name string, opts stacks.UpOptions, out func(stacks.Line)) (int, error) {
+	call := fmt.Sprintf("up %s pull=%v", name, opts.Pull)
+	if opts.Wait > 0 {
+		call += fmt.Sprintf(" wait=%s", opts.Wait)
+	}
+	if f.upErrs != nil {
+		f.mu.Lock()
+		err := f.upErrs[0]
+		f.upErrs = f.upErrs[1:]
+		f.mu.Unlock()
+		if err != nil {
+			f.mu.Lock()
+			f.calls = append(f.calls, call)
+			f.mu.Unlock()
+			return 0, err
+		}
+	}
+	return f.run(ctx, call, out)
+}
+
+// Probe records the check and answers probeErr.
+func (f *fakeRunner) Probe(_ context.Context, _ string, r probe.Request) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.probes = append(f.probes, r)
+	return f.probeErr
 }
 
 func (f *fakeRunner) Down(ctx context.Context, name string, volumes bool, out func(stacks.Line)) (int, error) {
@@ -109,7 +139,8 @@ type stackTest struct {
 
 // newStackTest has the environments local (the fake runner) and broken (no runner, like
 // an agent environment). The local fake has containers of the projects web and other.
-func newStackTest(t *testing.T) stackTest {
+// mods change the API's options after the test's own.
+func newStackTest(t *testing.T, mods ...func(*Options)) stackTest {
 	t.Helper()
 	label := func(project, service string) map[string]string {
 		return map[string]string{stacks.ProjectLabel: project, stacks.ServiceLabel: service}
@@ -131,6 +162,9 @@ func newStackTest(t *testing.T) stackTest {
 			return st.runner
 		}
 		o.StackChecker = st.checker.check
+		for _, mod := range mods {
+			mod(o)
+		}
 	})
 	return st
 }

@@ -33,6 +33,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/events"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/notify"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/probe"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/registries"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/secretbox"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/stacks"
@@ -48,9 +49,11 @@ const usage = `usage: nudge [command] [flags]
 commands:
   serve    run the API and web UI (default)
   agent    connect this host's Docker to a nudge server
+  deploy   start a deployment run and follow it (for CI; token in NUDGE_DEPLOY_TOKEN)
+  probe    one HTTP check (what a deployment's HTTP check runs in a helper container)
   version  print the version
 
-Run "nudge serve -h" or "nudge agent -h" for their flags.
+Run "nudge <command> -h" for a command's flags.
 `
 
 func main() {
@@ -96,6 +99,10 @@ func realMain(ctx context.Context, args []string, getenv func(string) string, st
 			return 1
 		}
 		return 0
+	case "deploy":
+		return runDeploy(ctx, args, getenv, stdout, stderr)
+	case "probe":
+		return runProbe(ctx, args, stdout, stderr)
 	case "version":
 		_, _ = fmt.Fprintln(stdout, version.Version)
 		return 0
@@ -317,6 +324,17 @@ func runAgent(ctx context.Context, cfg config.Agent, log *slog.Logger) error {
 	if err != nil {
 		log.Warn("hostname unknown", "err", err)
 	}
+	// HTTP checks start a helper container from the agent's own image.
+	dc, err := docker.New(dial)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = dc.Close() }()
+	self := stacks.SelfID(os.ReadFile, os.Hostname)
+	prober := probe.New(probe.Options{
+		Docker: func() (probe.Docker, error) { return dc, nil },
+		Self:   self.ID, Hostname: self.Hostname,
+	})
 	log.Info("agent starting", "server", cfg.ServerURL.Redacted(), "docker_host", cfg.DockerHost, "version", version.Version)
 	err = agent.New(agent.Options{
 		ServerURL: cfg.ServerURL,
@@ -325,7 +343,7 @@ func runAgent(ctx context.Context, cfg config.Agent, log *slog.Logger) error {
 		Dial:      dial,
 		Control: stacks.NewControl(stacks.NewLocal(stacks.LocalOptions{
 			Dir: stacks.NewDir(cfg.StacksDir), Compose: cfg.Compose, DockerHost: cfg.DockerHost,
-			ConfigDir: composeConfigDir(cfg.DataDir),
+			ConfigDir: composeConfigDir(cfg.DataDir), Probe: prober.Run,
 		}), log),
 		Version:  version.Version,
 		Hostname: hostname,
@@ -350,11 +368,16 @@ func stackRunner(cfg config.Server, envs *environments.Service, regs *registries
 		if env.Kind == environments.KindAgent {
 			return stacks.NewRemote(envs.ControlDialer(env.ID)).WithCredentials(dir, creds)
 		}
+		prober := probe.New(probe.Options{
+			Docker: func() (probe.Docker, error) { return envs.Client(env) },
+			Self:   self.ID, Hostname: self.Hostname,
+		})
 		return stacks.NewLocal(stacks.LocalOptions{
 			Dir: dir, Compose: cfg.Compose, DockerHost: cfg.DockerHost, Credentials: creds,
 			ConfigDir: composeConfigDir(cfg.DataDir),
 			Mounts:    stacks.ContainerMounts(self, func() (stacks.Inspector, error) { return envs.Client(env) }),
 			Log:       log.With("env", env.ID),
+			Probe:     prober.Run,
 		})
 	}
 }

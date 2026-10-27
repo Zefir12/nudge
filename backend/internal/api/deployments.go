@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -19,13 +18,15 @@ import (
 const deployWaitTimeout = 10 * time.Minute
 
 type deploymentJSON struct {
-	Name        string    `json:"name"`
-	Environment int64     `json:"environment"`
-	Stack       string    `json:"stack"`
-	Description string    `json:"description"`
-	Variables   []string  `json:"variables"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	Name        string   `json:"name"`
+	Environment int64    `json:"environment"`
+	Stack       string   `json:"stack"`
+	Description string   `json:"description"`
+	Variables   []string `json:"variables"`
+	// Health says when a run succeeded (deployments.Health).
+	Health    deployments.Health `json:"health"`
+	CreatedAt time.Time          `json:"created_at"`
+	UpdatedAt time.Time          `json:"updated_at"`
 	// Role is the caller's role; "" for an admin who isn't a member.
 	Role string `json:"role"`
 	// Can lists the actions the caller may do, so the UI hides the others.
@@ -45,7 +46,7 @@ func toDeploymentJSON(d deployments.Deployment, admin bool) deploymentJSON {
 		}
 	}
 	return deploymentJSON{
-		Name: d.Name, Environment: d.Environment, Stack: d.Stack, Description: d.Description, Variables: d.Variables,
+		Name: d.Name, Environment: d.Environment, Stack: d.Stack, Description: d.Description, Variables: d.Variables, Health: d.Health,
 		CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt, Role: string(d.Role), Can: can,
 	}
 }
@@ -92,6 +93,9 @@ type deploymentRunJSON struct {
 	ImageBefore string            `json:"image_before"`
 	ImageAfter  string            `json:"image_after"`
 	Error       string            `json:"error"`
+	// Step is the last step the run reached: pulling, deploying, checking, rolling_back.
+	Step     string   `json:"step"`
+	Warnings []string `json:"warnings"`
 }
 
 // toDeploymentRunJSON leaves the replaced values out unless showPrevious: a variable
@@ -101,9 +105,14 @@ func toDeploymentRunJSON(r deployments.Run, showPrevious bool) deploymentRunJSON
 	if showPrevious {
 		prev = r.Previous
 	}
+	warnings := r.Warnings
+	if warnings == nil {
+		warnings = []string{}
+	}
 	return deploymentRunJSON{
 		ID: r.ID, Actor: r.ActorName, ActorKind: r.ActorKind, Status: string(r.Status), Variables: r.Variables, Previous: prev,
 		QueuedAt: r.QueuedAt, StartedAt: r.StartedAt, FinishedAt: r.FinishedAt, ImageBefore: r.ImageBefore, ImageAfter: r.ImageAfter, Error: r.Error,
+		Step: string(r.Step), Warnings: warnings,
 	}
 }
 
@@ -185,11 +194,12 @@ func (s *server) listDeployments(w http.ResponseWriter, r *http.Request) {
 }
 
 type createDeploymentRequest struct {
-	Name        string   `json:"name"`
-	Environment int64    `json:"environment"`
-	Stack       string   `json:"stack"`
-	Description string   `json:"description"`
-	Variables   []string `json:"variables"`
+	Name        string             `json:"name"`
+	Environment int64              `json:"environment"`
+	Stack       string             `json:"stack"`
+	Description string             `json:"description"`
+	Variables   []string           `json:"variables"`
+	Health      deployments.Health `json:"health"`
 }
 
 func (s *server) createDeployment(w http.ResponseWriter, r *http.Request) {
@@ -224,7 +234,7 @@ func (s *server) createDeployment(w http.ResponseWriter, r *http.Request) {
 	}
 	actor := s.deploymentActor(r)
 	d, err := s.deployments.Create(r.Context(), actor, deployments.Input{
-		Name: req.Name, Environment: env.ID, Stack: req.Stack, Description: req.Description, Variables: req.Variables,
+		Name: req.Name, Environment: env.ID, Stack: req.Stack, Description: req.Description, Variables: req.Variables, Health: req.Health,
 	})
 	if err != nil {
 		s.deploymentError(w, "create deployment", err)
@@ -242,8 +252,9 @@ func (s *server) getDeployment(w http.ResponseWriter, r *http.Request) {
 }
 
 type changeDeploymentRequest struct {
-	Description *string   `json:"description"`
-	Variables   *[]string `json:"variables"`
+	Description *string             `json:"description"`
+	Variables   *[]string           `json:"variables"`
+	Health      *deployments.Health `json:"health"`
 }
 
 func (s *server) changeDeployment(w http.ResponseWriter, r *http.Request) {
@@ -256,7 +267,7 @@ func (s *server) changeDeployment(w http.ResponseWriter, r *http.Request) {
 	}
 	name := r.PathValue("name")
 	auditTarget(r, name)
-	u := deployments.Update{Description: req.Description}
+	u := deployments.Update{Description: req.Description, Health: req.Health}
 	if req.Variables != nil {
 		u.SetVariables, u.Variables = true, *req.Variables
 	}
@@ -446,7 +457,7 @@ func (s *server) getDeploymentRun(w http.ResponseWriter, r *http.Request) {
 
 // serveDeploy queues a run of c's deployment: 202 with the run, or with ?wait=1 the
 // finished run (200 succeeded, 502 failed or rolled back, 409 superseded), or 202 if it
-// still runs after deployWaitTimeout.
+// still runs after deployWaitTimeout; ?stream=1 streams its progress (streamDeploy).
 func (s *server) serveDeploy(w http.ResponseWriter, r *http.Request, c deployCaller) {
 	var req struct {
 		Variables map[string]string `json:"variables"`
@@ -458,16 +469,24 @@ func (s *server) serveDeploy(w http.ResponseWriter, r *http.Request, c deployCal
 	if !ok {
 		return
 	}
+	stream, ok := s.queryBool(w, r, "stream")
+	if !ok {
+		return
+	}
 	c.req.Variables = req.Variables
 	user := c.user
-	ticket, err := s.deployments.Deploy(r.Context(), c.d, c.req, func(ctx context.Context, d deployments.Deployment, run deployments.Run) deployments.Outcome {
-		return s.deployDeployment(ctx, d, run, user)
+	ticket, err := s.deployments.Deploy(r.Context(), c.d, c.req, func(ctx context.Context, d deployments.Deployment, run deployments.Run, report deployments.Report) deployments.Outcome {
+		return s.deployDeployment(ctx, d, run, user, report)
 	})
 	if err != nil {
 		s.deploymentError(w, "deploy", err)
 		return
 	}
 	s.log.Info("deployment run queued", "deployment", c.d.Name, "run", ticket.RunID, "actor", c.req.ActorKind+":"+c.req.ActorName, "ip", clientIP(r))
+	if stream {
+		s.streamDeploy(w, r, c, ticket)
+		return
+	}
 	if !wait {
 		run, err := s.deployments.Run(r.Context(), c.d.ID, ticket.RunID)
 		if err != nil {
@@ -520,57 +539,6 @@ func (s *server) serveRun(w http.ResponseWriter, r *http.Request, c deployCaller
 		return
 	}
 	s.writeJSON(w, http.StatusOK, toDeploymentRunJSON(run, c.showPrevious))
-}
-
-// deployDeployment runs one deploy: the run's variables go into the stack's .env, then
-// the stack pulls and comes up, as user (for the update history). The outcome's error
-// is a safe message; the log has the details.
-func (s *server) deployDeployment(ctx context.Context, d deployments.Deployment, run deployments.Run, user string) deployments.Outcome {
-	failed := func(err error) deployments.Outcome {
-		s.log.Warn("deployment run", "deployment", d.Name, "run", run.ID, "err", err)
-		return deployments.Outcome{Status: deployments.StatusFailed, Error: deployError(err)}
-	}
-	env, err := s.envs.Get(ctx, d.Environment)
-	if err != nil {
-		return failed(err)
-	}
-	c, err := s.envs.Client(env)
-	if err != nil {
-		return failed(err)
-	}
-	ctx, cancel := context.WithTimeout(ctx, stackTimeout)
-	defer cancel()
-	var previous map[string]string
-	var original string
-	edited := false
-	runner, unlock, err := s.startStackEdit(ctx, env, d.Stack, func(f stacks.Files) stacks.Files {
-		original, edited = f.Env, true
-		f.Env, previous = deployments.SetVariables(f.Env, run.Variables)
-		return f
-	})
-	if err != nil {
-		if edited {
-			s.restoreEnv(env, d, run, original)
-		}
-		return failed(err)
-	}
-	defer unlock()
-	code, changes, err := s.pullAndDeploy(ctx, stackRun{env: env, c: c, runner: runner, name: d.Stack, out: func(stacks.Line) {}}, user)
-	before, after := stackImages(changes)
-	out := deployments.Outcome{Status: deployments.StatusSucceeded, Previous: previous, ImageBefore: before, ImageAfter: after}
-	switch {
-	case err != nil:
-		f := failed(err)
-		out.Status, out.Error = f.Status, f.Error
-	case code != 0:
-		out.Status, out.Error = deployments.StatusFailed, fmt.Sprintf("compose exited with code %d", code)
-	}
-	if out.Status == deployments.StatusFailed && len(run.Variables) > 0 {
-		// The next start of the stack (from the UI, an update, a webhook) uses the
-		// values that worked, not the failed ones. The stack is still claimed.
-		s.restoreEnv(env, d, run, original)
-	}
-	return out
 }
 
 // restoreEnv puts back the .env a failed run replaced; the caller holds the stack.

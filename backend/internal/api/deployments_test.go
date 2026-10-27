@@ -17,9 +17,9 @@ import (
 
 // newDeploymentTest is a stack test with the stack web (app on app:v1, .env setting
 // API_IMAGE and KEEP) and the deployment shop on it, which lets deploys set API_IMAGE.
-func newDeploymentTest(t *testing.T) stackTest {
+func newDeploymentTest(t *testing.T, mods ...func(*Options)) stackTest {
 	t.Helper()
-	st := newStackTest(t)
+	st := newStackTest(t, mods...)
 	label := map[string]string{stacks.ProjectLabel: "web", stacks.ServiceLabel: "app"}
 	st.fake.Containers = []container.Summary{{ID: "a1", Image: "app:v1", ImageID: "sha256:a1", Labels: label}}
 	st.runner.onRun = func() {
@@ -171,7 +171,7 @@ func TestDeployWithToken(t *testing.T) {
 	// A failing compose fails the CI step and puts the .env back.
 	st.runner.code = 1
 	rec = do(t, st.h, request{method: "POST", path: "/api/v1/deployments/shop/deploys?wait=1", body: `{"variables":{"API_IMAGE":"app:broken"}}`, headers: bearer(tok)})
-	if run := deployRunOf(t, rec.Body.String()); rec.Code != http.StatusBadGateway || run.Status != "failed" || run.Error != "compose exited with code 1" {
+	if run := deployRunOf(t, rec.Body.String()); rec.Code != http.StatusBadGateway || run.Status != "failed" || run.Error != "pulling: compose exited with code 1" {
 		t.Errorf("failing deploy = %d %s", rec.Code, rec.Body)
 	}
 	env, err = os.ReadFile(filepath.Join(st.dir, strconv.FormatInt(st.ids["local"], 10), "web", ".env"))

@@ -14,7 +14,10 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
+
+	"git.zefirlabs.net/zefir/nudge/backend/internal/probe"
 )
 
 // The control service is how the server deploys stacks on an agent: HTTP/1.1 over the
@@ -34,6 +37,12 @@ var ErrBusy = errors.New("the stack is being changed on the agent")
 // ErrOldAgent means the agent refused an up with registry credentials: it was built
 // before them.
 var ErrOldAgent = errors.New("the agent is too old for registry credentials; update it")
+
+// ErrNoWait means the agent refused an up with --wait: it was built before it.
+var ErrNoWait = errors.New("the agent is too old to wait for healthy services")
+
+// ErrNoProbe means the agent has no HTTP checks: it was built before them.
+var ErrNoProbe = errors.New("the agent is too old for HTTP checks")
 
 // statusError is an error answer of the control service.
 type statusError struct {
@@ -76,6 +85,9 @@ type control struct {
 //     {"stream", "line"}, then {"exit_code": N} or {"error": "..."}; cancelling the
 //     request kills compose
 //   - DELETE /v1/stacks/{name} removes the files (204)
+//   - POST /v1/stacks/{name}/probe {"container", "port", "path", "status", "timeout"}
+//     runs an HTTP check (probe.Request) and answers {"failed": "..."}, empty when it
+//     passed; 409 when the agent can't start a check
 //
 // Errors are JSON {"error": "..."}: 400 bad request, 404 no such stack, 409 the stack is
 // being changed, 503 no docker-compose.
@@ -89,10 +101,52 @@ func NewControl(runner Runner, log *slog.Logger) http.Handler {
 	mux.HandleFunc("POST /v1/stacks/{name}/up", c.up)
 	mux.HandleFunc("POST /v1/stacks/{name}/down", c.down)
 	mux.HandleFunc("DELETE /v1/stacks/{name}", c.remove)
+	mux.HandleFunc("POST /v1/stacks/{name}/probe", c.probe)
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		controlError(w, http.StatusNotFound, "not found")
 	})
 	return mux
+}
+
+// probeAnswer is the answer of a check that ran.
+type probeAnswer struct {
+	Failed string `json:"failed,omitempty"`
+}
+
+// probe runs an HTTP check. It doesn't claim the stack: it changes nothing.
+func (c *control) probe(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	var req probe.Request
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxControlBody))
+	dec.DisallowUnknownFields()
+	if !ValidName(name) || dec.Decode(&req) != nil || req.Validate() != nil {
+		controlError(w, http.StatusBadRequest, "invalid probe request")
+		return
+	}
+	p, ok := c.runner.(Prober)
+	if !ok {
+		controlError(w, http.StatusConflict, probe.ErrNoSelf.Error())
+		return
+	}
+	err := p.Probe(r.Context(), name, req)
+	var failed *probe.FailedError
+	switch {
+	case err == nil:
+	case errors.As(err, &failed):
+	case errors.Is(err, probe.ErrNoSelf):
+		controlError(w, http.StatusConflict, probe.ErrNoSelf.Error())
+		return
+	default:
+		c.log.Warn("control: probe", "stack", name, "err", err)
+		controlError(w, http.StatusInternalServerError, "the check could not run")
+		return
+	}
+	var ans probeAnswer
+	if failed != nil {
+		ans.Failed = failed.Msg
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(ans)
 }
 
 func controlError(w http.ResponseWriter, code int, msg string) {
@@ -172,6 +226,8 @@ func (c *control) remove(w http.ResponseWriter, r *http.Request) {
 type upRequest struct {
 	Pull        bool         `json:"pull"`
 	Credentials []Credential `json:"credentials,omitempty"`
+	// WaitSeconds is UpOptions.Wait; left out when zero, for agents built before it.
+	WaitSeconds int `json:"wait_seconds,omitempty"`
 }
 
 func (c *control) up(w http.ResponseWriter, r *http.Request) {
@@ -182,7 +238,7 @@ func (c *control) up(w http.ResponseWriter, r *http.Request) {
 	}
 	r = r.WithContext(withCredentials(r.Context(), req.Credentials))
 	c.stream(w, r, "up", name, func(ctx context.Context, out func(Line)) (int, error) {
-		return c.runner.Up(ctx, name, req.Pull, out)
+		return c.runner.Up(ctx, name, UpOptions{Pull: req.Pull, Wait: time.Duration(req.WaitSeconds) * time.Second}, out)
 	})
 }
 
@@ -293,8 +349,8 @@ func (rm *Remote) WithCredentials(dir Dir, creds CredentialFunc) *Remote {
 }
 
 // Up runs compose up on the agent, with the registry credentials it may need.
-func (rm *Remote) Up(ctx context.Context, name string, pull bool, out func(Line)) (int, error) {
-	req := upRequest{Pull: pull}
+func (rm *Remote) Up(ctx context.Context, name string, opts UpOptions, out func(Line)) (int, error) {
+	req := upRequest{Pull: opts.Pull, WaitSeconds: int(opts.Wait.Round(time.Second) / time.Second)}
 	if rm.credentials != nil {
 		f, err := rm.dir.Read(name)
 		if err != nil {
@@ -306,12 +362,43 @@ func (rm *Remote) Up(ctx context.Context, name string, pull bool, out func(Line)
 	}
 	code, err := rm.run(ctx, name, "up", req, out)
 	var se *statusError
+	if req.WaitSeconds > 0 && errors.As(err, &se) && se.code == http.StatusBadRequest {
+		// Asked first: an agent from before --wait refuses the field, whether or not it
+		// takes credentials.
+		return 0, fmt.Errorf("compose up %s: %w", name, ErrNoWait)
+	}
 	if len(req.Credentials) > 0 && errors.As(err, &se) && se.code == http.StatusBadRequest {
 		// The server's request is otherwise valid: an agent from before credentials
 		// refuses the unknown field.
 		return 0, fmt.Errorf("compose up %s: %w", name, ErrOldAgent)
 	}
 	return code, err
+}
+
+// Probe runs an HTTP check on the agent. An agent without checks is ErrNoProbe.
+func (rm *Remote) Probe(ctx context.Context, name string, r probe.Request) error {
+	resp, err := rm.do(ctx, http.MethodPost, name, "/probe", r)
+	var se *statusError
+	switch {
+	case errors.Is(err, ErrNotFound):
+		// Only an agent without the route answers 404: the check needs no stack files.
+		return ErrNoProbe
+	case errors.Is(err, ErrBusy):
+		return probe.ErrNoSelf
+	case errors.As(err, &se) && se.code == http.StatusBadRequest:
+		return fmt.Errorf("http check: %w", err)
+	case err != nil:
+		return fmt.Errorf("http check: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var ans probeAnswer
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<10)).Decode(&ans); err != nil {
+		return fmt.Errorf("http check: decode answer: %w", err)
+	}
+	if ans.Failed != "" {
+		return &probe.FailedError{Msg: ans.Failed}
+	}
+	return nil
 }
 
 // Down runs compose down on the agent.
