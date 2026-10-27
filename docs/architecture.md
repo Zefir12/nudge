@@ -81,43 +81,7 @@ refuses `ws://` unless `NUDGE_INSECURE=1`.
   `internal/api` and enforced in the auth middleware; a new route of that kind goes on
   the list. Scopes stay a later option.
 - Login attempts are rate-limited per IP and username, with bounded memory.
-- Roles (#111): every user is an `admin` or a `user` (`users.role`; users created before
-  roles are admins, setup and `NUDGE_ADMIN_PASSWORD` create admins). One place decides:
-  `userRoutes` in `internal/api` lists the routes open to users, and the auth middleware
-  answers every other authenticated route with `403 admins only` (audited) for a user's
-  session or API token, so a new route is admin-only until it is listed. The routes open
-  to users check the object themselves (deployments: `deployments.Authorize` with the
-  user's role on the deployment). `TestRoutesForUsers` walks every registered route. An
-  API token has its owner's role; a deploy token or deploy webhook acts for its creator
-  and stops while they are disabled. A disabled user's sessions end and their
-  credentials stop working; the last enabled admin can't be demoted, disabled or
-  deleted (checked in the writing statement). SSO users get their role from the
-  provider on each login.
-- Ownership (#112): a user sees and touches only what is theirs, so a user can't read
-  an admin's logs or exec into another tenant's database. Two checks, both in
-  `internal/api`: `server.environment` answers `404` for an environment the user wasn't
-  given (`user_environments`, set by an admin), and `scope` (ownership.go) decides which
-  objects are theirs: those labelled `net.zefirlabs.nudge.owner=<owner key>`. The owner
-  key is random per user (`users.owner_key`) because SQLite reuses the newest deleted
-  user's id. Lists are filtered by the label in the Docker call and checked again;
-  `{id}` routes inspect first and answer someone else's object as `404` (the daemon is
-  then called with the inspected ID, not the name). A container also needs an image
-  without the owner label, since Docker merges image labels into the container's. The
-  event stream checks each container once (bounded cache per stream) and drops events
-  that can't be checked. Admins skip the checks (no extra Docker calls). The label
-  namespace is reserved: requests can't set it, a recreate keeps it. Creating objects as
-  a user (#114, #115) uses `server.ownerLabels`.
-- Tenant builder (#115, api/tenant.go): a user's container is built by the server from a
-  short strict spec (`tenantSpec`, unknown JSON fields refused), never from Docker's own
-  options, so privileged mode, binds, the host's namespaces, devices or the socket can't
-  be asked for at all. `buildTenant` is a pure function that adds the fixed hardening
-  (`NET_RAW` dropped, `no-new-privileges`, pids limit, log limits, init, private IPC) and
-  the owner label last. Volumes and networks must carry the user's owner label; images
-  are pulled without stored credentials, and an image with an uncovered `VOLUME` or a
-  reserved label is refused. `replace` (recreate, image update, deploy webhooks) rebuilds
-  any user's container through the builder from its settings read back as a spec
-  (`toTenantSpec`), so a setting the builder doesn't make can't survive a replace; the
-  admin spec is refused on a user's container.
+- Roles, ownership, allowances and users' containers: see [Permission model](#permission-model-multi-user-118).
 - Single sign-on (#110, internal/oidc): one OpenID Connect provider, nudge a confidential
   client (authorization code + PKCE S256, `client_secret_basic`). Discovery, JWKS and ID
   token checks are go-oidc's (RS256 only, issuer, audience, expiry against the injected
@@ -146,6 +110,186 @@ refuses `ws://` unless `NUDGE_INSECURE=1`.
   `server.protect` sends any request carrying one to a mux with only the deployment's
   `deploys` routes, which check the token against the deployment in the path, its
   scopes and its creator's current role.
+
+## Permission model (multi-user, #118)
+nudge can host other people on a Docker host it manages: each user signs in (usually
+through the OIDC provider), gets an allowance per environment, deploys containers from a
+short form, and can't see or reach anything that isn't theirs. Raw compose and the admin
+container form are root on the host for whoever can use them, so users never get either.
+Instead every check below sits in the API (`internal/api`); the web UI's `meta.users`
+routes only hide pages, they protect nothing.
+
+A request from a user passes these layers in order. Each one fails closed: a new route,
+object or setting is the admins' until something explicitly opens it to users.
+
+### 1. Identity and role (#110, #111)
+- Every account is an `admin` or a `user` (`users.role`). Setup, `NUDGE_ADMIN_PASSWORD`
+  and accounts made before roles existed are admins; an admin creates local users on the
+  Users page (`users.go`).
+- SSO users (`internal/oidc`, see the Single sign-on bullet in Auth) get their role from
+  the ID token's `roles` claim on every login: `NUDGE_OIDC_ADMIN_ROLE` makes an admin,
+  `NUDGE_OIDC_USER_ROLE` a user, neither refuses the login (audited). They are matched by
+  issuer + `sub` only and never linked to a local account, so a provider account can't
+  take over a local one by name or email. The role is fixed at login: a demotion at the
+  provider takes effect at the next login or when `NUDGE_OIDC_SESSION_TTL` ends the
+  session; disabling the user in nudge ends it at once.
+- Credentials carry their user's role: a session, an API token (its owner's role), a
+  deploy token or deploy webhook (its creator's, checked on every use). A disabled user's
+  sessions end and all their credentials stop working. The last enabled admin (and the
+  break-glass `admin` while password login is off) can't be demoted, disabled or deleted;
+  the check is in the writing statement.
+
+### 2. Routes: admin vs user (#111)
+- One table decides: `userRoutes` in `api.go` lists the routes open to users. The auth
+  middleware (`server.authenticate`) answers every other authenticated route with
+  `403 admins only` for a user's session or API token, and audits it. A route added
+  without thought is therefore admin-only; `TestRoutesForUsers` walks every registered
+  route.
+- Open to users: their account, their API tokens, deployments they are a member of, and
+  in the environments they were given: the environment's overview and stats, events, the
+  containers, volumes and networks they own (list, inspect, start/stop/restart/kill,
+  remove, logs, stats, exec, image update), their allowance (read only), creating
+  bridge networks and local volumes, and creating or recreating containers through the
+  tenant spec (`/user-containers`).
+- Admin-only: users and roles, environments and agents, allowances, images, pulls by
+  reference, prunes, stacks, the admin container spec (create and recreate), registries,
+  notification and deploy webhooks, the audit log.
+- Routes open to users check the object themselves (layers 3 and 4). Deployments have
+  their own check, `deployments.Authorize` with the user's role on the deployment
+  (Auth, Deployments): a deployment's stack is an admin's and runs as one, so making a
+  user a member trusts them with that stack and the variables it lets deploys set.
+
+### 3. Environments (#112)
+- An admin grants a user environments (`user_environments`, Users page). `server.environment`,
+  which every `{env}` route goes through, answers `404 environment not found` for any
+  other, and `GET /environments` lists only the granted ones.
+- A user's environment detail shows the host's OS, kernel, CPUs and memory (so they can
+  size their containers) but counts only their own containers, no images, and leaves out
+  the host name and Docker's root directory.
+
+### 4. Ownership (#112)
+- An object is a user's when it carries `net.zefirlabs.nudge.owner=<owner key>`
+  (`ownerLabel`). The owner key is random per user (`users.owner_key`), not the user's id,
+  because SQLite reuses the newest deleted user's id. Objects without the label (made by
+  an admin, a stack or outside nudge) are the admins'.
+- `scopeOf` turns the request's user into a `scope`: everything for an admin (no extra
+  Docker calls), the owner key for a user. Lists filter by the label in the Docker call
+  and check each result again. `{id}` routes inspect first (`ownedContainer`,
+  `ownedVolume`, `ownedNetwork`) and answer someone else's object as `404`, so a user
+  can't learn that it exists; the daemon is then called by the inspected ID, not the
+  name the request gave. Networks are matched by name only, as an ID prefix could name
+  someone else's.
+- A container is a user's only if its image sets no owner label: Docker merges image
+  labels into the container's, so an image could otherwise hand a user a container an
+  admin runs from it. Creating a user's container from such an image is refused
+  (`refuseOwnerImage`).
+- The event stream passes a user only events of containers they own (each container
+  checked once, bounded `ownerCache` per stream); volume and network events carry no
+  labels, so users get none. Environment stats and the usage summary sample only the
+  user's containers and are cached per owner key.
+- The `net.zefirlabs.nudge.` label namespace is reserved: no request can set it, a
+  recreate keeps it, and users' objects get it from `ownerLabels` / `buildTenant`.
+
+### 5. A user's networks and volumes (#114)
+- Users create networks and volumes through the same routes as admins, with stricter
+  rules (`userobjects.go`). Names get the prefix `u<id>-`, so users can't take or guess
+  each other's names; a name is theirs only if the owner label is, so a deleted user's
+  leftover is a conflict and never handed over.
+- Networks: bridge only, with Docker's own addressing; no driver options, subnet,
+  gateway, IP range, IPv6 or attachable (other drivers reach the host's network or run
+  plugins, a chosen subnet could shadow the host's routes). At most `maxUserNetworks` (8)
+  per environment, as each bridge takes a subnet from the daemon's shared pools.
+- Volumes: the local driver without options (`o=bind` with `device=` would mount a host
+  path).
+- Granting an environment creates the user's default bridge network `nudge-u-<id>`
+  (best effort); their containers join it when the spec names no network. Each user's
+  containers sit on their own bridges, which Docker isolates from other bridges.
+
+### 6. The tenant container builder (#115, #116)
+- A user's container is built by the server from `tenantSpec` (`tenant.go`): image, name,
+  command, entrypoint, env, CPU and memory limits (both required), ports, mounts of the
+  user's own volumes, the user's own networks, restart policy, healthcheck (exec form)
+  and labels. It is decoded with `decodeStrict` (unknown fields refused) and never from
+  Docker's own options, so privileged mode, binds, the Docker socket, devices,
+  capabilities and the host's namespaces can't be asked for at all.
+- `validate` checks the fields; `tenantOwner.resolve` adds the name prefix and the default
+  network and checks every volume and network carries the user's owner label;
+  `imageVolumes` refuses an image whose `VOLUME` paths the spec doesn't cover (Docker would
+  create an anonymous volume nobody owns or counts). Labels in nudge's or Docker's
+  (`com.docker.`, e.g. compose project) namespaces are refused.
+- `buildTenant` is a pure function that adds fixed hardening: Docker's default
+  capabilities minus `NET_RAW`, `no-new-privileges`, default seccomp and AppArmor, an init
+  process, private IPC, a pids limit of 512, no swap beyond the memory limit, capped
+  json-file logs, then the host hardening of layer 8 and, last, the owner label.
+- The image is always pulled for the user, with their allowance and without the admins'
+  stored registry credentials (`pullOwned`), so a user can't run a private image an admin
+  pulled.
+- Every path that replaces a user's container (recreate, image update, deploy webhooks)
+  goes through `replace` → `tenantSettings`, which rebuilds it through the builder from
+  the requested spec or from its own settings read back as a spec (`toTenantSpec`), so a
+  setting the builder doesn't make can't survive a replace. The admin spec is refused on
+  a user's container, and the tenant routes on an admin's.
+- The UI's deploy form (`TenantDeployView`, `TenantForm`) uses only these routes, with
+  sliders capped at what the allowance leaves.
+
+### 7. Allowances (#113)
+- An admin sets each user's allowance per environment (`internal/allowances`, table
+  `allowances`): CPUs, memory, disk, number of containers, a host port range and,
+  optionally, image patterns (`path.Match`). Without an allowance a user can create and
+  start nothing there (409).
+- `allowances.Check` is the one rule, run by `fitAllowance` under the user's lock (one
+  check per user and environment at a time, held until the container is created or
+  started) before every create, recreate, image update and start/restart (`fitStart`, in
+  case the allowance was lowered since). `allowanceUsage` adds up the user's containers,
+  running or not (a stopped one can start; one without a CPU or memory limit counts as
+  the whole allowance), their volumes and the images their pulls brought
+  (`image_pulls`).
+- CPU and memory are hard limits on each container and checked as a sum. Host ports must
+  be in the user's range, and a port of `0` gets the lowest free one in it. Disk is
+  checked against what is measured: a create or pull is refused once the user is at their
+  allowance, and an image that takes them over it is removed again; what a running
+  container writes is bounded by the disk cap of layer 8, not by this check.
+- Users read their own allowance, use and what is left (`GET .../allowance`); only admins
+  set one.
+
+### 8. Tenant hardening on the host (#117)
+nudge's checks share the host's kernel with everyone. `TenantHosting`
+(`tenant_host.go`, `NUDGE_TENANT_*`, docs/config/server.md "Hosting other users") adds
+backstops that need host setup, applied by `buildTenant` to users' containers only:
+- Cgroup parent per user (`NUDGE_TENANT_CGROUP_PARENT`, e.g. `nudge-u{id}.slice`): the
+  kernel caps a user's total CPU, memory and tasks even if nudge's own check were wrong.
+  The admin creates each slice with its limits (systemd makes a missing one without).
+- Sandboxed runtime (`NUDGE_TENANT_RUNTIME`, e.g. `runsc` for gVisor, or Kata): users'
+  system calls don't reach the host's kernel directly. A daemon that doesn't list the
+  runtime creates and starts no user containers (409), so they never run unsandboxed by
+  accident.
+- Disk cap (`NUDGE_TENANT_STORAGE_SIZE`): `storage_opt size` on the writable layer where
+  the storage driver supports it (`storageSizeSupported`: overlay2 on xfs, btrfs, zfs,
+  devicemapper); elsewhere it is left out with a warning.
+- `checkStartHosting` refuses to start or restart a user's container built with other
+  hosting than the current settings (runtime, cgroup parent, disk cap); recreating it
+  applies them.
+- Daemon-wide options (`userns-remap`, rootless Docker) are the operator's choice and
+  documented in the config page.
+
+### What users still share
+- The kernel (unless the runtime sandboxes it), the daemon, the host's disk and network.
+- Network: users' bridges are isolated from each other, but Docker lets containers reach
+  the host's addresses, so a user's container can connect to anything listening on the
+  host, including ports other users and admins publish (which listen on all addresses)
+  and the host's own services. Firewall the host (Docker's `DOCKER-USER` chain) if that
+  matters.
+- Labels outside nudge's and Docker's namespaces are free, so tools on the host that act
+  on container labels (a reverse proxy's Docker provider, for example) act on users'
+  containers too.
+- The host's size: a user's environment detail shows its CPUs, memory and kernel.
+
+### Alternative: one VM per user
+For untrusted users the stronger setup is a small VM per user running `nudge agent`,
+with the user granted only that environment (layer 3): the hypervisor enforces the
+limits and a kernel bug reaches only their own VM. Roles, environment access and
+ownership (#111, #112) already cover that setup; the shared-host layers 5 to 8 are only
+needed when users share one host. nudge doesn't provision the VMs.
 
 ## Stacks (phase 5)
 Decision (approved by zefir for #25): **compose runs next to the daemon it deploys to**: in

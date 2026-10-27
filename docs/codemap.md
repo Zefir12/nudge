@@ -6,7 +6,7 @@ Update it when a package, entry point or recipe changes.
 
 User docs: README.md has setup and flags/env. Each config topic has its own page in
 docs/config/; grep there, not in README. The API reference is docs/api.md; the design
-(environments, agent tunnel, auth) is docs/architecture.md.
+(environments, agent tunnel, auth, the multi-user permission model) is docs/architecture.md.
 
 ## Request path
 `main.realMain` picks the subcommand → `config.LoadServer` → `serve` runs
