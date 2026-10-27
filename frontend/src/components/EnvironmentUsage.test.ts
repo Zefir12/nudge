@@ -58,10 +58,10 @@ describe('EnvironmentUsage', () => {
     expect(wrapper.find('.totals').text()).toContain('150.0% CPU');
     expect(wrapper.find('.totals').text()).toContain('200.0 MB memory');
     const rows = wrapper.findAll('tbody tr');
-    expect(rows.map((r) => r.find('a').text())).toEqual(['db', 'web']);
-    expect(rows[0]!.find('a').attributes('href')).toBe('/env/1/containers/db-id');
-    expect(rows[1]!.text()).toContain('180.0%');
-    expect(rows[1]!.find('meter').element.getAttribute('value')).toBe('10');
+    expect(rows.map((r) => r.find('a').text())).toEqual(['web', 'db']);
+    expect(rows[1]!.find('a').attributes('href')).toBe('/env/1/containers/db-id');
+    expect(rows[0]!.text()).toContain('180.0%');
+    expect(rows[0]!.find('meter').element.getAttribute('value')).toBe('10');
 
     const statsCalls = () => fetch.mock.calls.filter(([url]) => url.endsWith('/stats')).length;
     expect(statsCalls()).toBe(1);
@@ -70,6 +70,23 @@ describe('EnvironmentUsage', () => {
     wrapper.unmount();
     await vi.advanceTimersByTimeAsync(30_000);
     expect(statsCalls()).toBe(2);
+  });
+
+  it('shows the busiest containers until all are asked for', async () => {
+    const cpu = [5, 90, 1, 40, 70, 3, 60];
+    stubApi({
+      'GET /environments/1/stats': { body: body(cpu.map((c, i) => usage(`c${i}`, c))) },
+    });
+    const wrapper = mountUsage();
+    await flushPromises();
+    const names = () => wrapper.findAll('tbody tr a').map((a) => a.text());
+    expect(names()).toEqual(['c1', 'c4', 'c6', 'c3', 'c0']);
+    const toggle = wrapper.find('button.all');
+    expect(toggle.text()).toBe('Show all 7');
+    await toggle.trigger('click');
+    expect(names()).toHaveLength(7);
+    expect(toggle.text()).toBe('Show the busiest 5');
+    wrapper.unmount();
   });
 
   it('aborts the request in flight when unmounted', async () => {

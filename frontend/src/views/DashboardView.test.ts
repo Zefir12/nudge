@@ -5,7 +5,7 @@ import { createMemoryHistory } from 'vue-router';
 import type { EnvironmentDetail } from '../api/client';
 import { createAppRouter } from '../router';
 import { currentUser } from '../session';
-import { admin, stubApi } from '../test-utils';
+import { admin, stubApi, stubSockets } from '../test-utils';
 import DashboardView from './DashboardView.vue';
 
 const env: EnvironmentDetail = {
@@ -46,6 +46,7 @@ async function mountAt(path: string) {
 
 beforeEach(() => {
   currentUser.value = admin;
+  stubSockets();
 });
 
 afterEach(() => {
@@ -64,6 +65,9 @@ describe('DashboardView', () => {
           total: { cpu_percent: 12.5, memory_usage: 2e9, network_rx: 0, network_tx: 0 },
         },
       },
+      'GET /environments/1/containers': { body: [] },
+      'GET /environments/1/images': { body: [] },
+      'GET /environments/1/updates': { body: [] },
     });
     const wrapper = await mountAt('/env/1');
     const counts = wrapper.findAll('.count').map((c) => c.text());
@@ -75,6 +79,8 @@ describe('DashboardView', () => {
     expect(wrapper.text()).toContain('16.0 GB');
     expect(wrapper.find('.count').attributes('href')).toBe('/env/1/containers');
     expect(wrapper.find('.totals').text()).toContain('12.5% CPU');
+    expect(wrapper.find('.attention').text()).toContain('Nothing needs attention.');
+    expect(wrapper.find('.recent').exists()).toBe(true);
   });
 
   it('shows an offline environment', async () => {
@@ -87,5 +93,6 @@ describe('DashboardView', () => {
     });
     const wrapper = await mountAt('/env/1');
     expect(wrapper.find('[role=alert]').text()).toContain('the environment is offline');
+    expect(wrapper.find('.attention').exists()).toBe(false);
   });
 });
