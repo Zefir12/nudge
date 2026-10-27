@@ -90,12 +90,6 @@ func newOwnTest(t *testing.T) ownTest {
 			ot.other = id
 		}
 	}
-	rec := do(t, h, request{method: "PUT", path: fmt.Sprintf("/api/v1/users/%d/environments", ot.bobID), cookie: ot.admin,
-		body: fmt.Sprintf(`{"environments":[%d]}`, ot.local)})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("set environments = %d %s", rec.Code, rec.Body)
-	}
-
 	labels := map[string]map[string]string{
 		"mine":   {ownerLabel: ot.bobKey, "app": "web"},
 		"alices": {ownerLabel: ot.alice},
@@ -141,6 +135,14 @@ func newOwnTest(t *testing.T) ownTest {
 			"mine": {Name: "mine"}, "admins": {Name: "admins"},
 		}}
 	}
+	// Bob's default network is there already, so giving him local creates nothing.
+	def := network.Network{ID: "default", Name: defaultNetwork(ot.bobID), Driver: "bridge", Labels: map[string]string{ownerLabel: ot.bobKey}}
+	fake.NetworkDetails[def.Name] = network.Inspect{Network: def}
+	rec := do(t, h, request{method: "PUT", path: fmt.Sprintf("/api/v1/users/%d/environments", ot.bobID), cookie: ot.admin,
+		body: fmt.Sprintf(`{"environments":[%d]}`, ot.local)})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set environments = %d %s", rec.Code, rec.Body)
+	}
 	if _, err := ot.allowances.Set(ctx, ot.bobID, ot.local, allowances.Allowance{
 		CPUsMilli: 4000, MemoryBytes: 8 << 30, DiskBytes: 100 << 30, MaxContainers: 10, PortMin: 8000, PortMax: 8999,
 	}); err != nil {
@@ -174,7 +176,7 @@ func TestOwnershipRoutes(t *testing.T) {
 		}
 		t.Run(p, func(t *testing.T) {
 			t.Parallel()
-			if rec := do(t, ot.h, request{method: method, path: withEnv(ot.other, "mine"), cookie: ot.bob, body: "{}"}); rec.Code != http.StatusNotFound ||
+			if rec := do(t, ot.h, request{method: method, path: withEnv(ot.other, "mine"), cookie: ot.bob, body: `{"name":"x"}`}); rec.Code != http.StatusNotFound ||
 				!strings.Contains(rec.Body.String(), "environment not found") {
 				t.Errorf("other environment = %d %s, want 404", rec.Code, rec.Body)
 			}

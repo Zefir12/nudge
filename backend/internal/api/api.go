@@ -155,7 +155,7 @@ var userRoutes = map[string]bool{
 	"GET /api/v1/deployments/{name}/deploys":           true,
 	"GET /api/v1/deployments/{name}/deploys/{run}":     true,
 	// The environments an admin gave them, and in those only the containers, volumes and
-	// networks they own (scope): someone else's are 404. Creating anything, recreating
+	// networks they own (scope): someone else's are 404. Creating containers, recreating
 	// (any settings) and images, stacks and prunes stay with admins.
 	"GET /api/v1/environments":                                true,
 	"GET /api/v1/environments/{env}":                          true,
@@ -181,6 +181,9 @@ var userRoutes = map[string]bool{
 	"GET /api/v1/environments/{env}/networks":         true,
 	"GET /api/v1/environments/{env}/networks/{id}":    true,
 	"DELETE /api/v1/environments/{env}/networks/{id}": true,
+	// Their own networks and volumes: bridge and local only, named with their prefix.
+	"POST /api/v1/environments/{env}/volumes":  true,
+	"POST /api/v1/environments/{env}/networks": true,
 }
 
 // route is one API route: its mux pattern and the server method that serves it.

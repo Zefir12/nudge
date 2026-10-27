@@ -171,7 +171,8 @@ type pruneNetworksResponse struct {
 	Deleted []string `json:"deleted"`
 }
 
-// createNetwork creates a network and answers 201 with its ID.
+// createNetwork creates a network and answers 201 with its ID. A user's network is a
+// bridge named with their prefix (userNetworkRefusal, userName).
 func (s *server) createNetwork(w http.ResponseWriter, r *http.Request) {
 	var req createNetworkRequest
 	if !s.decodeJSON(w, r, &req) {
@@ -188,6 +189,22 @@ func (s *server) createNetwork(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.refuseReservedLabels(w, req.Labels) {
 		return
+	}
+	u, admin, err := requestUser(r)
+	if err != nil {
+		s.internalError(w, "network create", err)
+		return
+	}
+	name := req.Name
+	if !admin {
+		msg := userNetworkRefusal(req)
+		if msg == "" {
+			name, msg = userName(u.ID, req.Name)
+		}
+		if msg != "" {
+			s.writeError(w, http.StatusBadRequest, msg)
+			return
+		}
 	}
 	ipam, msg := toIPAM(req)
 	if msg != "" {
@@ -207,7 +224,7 @@ func (s *server) createNetwork(w http.ResponseWriter, r *http.Request) {
 			return nil, err
 		}
 		opts.Labels = labels
-		res, err := c.NetworkCreate(ctx, req.Name, opts)
+		res, err := c.NetworkCreate(ctx, name, opts)
 		if err != nil {
 			return nil, createError(err, "network")
 		}

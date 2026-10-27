@@ -74,11 +74,11 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | POST | `/api/v1/environments/{env}/images/pull` | session | pull `{"image": "nginx:1.29"}`, progress as JSON lines; see Image actions |
 | POST | `/api/v1/environments/{env}/images/prune` | session | remove untagged images, or with `?all=true` every unused one |
 | DELETE | `/api/v1/environments/{env}/images/{id}` | session | remove an image or tag (`?force=true`); `204` |
-| POST | `/api/v1/environments/{env}/volumes` | session | create a volume; `201`; see Volume and network actions |
+| POST | `/api/v1/environments/{env}/volumes` | user | create a volume; `201`; see Volume and network actions (users: Ownership) |
 | POST | `/api/v1/environments/{env}/volumes/prune` | session | remove unused anonymous volumes, or with `?all=true` named ones too |
 | POST | `/api/v1/environments/{env}/volumes/usage` | session | measure the volume sizes now; `204` once stored |
 | DELETE | `/api/v1/environments/{env}/volumes/{name}` | user | remove a volume (`?force=true`); `204` |
-| POST | `/api/v1/environments/{env}/networks` | session | create a network; `201` |
+| POST | `/api/v1/environments/{env}/networks` | user | create a network; `201` (users: Ownership) |
 | POST | `/api/v1/environments/{env}/networks/prune` | session | remove custom networks no container uses |
 | DELETE | `/api/v1/environments/{env}/networks/{id}` | user | remove a network by ID or name; `204` |
 | POST | `/api/v1/stacks/check` | session | compose's errors for stack files `{"compose", "env"}` (writes nothing); see Stacks |
@@ -248,9 +248,20 @@ Users (role `user`) reach only what is theirs; admins reach everything.
   hold only their objects; another user's or an admin's object is `404 ... not found`,
   as if it did not exist. A container counts as theirs only if its image sets no owner
   label (Docker copies an image's labels onto its containers, so an image could otherwise
-  hand a user a container an admin runs from it). Creating, recreating, images, stacks,
-  prunes, updates checks and webhooks stay with admins for now. Their own allowance
+  hand a user a container an admin runs from it). Creating containers, recreating,
+  images, stacks, prunes, updates checks and webhooks stay with admins for now. Their own allowance
   (see Allowances) is open to them too.
+- **Networks and volumes.** Giving a user an environment creates their default bridge
+  network `nudge-u-<user id>` there (best effort: an offline environment, or a network of
+  that name they don't own, is logged and the access is kept). Users create more through
+  the usual create routes, with limits: networks are `bridge` only, without `options`,
+  `subnet`/`gateway`/`ip_range` (Docker picks the subnet), `ipv6` or `attachable`;
+  volumes are `local` only, without `options` (`o=bind` with `device=` would mount a host
+  path). `name` is required, and the server prefixes it with `u<user id>-`, so `{"name":
+  "data"}` from user 7 creates `u7-data` (the prefixed name is what the lists, details and
+  removal use). A refused field is `400` before Docker is asked; a volume of that name
+  someone else owns (a deleted user's leftover, user ids can come back) is `409`, never
+  handed over. Removing a user removes none of their objects; an admin sees what's left.
 - **Totals.** For a user, `GET /api/v1/environments/{env}` counts only their containers
   (`images` is `0`, `name` and `docker_root_dir` are empty), the stats overview and
   summary add up only their containers, and a network's detail lists only their

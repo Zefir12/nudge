@@ -172,7 +172,12 @@ func (s *server) setUserEnvironments(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "environments must be a list of environment ids")
 		return
 	}
-	err := s.envs.SetAccess(r.Context(), a.ID, req.Environments)
+	before, err := s.envs.Access(r.Context(), a.ID)
+	if err != nil {
+		s.internalError(w, "environment access", err)
+		return
+	}
+	err = s.envs.SetAccess(r.Context(), a.ID, req.Environments)
 	if errors.Is(err, environments.ErrNotFound) {
 		s.writeError(w, http.StatusBadRequest, "no such environment")
 		return
@@ -187,5 +192,6 @@ func (s *server) setUserEnvironments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("user environments changed", "username", a.Username, "environments", ids, "by", s.username(r), "ip", clientIP(r))
+	s.ensureDefaultNetworks(r.Context(), a, addedIDs(before, ids))
 	s.writeJSON(w, http.StatusOK, userEnvironments{Environments: ids})
 }
