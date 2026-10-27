@@ -270,6 +270,7 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 			Deployments: deps,
 			Usage:       usageSvc,
 			Allowances:  allowances.New(allowances.Options{DB: st.DB()}),
+			Tenant:      api.TenantHosting{CgroupParent: cfg.Tenant.CgroupParent, Runtime: cfg.Tenant.Runtime, StorageSize: cfg.Tenant.StorageSize},
 			Events:      hub,
 			Web:         web.Handler(web.Dist()),
 

@@ -65,6 +65,9 @@ type Options struct {
 	// Allowances are the users' allowances, checked before a user's container is
 	// created, recreated, updated or started.
 	Allowances *allowances.Service
+	// Tenant is the host-side hardening of users' containers (cgroup slice, runtime,
+	// disk limit); the zero value adds none.
+	Tenant TenantHosting
 	// Events is the Docker events hub, shared with the notification watcher; nil means
 	// the API makes its own.
 	Events *events.Hub
@@ -318,7 +321,7 @@ var routes = []route{
 func New(opts Options) http.Handler {
 	s := &server{
 		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries, audit: opts.Audit, updates: opts.Updates,
-		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, deployments: opts.Deployments, usage: opts.Usage, allowances: opts.Allowances, registryClient: opts.RegistryClient,
+		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, deployments: opts.Deployments, usage: opts.Usage, allowances: opts.Allowances, tenant: opts.Tenant, registryClient: opts.RegistryClient,
 		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, oidc: opts.OIDC, oidcName: opts.OIDCName, noPasswordLogin: opts.NoPasswordLogin, recreating: map[string]bool{},
 		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{}, summaries: map[summaryKey]*summaryEntry{},
 		checks: make(chan struct{}, maxStackChecks),
@@ -390,6 +393,8 @@ type server struct {
 	deployTokens *http.ServeMux
 	usage        *usage.Service
 	allowances   *allowances.Service
+	// tenant is the host-side hardening of users' containers (tenant_host.go).
+	tenant TenantHosting
 	// done ends at shutdown (Options.Context).
 	done context.Context
 	// events fans each environment's Docker events out to the clients watching it.

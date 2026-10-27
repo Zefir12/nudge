@@ -28,6 +28,9 @@ image without setting anything. A flag wins over its variable.
 | `-oidc-require-mfa` | `NUDGE_OIDC_REQUIRE_MFA` | `false` | refuse sign-ins whose `amr` claim lacks `mfa` |
 | `-oidc-session-ttl` | `NUDGE_OIDC_SESSION_TTL` | `12h` | how long a single sign-on session lasts (at least `5m`) |
 | `-password-login` | `NUDGE_PASSWORD_LOGIN` | `true` | `false` hides the password form and refuses password login to everyone but the local `admin` (needs single sign-on) |
+| `-tenant-cgroup-parent` | `NUDGE_TENANT_CGROUP_PARENT` | | cgroup parent of every user's containers, `{id}` standing for the user's ID: a systemd slice name (`nudge-u{id}.slice`) or a cgroupfs path (`/nudge/u{id}`); see [Hosting other users](#hosting-other-users) |
+| `-tenant-runtime` | `NUDGE_TENANT_RUNTIME` | | OCI runtime of every user's container, e.g. `runsc` (gVisor); users' containers aren't created or started on a daemon that doesn't list it |
+| `-tenant-storage-size` | `NUDGE_TENANT_STORAGE_SIZE` | | disk cap of a user's container's writable layer (`10G`, `512M`; binary units, at least `64M`), where the storage driver supports it |
 
 ## Data directory
 `nudge serve` creates the data directory (mode 0700) if it is missing and exits with an
@@ -236,3 +239,76 @@ At start nudge pings that host (3 s timeout). If it answers and no `local` envir
 exists, nudge creates one named `local`. If it doesn't answer, nudge logs a warning and
 starts anyway; restart it once the socket is available to get the environment. Each
 Docker call made by an API request has a 10 s timeout.
+
+## Hosting other users
+Users (non-admins) share the host's kernel with everyone else. nudge already builds their
+containers without privileges, host namespaces, binds or added capabilities, and checks
+their allowance; an unprivileged container is hard to escape, but a kernel bug is root on
+the host. The settings below make an escape and resource abuse much harder. They are
+opt-in because each needs host setup nudge can't do itself, and they apply to users'
+containers only, in every environment: each host (the server's and every agent's) needs
+the same setup. Admins' containers are left as they are.
+
+### A cgroup slice per user
+With `NUDGE_TENANT_CGROUP_PARENT=nudge-u{id}.slice` every container of user 7 goes into
+`nudge-u7.slice`, so the kernel caps the user's total even if nudge's own allowance check
+were wrong. The user's ID is on the Users page. With Docker's systemd cgroup driver (the
+default on systemd hosts) the parent is a slice name ending in `.slice`; with the
+cgroupfs driver it is a path such as `/nudge/u{id}`.
+
+Create each user's slice before they start a container: systemd makes a missing slice
+on demand, without limits. On the host, as root:
+
+```ini
+# /etc/systemd/system/nudge-u7.slice
+[Unit]
+Description=nudge user 7
+
+[Slice]
+MemoryMax=4G
+MemorySwapMax=0
+CPUQuota=200%
+TasksMax=2048
+```
+
+then `systemctl daemon-reload && systemctl start nudge-u7.slice`. Keep the limits at or
+above the user's allowance, so the allowance is what users normally meet and the slice is
+the backstop.
+
+### A sandboxed runtime
+With `NUDGE_TENANT_RUNTIME=runsc` users' containers run under gVisor, which answers their
+system calls in a user-space kernel instead of the host's: most kernel bugs are out of
+reach. Install it and register it with the daemon (`runsc install`, which adds it to
+`/etc/docker/daemon.json`, then restart Docker); `docker info` lists it under Runtimes.
+Kata Containers (`kata-runtime`, a small VM per container) works the same way.
+
+nudge refuses to create a user's container (409) on a daemon that doesn't list the
+runtime, and to start or restart one that doesn't run under it, for example one made
+before the setting: recreating it (the edit form, or an update) builds it with the
+runtime. The trade-offs: gVisor costs some speed on system-call-heavy work (I/O,
+networking) and doesn't run everything (some `/proc` and `ioctl` uses); Kata needs
+hardware virtualisation.
+
+### Disk
+`NUDGE_TENANT_STORAGE_SIZE=10G` caps the writable layer of every user's container (what it
+writes outside its volumes; volumes and pulled images count toward the user's disk
+allowance instead). Docker supports this on overlay2 over xfs mounted with `pquota`, and
+on btrfs, zfs and devicemapper. nudge sets it where `docker info` reports such a driver
+(for overlay2, an xfs backing filesystem) and logs a warning and leaves it out elsewhere.
+On xfs without `pquota` the daemon refuses the create and the user sees why: mount the
+filesystem under `/var/lib/docker` with `pquota` (in `/etc/fstab`; for the root
+filesystem, `rootflags=pquota` on the kernel command line).
+
+### The daemon
+- **`userns-remap`** (`"userns-remap": "default"` in daemon.json) maps root in every
+  container to an unprivileged range on the host, so an escape lands as nobody. It
+  applies to every container on the daemon, admins' too, and existing images and volumes
+  are re-owned or pulled again.
+- **Rootless Docker** runs the whole daemon as an ordinary user: an escape gets that
+  user, not root. nudge then talks to the rootless socket
+  (`DOCKER_HOST=unix:///run/user/<uid>/docker.sock`); ports below 1024, some network
+  drivers and cgroup limits need extra setup (cgroup v2 with delegation).
+- **One VM per user** is the strongest: give each untrusted user their own small VM
+  running `nudge agent`, and grant them only that environment (Users, environment
+  access). A kernel bug then reaches only their own VM. It costs a VM per user, and
+  nudge doesn't provision them.

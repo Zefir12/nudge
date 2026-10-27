@@ -55,9 +55,15 @@ var ownedObjects = []string{"mine", "alices", "admins", "forged"}
 
 func newOwnTest(t *testing.T) ownTest {
 	t.Helper()
+	return newOwnTestOpts(t, nil)
+}
+
+// newOwnTestOpts is newOwnTest with mod changing the API's options.
+func newOwnTestOpts(t *testing.T, mod func(*Options)) ownTest {
+	t.Helper()
 	msgs, errs := make(chan mevents.Message), make(chan error, 1)
 	fake := &dockertest.Fake{EventsResult: client.EventsResult{Messages: msgs, Err: errs}}
-	h, svc, db := newTestHandlerOpts(t, func(environments.Environment) (docker.Client, error) { return fake, nil }, nil)
+	h, svc, db := newTestHandlerOpts(t, func(environments.Environment) (docker.Client, error) { return fake, nil }, mod)
 	ctx := context.Background()
 	if _, err := svc.CreateFirstUser(ctx, "admin", "longenough"); err != nil {
 		t.Fatal(err)

@@ -33,7 +33,7 @@ func TestBuildTenant(t *testing.T) {
 		// A reserved label can't get past validate; the builder drops it all the same.
 		Labels: map[string]string{"app": "web", ownerLabel: "forged"},
 	}
-	cfg, hc, nc := buildTenant(&sp, "key7")
+	cfg, hc, nc := buildTenant(&sp, tenantOwner{key: "key7", id: 7, prefix: "u7-"}, TenantHosting{})
 
 	initProcess, pids := true, int64(512)
 	http80, _ := network.ParsePort("80/tcp")
@@ -95,7 +95,13 @@ func TestBuildTenant(t *testing.T) {
 // (plain), postgres:17 (a VOLUME) and evil:1 (sets the owner label).
 func newTenantTest(t *testing.T) ownTest {
 	t.Helper()
-	ot := newOwnTest(t)
+	return newTenantTestOpts(t, nil)
+}
+
+// newTenantTestOpts is newTenantTest with mod changing the API's options.
+func newTenantTestOpts(t *testing.T, mod func(*Options)) ownTest {
+	t.Helper()
+	ot := newOwnTestOpts(t, mod)
 	ot.fake.ImageDetails["postgres:17"] = image.InspectResponse{ID: "sha256:pg", Config: &dockerspec.DockerOCIImageConfig{ImageConfig: ocispec.ImageConfig{
 		Volumes: map[string]struct{}{"/var/lib/postgresql/data": {}},
 	}}}

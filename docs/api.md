@@ -262,7 +262,12 @@ above stays admin-only.
   `NET_RAW`, `no-new-privileges`, 512 processes, the `json-file` log driver with
   `max-size` 10m and `max-file` 3, an init process, a private IPC namespace, swap no larger
   than the memory limit, no binds, no devices, the default seccomp and AppArmor profiles,
-  and the owner label.
+  and the owner label. With the server's tenant settings (docs/config/server.md, "Hosting
+  other users") also the user's cgroup parent, the sandboxed runtime and a disk cap on
+  the writable layer (where the storage driver supports it).
+- With a runtime configured, a daemon that doesn't list it is `409` on create, recreate
+  and update, and starting or restarting a user's container is `409` when the daemon
+  lacks the runtime or the container doesn't run under it (recreate it).
 - The image is always pulled first, without any stored registry credentials (so only
   public images), and must fit the allowance (its image patterns and disk). An image that
   sets a label in the `net.zefirlabs.nudge.` namespace is refused, and so is one with a

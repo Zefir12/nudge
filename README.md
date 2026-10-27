@@ -52,6 +52,9 @@ Flags with `NUDGE_*` environment variable fallbacks; the defaults work in the im
 | `NUDGE_OIDC_REQUIRE_MFA` | `false` | refuse single sign-on without a second factor |
 | `NUDGE_OIDC_SESSION_TTL` | `12h` | how long a single sign-on session lasts |
 | `NUDGE_PASSWORD_LOGIN` | `true` | `false` leaves password login only to the local `admin` (with SSO) |
+| `NUDGE_TENANT_CGROUP_PARENT` | | cgroup parent of each user's containers, `{id}` for the user's ID (e.g. `nudge-u{id}.slice`) |
+| `NUDGE_TENANT_RUNTIME` | | OCI runtime of users' containers (e.g. `runsc`) |
+| `NUDGE_TENANT_STORAGE_SIZE` | | disk cap of a user's container's writable layer (e.g. `10G`) |
 
 Remote hosts run the same image as `nudge agent` with `NUDGE_SERVER_URL` and
 `NUDGE_JOIN_TOKEN` (the UI's "Add environment" prints the `docker run` command and a
