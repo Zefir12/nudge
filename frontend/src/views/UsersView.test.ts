@@ -118,4 +118,36 @@ describe('UsersView', () => {
     await flushPromises();
     expect(calls).toEqual(['PATCH {"disabled":true}', 'PATCH {"password":"evenlonger"}', 'DELETE']);
   });
+
+  it("sets the environments a user may use; admins don't need any", async () => {
+    let saved: unknown;
+    stubApi({
+      'GET /users': { body: [adminAccount, bob] },
+      'GET /environments': {
+        body: [
+          { id: 1, name: 'local' },
+          { id: 2, name: 'edge' },
+        ],
+      },
+      'GET /users/2/environments': { body: { environments: [1] } },
+      'PUT /users/2/environments': (init) => {
+        saved = JSON.parse(String(init?.body));
+        return { body: saved };
+      },
+    });
+    const wrapper = mountView();
+    await flushPromises();
+    expect(button(rowOf(wrapper, 'admin'), 'Environments')).toBeUndefined();
+    await button(rowOf(wrapper, 'bob'), 'Environments')!.trigger('click');
+    await flushPromises();
+    const local = wrapper.find<HTMLInputElement>('input[name="env-1"]');
+    expect(local.element.checked).toBe(true);
+    expect(wrapper.find<HTMLInputElement>('input[name="env-2"]').element.checked).toBe(false);
+    await local.setValue(false);
+    await wrapper.find('input[name="env-2"]').setValue(true);
+    await wrapper.find('form.access').trigger('submit');
+    await flushPromises();
+    expect(saved).toEqual({ environments: [2] });
+    expect(wrapper.find('form.access').exists()).toBe(false);
+  });
 });

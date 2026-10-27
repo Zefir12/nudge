@@ -11,9 +11,10 @@ decides; the cookie is ignored. Routes marked *public* need neither; every other
 answers `401 {"error":"authentication required"}` without a valid session or token.
 Users have a role, `admin` or `user` (see Users). Every authenticated route is for admins
 only and answers `403 {"error":"admins only"}` to a user's session or API token, except
-the routes marked *user* below: `GET /auth/me`, logout, the user's own API tokens and the
-deployments (whose handlers check the user's role on each deployment). An API token has
-its owner's role.
+the routes marked *user* below: `GET /auth/me`, logout, the user's own API tokens, the
+deployments (whose handlers check the user's role on each deployment) and, in the
+environments an admin gave them, their own containers, volumes and networks (see
+Ownership). An API token has its owner's role.
 
 Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must carry
 `Sec-Fetch-Site: same-origin`, or an `Origin` whose host matches `Host`, or neither header
@@ -39,6 +40,8 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | POST | `/api/v1/users` | admin, session only | create a local user `{"username", "password", "role"}`; `201` |
 | PATCH | `/api/v1/users/{id}` | admin, session only | change `{"role", "disabled", "password"}` (each optional); `200` with the user |
 | DELETE | `/api/v1/users/{id}` | admin | delete a user with their sessions, tokens and webhooks; `204` |
+| GET | `/api/v1/users/{id}/environments` | admin | the environments a user may use `{"environments": [1, 3]}`; see Ownership |
+| PUT | `/api/v1/users/{id}/environments` | admin | replace them `{"environments": [1, 3]}`; `200` with the stored list |
 | GET | `/api/v1/audit` | session | the audit log, newest first, paged and filtered; see Audit log |
 | GET | `/api/v1/registries` | session | registry credentials for pulls, by name; see below |
 | POST | `/api/v1/registries` | session | add registry credentials; `201` |
@@ -58,23 +61,23 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | POST | `/api/v1/environments/{env}/containers` | session | create (and start) a container; `201`; see Container create and recreate |
 | GET | `/api/v1/environments/{env}/containers/{id}/spec` | session | a container's settings in the create shape |
 | POST | `/api/v1/environments/{env}/containers/{id}/recreate` | session | replace a container, optionally pulling first or with changed settings |
-| POST | `/api/v1/environments/{env}/containers/{id}/update` | session | pull the container's image and recreate it if that brought a newer one; see Image updates |
-| GET | `/api/v1/environments/{env}/containers/{id}/logs` | session | WebSocket: a container's logs, one JSON frame per line; see Container logs |
-| GET | `/api/v1/environments/{env}/containers/{id}/stats` | session | WebSocket: a running container's usage, a sample about every second; see Stats |
-| GET | `/api/v1/environments/{env}/containers/{id}/exec` | session | WebSocket: a command with a terminal in a running container (audited); see Container exec |
-| GET | `/api/v1/environments/{env}/stats` | session | one usage sample of every running container, with totals; see Stats |
-| GET | `/api/v1/environments/{env}/stats/summary` | session | the environment's CPU and memory totals, sampled at most every 30 s; see Stats |
-| GET | `/api/v1/environments/{env}/events` | session | WebSocket: the environment's Docker events as they happen; see Events |
+| POST | `/api/v1/environments/{env}/containers/{id}/update` | user | pull the container's image and recreate it if that brought a newer one; see Image updates |
+| GET | `/api/v1/environments/{env}/containers/{id}/logs` | user | WebSocket: a container's logs, one JSON frame per line; see Container logs |
+| GET | `/api/v1/environments/{env}/containers/{id}/stats` | user | WebSocket: a running container's usage, a sample about every second; see Stats |
+| GET | `/api/v1/environments/{env}/containers/{id}/exec` | user | WebSocket: a command with a terminal in a running container (audited); see Container exec |
+| GET | `/api/v1/environments/{env}/stats` | user | one usage sample of every running container, with totals; see Stats |
+| GET | `/api/v1/environments/{env}/stats/summary` | user | the environment's CPU and memory totals, sampled at most every 30 s; see Stats |
+| GET | `/api/v1/environments/{env}/events` | user | WebSocket: the environment's Docker events as they happen; see Events |
 | POST | `/api/v1/environments/{env}/images/pull` | session | pull `{"image": "nginx:1.29"}`, progress as JSON lines; see Image actions |
 | POST | `/api/v1/environments/{env}/images/prune` | session | remove untagged images, or with `?all=true` every unused one |
 | DELETE | `/api/v1/environments/{env}/images/{id}` | session | remove an image or tag (`?force=true`); `204` |
 | POST | `/api/v1/environments/{env}/volumes` | session | create a volume; `201`; see Volume and network actions |
 | POST | `/api/v1/environments/{env}/volumes/prune` | session | remove unused anonymous volumes, or with `?all=true` named ones too |
 | POST | `/api/v1/environments/{env}/volumes/usage` | session | measure the volume sizes now; `204` once stored |
-| DELETE | `/api/v1/environments/{env}/volumes/{name}` | session | remove a volume (`?force=true`); `204` |
+| DELETE | `/api/v1/environments/{env}/volumes/{name}` | user | remove a volume (`?force=true`); `204` |
 | POST | `/api/v1/environments/{env}/networks` | session | create a network; `201` |
 | POST | `/api/v1/environments/{env}/networks/prune` | session | remove custom networks no container uses |
-| DELETE | `/api/v1/environments/{env}/networks/{id}` | session | remove a network by ID or name; `204` |
+| DELETE | `/api/v1/environments/{env}/networks/{id}` | user | remove a network by ID or name; `204` |
 | POST | `/api/v1/stacks/check` | session | compose's errors for stack files `{"compose", "env"}` (writes nothing); see Stacks |
 | GET | `/api/v1/environments/{env}/stacks` | session | the environment's compose stacks with container counts; see Stacks |
 | POST | `/api/v1/environments/{env}/stacks` | session | create a stack `{"name", "compose", "env"}` (not deployed); `201` |
@@ -220,6 +223,37 @@ the host answered (updated at most once a minute, `null` if it never did).
 "storage_driver": "overlay2", "docker_root_dir": "/var/lib/docker"}`
 (`mem_total` in bytes). Only these fields are passed on; Docker's proxy and registry
 settings are not.
+
+### Ownership
+Users (role `user`) reach only what is theirs; admins reach everything.
+
+- **Environments.** An admin chooses the environments each user may use
+  (`PUT /api/v1/users/{id}/environments` with every id; an unknown id is `400` and
+  changes nothing; the Users page has an Environments form). `GET /api/v1/environments`
+  lists only those to the user, and every route under any other environment is `404
+  environment not found`. Deleting an environment or the user removes the grant.
+- **Owner label.** A container, volume or network a user creates carries the label
+  `net.zefirlabs.nudge.owner=<owner key>`, set by the server. The owner key is random per
+  user (not the user id, which SQLite can hand to a later user). Objects without it
+  (created by an admin, by a stack or outside nudge) are the admins'. Labels starting
+  with `net.zefirlabs.nudge.` are reserved: a create that sets one is `400` (for
+  containers a field error on `labels`). The container spec leaves them out, and a
+  recreate keeps the old container's.
+- **What a user reaches**, marked *user* in the table: the container, volume and network
+  lists, details and removal, container start/stop/restart/kill, update, logs, stats and
+  exec, the environment's stats, summary and events, and the environment's details. Lists
+  hold only their objects; another user's or an admin's object is `404 ... not found`,
+  as if it did not exist. A container counts as theirs only if its image sets no owner
+  label (Docker copies an image's labels onto its containers, so an image could otherwise
+  hand a user a container an admin runs from it). Creating, recreating, images, stacks,
+  prunes, updates checks and webhooks stay with admins for now.
+- **Totals.** For a user, `GET /api/v1/environments/{env}` counts only their containers
+  (`images` is `0`, `name` and `docker_root_dir` are empty), the stats overview and
+  summary add up only their containers, and a network's detail lists only their
+  containers attached to it.
+- **Events.** A user's event stream has only the events of their own containers: no
+  volume, network, image or daemon events (they carry no owner), and none of a container
+  that was already gone when the stream first saw it.
 
 ### Agent environments
 - `POST /api/v1/environments` `{"name": "nas", "kind": "agent"}` creates an agent

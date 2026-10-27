@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 )
 
 // accountResponse is a user in the user management.
@@ -134,4 +135,57 @@ func (s *server) pathUser(w http.ResponseWriter, r *http.Request) (auth.Account,
 	}
 	auditTarget(r, a.Username)
 	return a, true
+}
+
+// userEnvironments are the environments a user may use, by id. Admins use every one.
+type userEnvironments struct {
+	Environments []int64 `json:"environments"`
+}
+
+func (s *server) getUserEnvironments(w http.ResponseWriter, r *http.Request) {
+	a, ok := s.pathUser(w, r)
+	if !ok {
+		return
+	}
+	ids, err := s.envs.Access(r.Context(), a.ID)
+	if err != nil {
+		s.internalError(w, "environment access", err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, userEnvironments{Environments: ids})
+}
+
+// maxUserEnvironments bounds a request's environment list.
+const maxUserEnvironments = 1000
+
+// setUserEnvironments replaces the environments a user may use.
+func (s *server) setUserEnvironments(w http.ResponseWriter, r *http.Request) {
+	a, ok := s.pathUser(w, r)
+	if !ok {
+		return
+	}
+	var req userEnvironments
+	if !s.decodeJSON(w, r, &req) {
+		return
+	}
+	if req.Environments == nil || len(req.Environments) > maxUserEnvironments {
+		s.writeError(w, http.StatusBadRequest, "environments must be a list of environment ids")
+		return
+	}
+	err := s.envs.SetAccess(r.Context(), a.ID, req.Environments)
+	if errors.Is(err, environments.ErrNotFound) {
+		s.writeError(w, http.StatusBadRequest, "no such environment")
+		return
+	}
+	if err != nil {
+		s.internalError(w, "set environment access", err)
+		return
+	}
+	ids, err := s.envs.Access(r.Context(), a.ID)
+	if err != nil {
+		s.internalError(w, "environment access", err)
+		return
+	}
+	s.log.Info("user environments changed", "username", a.Username, "environments", ids, "by", s.username(r), "ip", clientIP(r))
+	s.writeJSON(w, http.StatusOK, userEnvironments{Environments: ids})
 }

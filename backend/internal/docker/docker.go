@@ -138,3 +138,6 @@ func InvalidArgument(err error) bool {
 func Unauthorized(err error) bool {
 	return cerrdefs.IsUnauthorized(err) || cerrdefs.IsPermissionDenied(err)
 }
+
+// ErrNotFound is a not-found error for callers that hide an object from someone.
+var ErrNotFound = cerrdefs.ErrNotFound

@@ -150,6 +150,31 @@ var userRoutes = map[string]bool{
 	"POST /api/v1/deployments/{name}/deploys":          true,
 	"GET /api/v1/deployments/{name}/deploys":           true,
 	"GET /api/v1/deployments/{name}/deploys/{run}":     true,
+	// The environments an admin gave them, and in those only the containers, volumes and
+	// networks they own (scope): someone else's are 404. Creating anything, recreating
+	// (any settings) and images, stacks and prunes stay with admins.
+	"GET /api/v1/environments":                                true,
+	"GET /api/v1/environments/{env}":                          true,
+	"GET /api/v1/environments/{env}/containers":               true,
+	"GET /api/v1/environments/{env}/containers/{id}":          true,
+	"POST /api/v1/environments/{env}/containers/{id}/update":  true,
+	"DELETE /api/v1/environments/{env}/containers/{id}":       true,
+	"POST /api/v1/environments/{env}/containers/{id}/start":   true,
+	"POST /api/v1/environments/{env}/containers/{id}/stop":    true,
+	"POST /api/v1/environments/{env}/containers/{id}/restart": true,
+	"POST /api/v1/environments/{env}/containers/{id}/kill":    true,
+	"GET /api/v1/environments/{env}/containers/{id}/logs":     true,
+	"GET /api/v1/environments/{env}/containers/{id}/stats":    true,
+	"GET /api/v1/environments/{env}/containers/{id}/exec":     true,
+	"GET /api/v1/environments/{env}/stats":                    true,
+	"GET /api/v1/environments/{env}/stats/summary":            true,
+	"GET /api/v1/environments/{env}/events":                   true,
+	"GET /api/v1/environments/{env}/volumes":                  true,
+	"GET /api/v1/environments/{env}/volumes/{id}":             true,
+	"DELETE /api/v1/environments/{env}/volumes/{id}":          true,
+	"GET /api/v1/environments/{env}/networks":                 true,
+	"GET /api/v1/environments/{env}/networks/{id}":            true,
+	"DELETE /api/v1/environments/{env}/networks/{id}":         true,
 }
 
 // route is one API route: its mux pattern and the server method that serves it.
@@ -177,6 +202,8 @@ var routes = []route{
 	{"POST /api/v1/users", (*server).createUser},
 	{"PATCH /api/v1/users/{id}", (*server).changeUser},
 	{"DELETE /api/v1/users/{id}", (*server).deleteUser},
+	{"GET /api/v1/users/{id}/environments", (*server).getUserEnvironments},
+	{"PUT /api/v1/users/{id}/environments", (*server).setUserEnvironments},
 	{"GET /api/v1/registries", (*server).listRegistries},
 	{"POST /api/v1/registries", (*server).createRegistry},
 	{"GET /api/v1/registries/{id}", (*server).getRegistry},
@@ -274,7 +301,7 @@ func New(opts Options) http.Handler {
 		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries, audit: opts.Audit, updates: opts.Updates,
 		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, deployments: opts.Deployments, usage: opts.Usage, registryClient: opts.RegistryClient,
 		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, oidc: opts.OIDC, oidcName: opts.OIDCName, noPasswordLogin: opts.NoPasswordLogin, recreating: map[string]bool{},
-		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{}, summaries: map[int64]*summaryEntry{},
+		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{}, summaries: map[summaryKey]*summaryEntry{},
 		checks: make(chan struct{}, maxStackChecks),
 		done:   context.Background(),
 	}
@@ -370,8 +397,8 @@ type server struct {
 	recreating map[string]bool
 	// stackBusy holds stackKey of the stacks being changed or deployed now.
 	stackBusy map[string]bool
-	// summaries holds each environment's last usage totals, by environment ID.
-	summaries map[int64]*summaryEntry
+	// summaries holds each environment's last usage totals, by environment and owner.
+	summaries map[summaryKey]*summaryEntry
 	// after is Options.After.
 	after func(time.Duration) <-chan time.Time
 	// now is Options.Now.

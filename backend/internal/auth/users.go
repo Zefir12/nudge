@@ -215,3 +215,20 @@ func (s *Service) DeleteUser(ctx context.Context, id int64) error {
 func (s *Service) breakGlass(a Account) bool {
 	return s.adminOnly && !a.SSO && strings.EqualFold(a.Username, AdminUsername)
 }
+
+// OwnerKey returns the value of the owner label on the objects user id owns: random per
+// user, so a user created later never inherits a deleted user's objects.
+func (s *Service) OwnerKey(ctx context.Context, id int64) (string, error) {
+	var key sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT owner_key FROM users WHERE id = ?`, id).Scan(&key)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrUserNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("owner key: %w", err)
+	}
+	if !key.Valid || key.String == "" {
+		return "", fmt.Errorf("owner key: user %d has none", id)
+	}
+	return key.String, nil
+}

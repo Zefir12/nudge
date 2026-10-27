@@ -113,6 +113,11 @@ func (s *server) updateContainer(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	id, err := s.ownedContainerID(r.Context(), c, id)
+	if err != nil {
+		s.replaceError(w, r, env, err)
+		return
+	}
 	u, _ := userFrom(r.Context())
 	res, err := s.updateContainerImage(r.Context(), env, c, id, u.Username)
 	if err != nil {

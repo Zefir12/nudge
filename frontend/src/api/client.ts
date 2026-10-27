@@ -215,6 +215,14 @@ export const createUser = (u: { username: string; password: string; role: Role }
 export const updateUser = (id: number, change: AccountChange) =>
   apiFetch<Account>(`/users/${id}`, { method: 'PATCH', body: JSON.stringify(change) });
 export const deleteUser = (id: number) => apiFetch<void>(`/users/${id}`, { method: 'DELETE' });
+// The environments a user may use, by id (admins use every one).
+export const getUserEnvironments = (id: number) =>
+  apiFetch<{ environments: number[] }>(`/users/${id}/environments`);
+export const setUserEnvironments = (id: number, environments: number[]) =>
+  apiFetch<{ environments: number[] }>(`/users/${id}/environments`, {
+    method: 'PUT',
+    body: JSON.stringify({ environments }),
+  });
 
 export const listRegistries = () => apiFetch<Registry[]>('/registries');
 export const getRegistry = (id: number) => apiFetch<Registry>(`/registries/${id}`);

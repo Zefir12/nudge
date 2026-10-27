@@ -121,7 +121,7 @@ func (s *server) containerStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ictx, icancel := context.WithTimeout(r.Context(), dockerTimeout)
-	info, err := c.ContainerInspect(ictx, id, client.ContainerInspectOptions{})
+	ct, ref, err := s.ownedContainer(ictx, c, id)
 	icancel()
 	if docker.NotFound(err) {
 		s.writeError(w, http.StatusNotFound, "container not found")
@@ -132,7 +132,8 @@ func (s *server) containerStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.envs.Seen(r.Context(), &env)
-	if info.Container.State == nil || !info.Container.State.Running {
+	id = ref
+	if ct.State == nil || !ct.State.Running {
 		s.writeError(w, http.StatusConflict, "container is not running")
 		return
 	}
@@ -200,16 +201,20 @@ type environmentStats struct {
 	Total      usageTotals      `json:"total"`
 }
 
-// environmentStats answers one sample of every running container and keeps the totals
-// as the environment's summary.
+// environmentStats answers one sample of every running container (a user's: of theirs)
+// and keeps the totals as the environment's summary.
 func (s *server) environmentStats(w http.ResponseWriter, r *http.Request) {
 	resp, ok := s.runDocker(r.Context(), w, r, "environment stats", "", statsTimeout, func(ctx context.Context, c docker.Client) (any, error) {
-		stats, err := s.sampleEnvironment(ctx, c)
+		sc, err := s.scopeOf(ctx)
+		if err != nil {
+			return nil, err
+		}
+		stats, err := s.sampleEnvironment(ctx, c, sc)
 		if err != nil {
 			return nil, err
 		}
 		if id, err := strconv.ParseInt(r.PathValue("env"), 10, 64); err == nil && incomplete(ctx, stats) == nil {
-			s.storeSummary(id, stats)
+			s.storeSummary(summaryKey{env: id, owner: sc.key}, stats)
 		}
 		return stats, nil
 	})
@@ -218,17 +223,21 @@ func (s *server) environmentStats(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// sampleEnvironment takes one sample of every running container, sorted by name.
-func (s *server) sampleEnvironment(ctx context.Context, c docker.Client) (environmentStats, error) {
-	list, err := c.ContainerList(ctx, client.ContainerListOptions{})
+// sampleEnvironment takes one sample of every running container sc owns, sorted by name.
+func (s *server) sampleEnvironment(ctx context.Context, c docker.Client, sc scope) (environmentStats, error) {
+	list, err := c.ContainerList(ctx, client.ContainerListOptions{Filters: sc.filters(nil)})
 	if err != nil {
 		return environmentStats{}, err
 	}
-	usage := make([]*containerUsage, len(list.Items))
+	items, err := sc.ownedContainers(ctx, c, list.Items)
+	if err != nil {
+		return environmentStats{}, err
+	}
+	usage := make([]*containerUsage, len(items))
 	sem := make(chan struct{}, maxConcurrentStats)
 	var wg sync.WaitGroup
 sample:
-	for i, item := range list.Items {
+	for i, item := range items {
 		select {
 		case sem <- struct{}{}:
 		case <-ctx.Done():

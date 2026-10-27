@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
@@ -76,11 +78,20 @@ type dockerResponse struct {
 	DockerRootDir     string `json:"docker_root_dir"`
 }
 
+// listEnvironments answers every environment to an admin, to a user the ones they may use.
 func (s *server) listEnvironments(w http.ResponseWriter, r *http.Request) {
 	envs, err := s.envs.List(r.Context())
 	if err != nil {
 		s.internalError(w, "list environments", err)
 		return
+	}
+	if u, ok := userFrom(r.Context()); ok && !isAdmin(u) {
+		ids, err := s.envs.Access(r.Context(), u.ID)
+		if err != nil {
+			s.internalError(w, "list environments", err)
+			return
+		}
+		envs = slices.DeleteFunc(envs, func(env environments.Environment) bool { return !slices.Contains(ids, env.ID) })
 	}
 	resp := make([]environmentResponse, len(envs))
 	sem := make(chan struct{}, maxConcurrentPings)
@@ -114,8 +125,35 @@ func (s *server) getEnvironment(w http.ResponseWriter, r *http.Request) {
 		s.dockerError(w, r, env, "docker version", err)
 		return
 	}
-	s.envs.Seen(r.Context(), &env)
 	i := info.Info
+	// A user learns about the host but counts only their own containers, and no images.
+	sc, err := s.scopeOf(ctx)
+	if err == nil && !sc.all {
+		var list client.ContainerListResult
+		if list, err = c.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: sc.filters(nil)}); err == nil {
+			list.Items, err = sc.ownedContainers(ctx, c, list.Items)
+		}
+		i.Containers, i.ContainersRunning, i.ContainersPaused, i.ContainersStopped, i.Images = len(list.Items), 0, 0, 0, 0
+		for _, ct := range list.Items {
+			switch ct.State {
+			case container.StateRunning:
+				i.ContainersRunning++
+			case container.StatePaused:
+				i.ContainersPaused++
+			default:
+				i.ContainersStopped++
+			}
+		}
+	}
+	if err != nil {
+		s.dockerError(w, r, env, "docker info", err)
+		return
+	}
+	if !sc.all {
+		// Nor the host's name or Docker's paths.
+		i.Name, i.DockerRootDir = "", ""
+	}
+	s.envs.Seen(r.Context(), &env)
 	s.writeJSON(w, http.StatusOK, environmentDetailResponse{
 		environmentResponse: toEnvironmentResponse(env, true),
 		Docker: dockerResponse{
@@ -157,6 +195,18 @@ func (s *server) environment(w http.ResponseWriter, r *http.Request) (environmen
 		s.internalError(w, "get environment", err)
 		return environments.Environment{}, nil, false
 	}
+	// A user sees only the environments an admin gave them; any other is missing.
+	if u, ok := userFrom(r.Context()); ok && !isAdmin(u) {
+		allowed, err := s.envs.HasAccess(r.Context(), u.ID, env.ID)
+		if err != nil {
+			s.internalError(w, "environment access", err)
+			return environments.Environment{}, nil, false
+		}
+		if !allowed {
+			s.writeError(w, http.StatusNotFound, "environment not found")
+			return environments.Environment{}, nil, false
+		}
+	}
 	c, err := s.envs.Client(env)
 	if err != nil {
 		s.internalError(w, "environment client", err)
@@ -168,7 +218,10 @@ func (s *server) environment(w http.ResponseWriter, r *http.Request) (environmen
 // dockerError answers a failed Docker call without the daemon's message, which can
 // carry secrets (registry credentials, environment variables); the log keeps it.
 func (s *server) dockerError(w http.ResponseWriter, r *http.Request, env environments.Environment, msg string, err error) {
+	var inf *internalFailure
 	switch {
+	case errors.As(err, &inf):
+		s.internalError(w, inf.msg, inf.err)
 	case r.Context().Err() != nil:
 		// The client went away; nothing to answer.
 		return

@@ -256,3 +256,44 @@ func TestBreakGlassAdmin(t *testing.T) {
 		}
 	}
 }
+
+// Owner keys are unique and never handed to a later user, even one who gets a deleted
+// user's id back.
+func TestOwnerKey(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, _ := newTestService(t)
+	if _, err := s.CreateFirstUser(ctx, "admin", "longenough"); err != nil {
+		t.Fatal(err)
+	}
+	bob, err := s.CreateUser(ctx, "bob", "longenough", RoleUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := s.OwnerKey(ctx, bob.ID)
+	if err != nil || len(key) != 32 {
+		t.Fatalf("key = %q, %v", key, err)
+	}
+	if again, _ := s.OwnerKey(ctx, bob.ID); again != key {
+		t.Errorf("key changed: %q, then %q", key, again)
+	}
+	if admin, _ := s.OwnerKey(ctx, 1); admin == key || admin == "" {
+		t.Errorf("admin's key = %q, bob's %q", admin, key)
+	}
+	if err := s.DeleteUser(ctx, bob.ID); err != nil {
+		t.Fatal(err)
+	}
+	carol, err := s.CreateUser(ctx, "carol", "longenough", RoleUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if carol.ID != bob.ID {
+		t.Logf("carol got id %d, bob had %d", carol.ID, bob.ID)
+	}
+	if k, err := s.OwnerKey(ctx, carol.ID); err != nil || k == key {
+		t.Errorf("carol's key = %q, %v; bob's was %q", k, err, key)
+	}
+	if _, err := s.OwnerKey(ctx, 999); !errors.Is(err, ErrUserNotFound) {
+		t.Errorf("unknown user = %v", err)
+	}
+}

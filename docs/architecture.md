@@ -93,6 +93,20 @@ refuses `ws://` unless `NUDGE_INSECURE=1`.
   credentials stop working; the last enabled admin can't be demoted, disabled or
   deleted (checked in the writing statement). SSO users get their role from the
   provider on each login.
+- Ownership (#112): a user sees and touches only what is theirs, so a user can't read
+  an admin's logs or exec into another tenant's database. Two checks, both in
+  `internal/api`: `server.environment` answers `404` for an environment the user wasn't
+  given (`user_environments`, set by an admin), and `scope` (ownership.go) decides which
+  objects are theirs: those labelled `net.zefirlabs.nudge.owner=<owner key>`. The owner
+  key is random per user (`users.owner_key`) because SQLite reuses the newest deleted
+  user's id. Lists are filtered by the label in the Docker call and checked again;
+  `{id}` routes inspect first and answer someone else's object as `404` (the daemon is
+  then called with the inspected ID, not the name). A container also needs an image
+  without the owner label, since Docker merges image labels into the container's. The
+  event stream checks each container once (bounded cache per stream) and drops events
+  that can't be checked. Admins skip the checks (no extra Docker calls). The label
+  namespace is reserved: requests can't set it, a recreate keeps it. Creating objects as
+  a user (#114, #115) uses `server.ownerLabels`.
 - Single sign-on (#110, internal/oidc): one OpenID Connect provider, nudge a confidential
   client (authorization code + PKCE S256, `client_secret_basic`). Discovery, JWKS and ID
   token checks are go-oidc's (RS256 only, issuer, audience, expiry against the injected
