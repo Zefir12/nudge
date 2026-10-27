@@ -10,8 +10,12 @@ block() { echo "Blocked by .claude/hooks/guard-bash.sh: $1" >&2; exit 2; }
 has() { printf '%s' "$input" | grep -Eq "$START$1"; }
 
 has '(sudo|doas)[[:space:]]' && block "no sudo"
-has 'fj([[:space:]]+-[^[:space:]]+[[:space:]]+[^[:space:]]+)*[[:space:]]+pr[[:space:]]+(merge|close)' && block "zefir merges and closes PRs, not Claude"
-has 'fj([[:space:]]+-[^[:space:]]+[[:space:]]+[^[:space:]]+)*[[:space:]]+auth' && block "fj login is managed by zefir"
+FJ='fj([[:space:]]+-[^[:space:]]+[[:space:]]+[^[:space:]]+)*[[:space:]]+'
+has "${FJ}pr[[:space:]]+(merge|close)" && block "zefir merges and closes PRs, not Claude"
+has "${FJ}auth" && block "fj login is managed by zefir"
+has "${FJ}(issue|repo)[[:space:]]+delete" && block "never delete issues or repos"
+# fj api: read-only GETs only (no -X, no -f/-F fields, which make it a POST).
+has "${FJ}api[^;&|\"]*[[:space:]](-X|--method|-f|-F|--field|--raw-field|--input)([[:space:]=]|$)" && block "fj api is for reading CI status only"
 has 'make[[:space:]]+(publish|push)' && block "publishing images is zefir's job"
 has 'docker[[:space:]]+(push|buildx[^;&|"]*--push)' && block "publishing images is zefir's job"
 # The host's Docker is shared with real workloads: never change its state.

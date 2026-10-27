@@ -108,8 +108,11 @@ Always run `make test lint` before committing. Fix failures yourself.
   bot's stored credentials; already configured).
 - Issues and PRs go through `fj`. See the forgejo skill for exact commands. PRs
   target `develop`, the body says `Closes #N` and follows the PR template.
-- Check the bot login without printing secrets: `fj -H git.zefirlabs.net whoami` must show
-  `gitek`. If it fails, ask zefir and stop. Never print, copy or write the token anywhere.
+- Check the bot login without printing secrets: `fj api user --jq .login` must show
+  `klodzik`. If it fails, ask zefir and stop. Never print, copy or write the token anywhere.
+- `fj` must be the Go fj 0.6 (gh-style, `fj version` works). If this machine has the old
+  Rust forgejo-cli (`fj whoami`, `fj issue search`), stop and ask zefir to install the Go
+  fj 0.6 here; the forgejo skill has the details.
 - zefir reviews and merges. Never merge your own PRs.
 
 ## Issue workflow

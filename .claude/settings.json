@@ -55,6 +55,8 @@
       "Bash(git push origin --delete:*)",
       "Bash(fj pr merge:*)",
       "Bash(fj auth:*)",
+      "Bash(fj pr close:*)",
+      "Bash(fj issue delete:*)",
       "Bash(make publish:*)",
       "Bash(make push:*)",
       "Bash(docker push:*)",
