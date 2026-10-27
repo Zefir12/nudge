@@ -251,8 +251,10 @@ above stays admin-only.
   `volumes_from`, a mount's `type`, …) is `400 unknown field "…"`. Invalid values are `400`
   with a message per field, like the admin spec.
 - `image` is a reference, never an image ID. `name` is required on create and gets the
-  user's `u<id>-` prefix; on a recreate an empty one keeps the name. `cpus_milli` and
-  `memory_bytes` (6 MiB or more) are required. `host_port` 0 takes the lowest free port of
+  user's `u<id>-` prefix; on a recreate an empty one keeps the name. `cpus_milli` (at most
+  1000000) and `memory_bytes` (6 MiB to 1 TiB) are required. At most 64 ports, mounts,
+  networks and labels and 256 environment entries; labels in Docker's `com.docker.`
+  namespace (compose projects) are refused like nudge's own. `host_port` 0 takes the lowest free port of
   the user's range. `mounts` name the user's own volumes; `networks` the user's own
   networks by name (empty: their default network). `healthcheck` runs its command in exec
   form; null keeps the image's.
@@ -275,7 +277,9 @@ above stays admin-only.
 - A user's container is always rebuilt by the builder, whatever the path: an image update
   (`.../containers/{id}/update`, deploy webhooks) and an admin recreate without a spec read
   its settings back as a tenant spec and build it again. An admin recreate with the admin
-  spec is `409` for a user's container.
+  spec is `409` for a user's container. The tenant spec and recreate routes answer `409` for an admin's
+  container (the builder would drop its binds, capabilities and devices), and an update
+  of a user's container whose old image is gone is `409` (recreate it with its spec).
 
 ### Ownership
 Users (role `user`) reach only what is theirs; admins reach everything.

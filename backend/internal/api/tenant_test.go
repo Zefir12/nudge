@@ -210,6 +210,8 @@ func TestCreateTenantRefusals(t *testing.T) {
 		{"port outside range", `,"ports":[{"host_port":9500,"container_port":80}]`, 409, "outside your ports 8000-8999"},
 		{"over allowance", `,"cpus_milli":5000`, 409, "over your allowance"},
 		{"no memory limit", `,"memory_bytes":0`, 400, `"memory_bytes"`},
+		{"memory that would overflow the allowance", `,"memory_bytes":9223372036854775807`, 400, `"memory_bytes"`},
+		{"compose label", `,"labels":{"com.docker.compose.project":"shop"}`, 400, `Docker's own`},
 		{"reserved label", `,"labels":{"net.zefirlabs.nudge.owner":"x"}`, 400, `"labels":"labels starting with net.zefirlabs.nudge.`},
 		{"image ID", `,"image":"sha256:` + strings.Repeat("a", 64) + `"`, 400, `"image"`},
 		{"anonymous volume", `,"image":"postgres:17"`, 400, `/var/lib/postgresql/data: mount one of your volumes there`},
@@ -274,6 +276,17 @@ func TestTenantReplacePaths(t *testing.T) {
 			return do(t, ot.h, request{method: "POST", path: ot.path(ot.local, "/containers/mine/recreate"), cookie: ot.bob,
 				body: `{"spec":{"image":"nginx:1"}}`}).Code
 		}, http.StatusForbidden, ""},
+		{"admin's container to the tenant recreate", func(t *testing.T, ot ownTest) int {
+			return do(t, ot.h, request{method: "POST", path: ot.path(ot.local, "/user-containers/admins/recreate"), cookie: ot.admin,
+				body: `{` + tenantBase + `}`}).Code
+		}, http.StatusConflict, ""},
+		{"admin's container's tenant spec", func(t *testing.T, ot ownTest) int {
+			return do(t, ot.h, request{method: "GET", path: ot.path(ot.local, "/user-containers/admins/spec"), cookie: ot.admin}).Code
+		}, http.StatusConflict, ""},
+		{"update with the old image gone", func(t *testing.T, ot ownTest) int {
+			delete(ot.fake.ImageDetails, "sha256:plain")
+			return do(t, ot.h, request{method: "POST", path: ot.path(ot.local, "/containers/mine/update"), cookie: ot.admin}).Code
+		}, http.StatusConflict, ""},
 		{"deploy webhook", func(t *testing.T, ot ownTest) int {
 			hook := createHook(t, ot.h, ot.admin, ot.path(ot.local, "/webhooks"), `{"name":"ci","container":"mine"}`)
 			rec := trigger(t, ot.h, hook.ID, "?wait=1", "", bearer(hook.Secret))
@@ -353,6 +366,14 @@ func TestTenantSpecValidate(t *testing.T) {
 		{"healthcheck interval", func(sp *tenantSpec) {
 			sp.Healthcheck = &tenantHealth{Command: []string{"x"}, IntervalSeconds: -1}
 		}, "healthcheck.interval_seconds"},
+		{"cpus over the cap", func(sp *tenantSpec) { sp.CPUsMilli = maxTenantCPUsMilli + 1 }, "cpus_milli"},
+		{"memory over the cap", func(sp *tenantSpec) { sp.MemoryBytes = maxTenantMemory + 1 }, "memory_bytes"},
+		{"too many ports", func(sp *tenantSpec) {
+			for i := range maxTenantItems + 1 {
+				sp.Ports = append(sp.Ports, tenantPort{ContainerPort: i + 1})
+			}
+		}, "ports"},
+		{"docker label", func(sp *tenantSpec) { sp.Labels = map[string]string{"Com.Docker.Compose.Service": "db"} }, "labels"},
 		{"empty label", func(sp *tenantSpec) { sp.Labels = map[string]string{"": "x"} }, "labels"},
 	}
 	for _, tt := range tests {

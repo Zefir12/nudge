@@ -672,7 +672,7 @@ func (s *server) replace(ctx context.Context, rp *replacement, spec *containerSp
 	switch {
 	case rp.owner != "" && spec != nil:
 		return "", errAdminSpec
-	case rp.owner != "" || rp.tenant != nil:
+	case rp.owner != "":
 		// A user's container is always rebuilt by the tenant builder, never copied: its
 		// settings can only be ones the builder makes.
 		var err error

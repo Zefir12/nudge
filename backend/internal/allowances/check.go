@@ -91,10 +91,11 @@ func Check(a Allowance, used Usage, req Request) error {
 	if req.MemoryBytes <= 0 {
 		return exceeded("memory", "the container needs a memory limit")
 	}
-	if used.CPUsMilli+req.CPUsMilli > a.CPUsMilli {
+	// Compared as what is left, so a huge request can't overflow the sum.
+	if req.CPUsMilli > a.CPUsMilli-used.CPUsMilli {
 		return exceeded("cpus", "%s CPUs asked, %s left of your %s", cpus(req.CPUsMilli), cpus(max(a.CPUsMilli-used.CPUsMilli, 0)), cpus(a.CPUsMilli))
 	}
-	if used.MemoryBytes+req.MemoryBytes > a.MemoryBytes {
+	if req.MemoryBytes > a.MemoryBytes-used.MemoryBytes {
 		return exceeded("memory", "%s of memory asked, %s left of your %s", Bytes(req.MemoryBytes), Bytes(max(a.MemoryBytes-used.MemoryBytes, 0)), Bytes(a.MemoryBytes))
 	}
 	if req.Create && used.DiskBytes >= a.DiskBytes {

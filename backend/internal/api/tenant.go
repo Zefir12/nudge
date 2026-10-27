@@ -39,6 +39,17 @@ const (
 	minTenantMemory = 6 << 20
 	// maxTenantSeconds bounds a healthcheck's durations.
 	maxTenantSeconds = 24 * 60 * 60
+	// maxTenantCPUsMilli and maxTenantMemory bound the limits far above any host, so
+	// nothing computed from them overflows.
+	maxTenantCPUsMilli = 1_000_000
+	maxTenantMemory    = 1 << 40
+	// maxTenantItems bounds the ports, mounts, networks and labels of a spec, and
+	// maxTenantEnv its environment.
+	maxTenantItems = 64
+	maxTenantEnv   = 256
+	// dockerLabels is Docker's own label namespace (compose projects and services): a
+	// user's container could otherwise join an admin's stack.
+	dockerLabels = "com.docker."
 )
 
 // tenantSpec is everything a user may set on their container.
@@ -138,11 +149,19 @@ func (sp *tenantSpec) validate() map[string]string {
 			errs[fmt.Sprintf("env.%d", i)] = "must be NAME=value"
 		}
 	}
-	if sp.CPUsMilli <= 0 {
-		errs["cpus_milli"] = "required: a CPU limit in thousandths of a CPU"
+	if sp.CPUsMilli <= 0 || sp.CPUsMilli > maxTenantCPUsMilli {
+		errs["cpus_milli"] = "required: a CPU limit in thousandths of a CPU, at most 1000000"
 	}
-	if sp.MemoryBytes < minTenantMemory {
-		errs["memory_bytes"] = "required: a memory limit of 6 MiB or more"
+	if sp.MemoryBytes < minTenantMemory || sp.MemoryBytes > maxTenantMemory {
+		errs["memory_bytes"] = "required: a memory limit from 6 MiB to 1 TiB"
+	}
+	for field, n := range map[string]int{"ports": len(sp.Ports), "mounts": len(sp.Mounts), "networks": len(sp.Networks), "labels": len(sp.Labels)} {
+		if n > maxTenantItems {
+			errs[field] = fmt.Sprintf("at most %d", maxTenantItems)
+		}
+	}
+	if len(sp.Env) > maxTenantEnv {
+		errs["env"] = fmt.Sprintf("at most %d", maxTenantEnv)
 	}
 	published := map[string]bool{}
 	for i, p := range sp.Ports {
@@ -202,6 +221,10 @@ func (sp *tenantSpec) validate() map[string]string {
 		errs["labels"] = "label names must not be empty"
 	} else if reservedLabel(sp.Labels) {
 		errs["labels"] = "labels starting with " + reservedLabels + " are reserved for nudge"
+	} else if slices.ContainsFunc(slices.Collect(maps.Keys(sp.Labels)), func(k string) bool {
+		return strings.HasPrefix(strings.ToLower(k), dockerLabels)
+	}) {
+		errs["labels"] = "labels starting with " + dockerLabels + " are Docker's own"
 	}
 	return errs
 }
@@ -528,7 +551,11 @@ func (s *server) getTenantSpec(w http.ResponseWriter, r *http.Request) {
 		if img != nil {
 			imageLabels = img.Labels
 		}
-		owner, err := s.tenantOwnerOf(ctx, containerOwner(ct, imageLabels))
+		key := containerOwner(ct, imageLabels)
+		if key == "" {
+			return nil, errNotTenant
+		}
+		owner, err := s.tenantOwnerOf(ctx, key)
 		if err != nil {
 			return nil, err
 		}
@@ -549,6 +576,10 @@ func (s *server) recreateTenantContainer(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	defer rp.done()
+	if rp.owner == "" {
+		s.replaceError(w, r, rp.env, errNotTenant)
+		return
+	}
 	var sp tenantSpec
 	if !s.decodeStrict(w, r, &sp) {
 		return
@@ -569,6 +600,14 @@ func (s *server) recreateTenantContainer(w http.ResponseWriter, r *http.Request)
 	s.writeJSON(w, http.StatusOK, createContainerResponse{ID: newID, Warnings: []string{}})
 }
 
+// errNotTenant refuses the tenant routes on an admin's container: the builder would drop
+// every setting it doesn't make (binds, capabilities, devices).
+var errNotTenant = &statusError{code: http.StatusConflict, msg: "this container is an admin's: change it with the admin form"}
+
+// errImageGone refuses to rebuild a user's container from its own settings when its
+// image is gone.
+var errImageGone = &statusError{code: http.StatusConflict, msg: "the container's image is gone: recreate it with its settings (user-containers)"}
+
 // errAdminSpec refuses an admin's containerSpec on a user's container: it could set what
 // the tenant builder never does (binds, host networks).
 var errAdminSpec = &statusError{code: http.StatusConflict, msg: "this container is a user's: change it with its user settings (user-containers), not the admin form"}
@@ -583,6 +622,11 @@ func (s *server) tenantSettings(ctx context.Context, rp *replacement) (*containe
 	}
 	sp := rp.tenant
 	if sp == nil {
+		// Without the old image, what it set (environment, command) can't be told from
+		// the user's own settings and would be kept as theirs.
+		if rp.oldImage.Config == nil {
+			return nil, nil, nil, "", errImageGone
+		}
 		read := toTenantSpec(rp.old, rp.oldImage.Config, owner.prefix)
 		sp = &read
 		if errs := sp.validate(); len(errs) > 0 {
