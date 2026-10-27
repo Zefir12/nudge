@@ -109,9 +109,20 @@ func (s *server) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, ssoFailedPath, http.StatusFound)
 		return
 	}
+	role := auth.RoleUser
+	if id.Admin {
+		role = auth.RoleAdmin
+	}
 	sess, err := s.auth.SSOLogin(r.Context(), auth.Identity{
-		Issuer: id.Issuer, Subject: id.Subject, Username: id.Username, DisplayName: id.DisplayName, Email: id.Email,
+		Issuer: id.Issuer, Subject: id.Subject, Username: id.Username, DisplayName: id.DisplayName, Email: id.Email, Role: role,
 	})
+	if errors.Is(err, auth.ErrDisabled) {
+		sub, name := clipLog(id.Subject), clipLog(id.Username)
+		s.log.Warn("sso login refused", "reason", "disabled", "subject", sub, "username", name, "ip", ip)
+		s.auditSSO(r, name, sub+": disabled", http.StatusForbidden)
+		s.ssoRefusedPage(w, "disabled")
+		return
+	}
 	if err != nil {
 		s.log.Error("sso login", "err", err, "subject", clipLog(id.Subject))
 		http.Redirect(w, r, ssoFailedPath, http.StatusFound)
@@ -142,9 +153,12 @@ func (s *server) auditSSO(r *http.Request, username, target string, status int) 
 
 // ssoRefusedPage answers a sign-in the provider vouched for but nudge refuses.
 func (s *server) ssoRefusedPage(w http.ResponseWriter, reason string) {
-	msg := "Your account has no access to nudge. Ask an administrator for the admin role."
-	if reason == "no second factor" {
+	msg := "Your account has no access to nudge. Ask an administrator for a nudge role."
+	switch reason {
+	case "no second factor":
 		msg = "nudge needs a second factor. Sign in again with your authenticator code."
+	case "disabled":
+		msg = "Your nudge account is disabled. Ask an administrator."
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")

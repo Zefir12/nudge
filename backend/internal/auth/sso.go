@@ -24,18 +24,27 @@ type Identity struct {
 	Username    string
 	DisplayName string
 	Email       string
+	// Role comes from the provider's roles claim on every login.
+	Role Role
 }
+
+// ErrDisabled means an admin disabled the SSO user signing in.
+var ErrDisabled = errors.New("user is disabled")
 
 // SSOLogin starts a session for id's user, found by issuer and subject only and created
 // on the first login. A local user with the same name or email is never linked: a new
 // user gets a name no one has (and never AdminUsername, the break-glass user). The
-// display name and email are refreshed on every login. The session lasts SSOSessionTTL.
+// display name, email and role are refreshed on every login: the role is the provider's,
+// not nudge's. A disabled user gets ErrDisabled. The session lasts SSOSessionTTL.
 func (s *Service) SSOLogin(ctx context.Context, id Identity) (Session, error) {
 	if id.Issuer == "" || id.Subject == "" {
 		return Session{}, errors.New("sso login: missing issuer or subject")
 	}
+	if !id.Role.Valid() {
+		return Session{}, fmt.Errorf("sso login: unknown role %q", id.Role)
+	}
 	display, email := clipProfile(id.DisplayName), clipProfile(id.Email)
-	u, found, err := s.refreshSSOUser(ctx, id, display, email)
+	u, found, disabled, err := s.refreshSSOUser(ctx, id, display, email)
 	if err != nil {
 		return Session{}, err
 	}
@@ -46,12 +55,12 @@ func (s *Service) SSOLogin(ctx context.Context, id Identity) (Session, error) {
 		now := s.now().Unix()
 		var created int64
 		err := s.db.QueryRowContext(ctx, `
-			INSERT INTO users (username, password_hash, created_at, updated_at, oidc_issuer, oidc_subject, display_name, email)
-			VALUES (?, '', ?, ?, ?, ?, ?, ?)
+			INSERT INTO users (username, password_hash, created_at, updated_at, oidc_issuer, oidc_subject, display_name, email, role)
+			VALUES (?, '', ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT DO NOTHING
-			RETURNING id, username, created_at`,
-			name, now, now, id.Issuer, id.Subject, display, email,
-		).Scan(&u.ID, &u.Username, &created)
+			RETURNING id, username, created_at, role`,
+			name, now, now, id.Issuer, id.Subject, display, email, id.Role,
+		).Scan(&u.ID, &u.Username, &created, &u.Role)
 		switch {
 		case err == nil:
 			u.CreatedAt = time.Unix(created, 0)
@@ -61,7 +70,7 @@ func (s *Service) SSOLogin(ctx context.Context, id Identity) (Session, error) {
 			return Session{}, fmt.Errorf("create sso user: %w", err)
 		default:
 			// The name is taken, or a concurrent first login created this user.
-			if u, found, err = s.refreshSSOUser(ctx, id, display, email); err != nil {
+			if u, found, disabled, err = s.refreshSSOUser(ctx, id, display, email); err != nil {
 				return Session{}, err
 			}
 		}
@@ -69,28 +78,48 @@ func (s *Service) SSOLogin(ctx context.Context, id Identity) (Session, error) {
 	if !found {
 		return Session{}, errors.New("create sso user: no free username")
 	}
+	if disabled {
+		return Session{}, ErrDisabled
+	}
 	u.SSO = true
 	return s.newSession(ctx, u, s.ssoTTL)
 }
 
-// refreshSSOUser updates the profile of id's user and returns it, if it exists.
-func (s *Service) refreshSSOUser(ctx context.Context, id Identity, display, email string) (User, bool, error) {
-	var u User
-	var created int64
-	err := s.db.QueryRowContext(ctx, `
-		UPDATE users SET display_name = ?, email = ?, updated_at = ?
-		WHERE oidc_issuer = ? AND oidc_subject = ?
-		RETURNING id, username, created_at`,
-		display, email, s.now().Unix(), id.Issuer, id.Subject,
-	).Scan(&u.ID, &u.Username, &created)
+// refreshSSOUser updates the profile and role of id's user and returns it, if it exists,
+// and whether it is disabled; a disabled user is left as it is. The provider's role
+// wins even over the last enabled admin, so a demotion is logged.
+func (s *Service) refreshSSOUser(ctx context.Context, id Identity, display, email string) (u User, found, disabled bool, err error) {
+	var oldRole Role
+	err = s.db.QueryRowContext(ctx, `SELECT id, role, disabled FROM users WHERE oidc_issuer = ? AND oidc_subject = ?`,
+		id.Issuer, id.Subject).Scan(&u.ID, &oldRole, &disabled)
 	if errors.Is(err, sql.ErrNoRows) {
-		return User{}, false, nil
+		return User{}, false, false, nil
 	}
 	if err != nil {
-		return User{}, false, fmt.Errorf("update sso user: %w", err)
+		return User{}, false, false, fmt.Errorf("look up sso user: %w", err)
+	}
+	if disabled {
+		return User{}, true, true, nil
+	}
+	var created int64
+	err = s.db.QueryRowContext(ctx, `
+		UPDATE users SET display_name = ?, email = ?, role = ?, updated_at = ?
+		WHERE id = ?
+		RETURNING id, username, created_at, role, disabled`,
+		display, email, id.Role, s.now().Unix(), u.ID,
+	).Scan(&u.ID, &u.Username, &created, &u.Role, &disabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Deleted in between: a new user is created.
+		return User{}, false, false, nil
+	}
+	if err != nil {
+		return User{}, false, false, fmt.Errorf("update sso user: %w", err)
+	}
+	if oldRole == RoleAdmin && u.Role != RoleAdmin {
+		s.log.Warn("sso user lost the admin role at the provider", "username", u.Username, "subject", id.Subject)
 	}
 	u.CreatedAt = time.Unix(created, 0)
-	return u, true, nil
+	return u, true, disabled, nil
 }
 
 // usernameCandidates are the names to try for a new SSO user: the preferred username,

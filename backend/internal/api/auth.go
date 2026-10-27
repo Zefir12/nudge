@@ -31,12 +31,14 @@ type userResponse struct {
 	ID        int64     `json:"id"`
 	Username  string    `json:"username"`
 	CreatedAt time.Time `json:"created_at"`
+	// Role is "admin" or "user".
+	Role auth.Role `json:"role"`
 	// Admin says whether the user may do admin-only actions, so the UI can hide them.
 	Admin bool `json:"admin"`
 }
 
 func (s *server) toUserResponse(u auth.User) userResponse {
-	return userResponse{ID: u.ID, Username: u.Username, CreatedAt: u.CreatedAt.UTC(), Admin: s.isAdmin(u)}
+	return userResponse{ID: u.ID, Username: u.Username, CreatedAt: u.CreatedAt.UTC(), Role: u.Role, Admin: isAdmin(u)}
 }
 
 type credentials struct {

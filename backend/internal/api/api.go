@@ -41,10 +41,6 @@ type Options struct {
 	Registries *registries.Service
 	// RegistryClient browses registries over HTTP; nil means a registryclient.Client.
 	RegistryClient RegistryBrowser
-	// Admin says whether a user may do admin-only actions (deleting registry tags,
-	// managing every user's deploy webhooks); nil means every user is an admin, as nudge
-	// has one user until roles exist.
-	Admin func(auth.User) bool
 	// Audit records every write.
 	Audit *audit.Service
 	// StacksDir holds every environment's stacks as <dir>/<environment ID>/<name>/.
@@ -122,13 +118,161 @@ var publicRoutes = map[string]bool{
 var sessionOnlyRoutes = map[string]bool{
 	"POST /api/v1/tokens":                    true,
 	"POST /api/v1/deployments/{name}/tokens": true,
+	// A user's password is a credential too.
+	"POST /api/v1/users":       true,
+	"PATCH /api/v1/users/{id}": true,
+}
+
+// userRoutes are the routes open to users; every other authenticated route is for admins
+// only (403 for a user's session or API token), so a new route is admin-only until it is
+// listed here. Handlers of these routes check what the user may do with the object
+// (deployments.Authorize).
+var userRoutes = map[string]bool{
+	// The catch-all only answers 404.
+	"/api/":                    true,
+	"GET /api/v1/auth/me":      true,
+	"POST /api/v1/auth/logout": true,
+	// Their own API tokens.
+	"GET /api/v1/tokens":         true,
+	"POST /api/v1/tokens":        true,
+	"DELETE /api/v1/tokens/{id}": true,
+	// Deployments they are a member of; creating one is for admins.
+	"GET /api/v1/deployments":                          true,
+	"GET /api/v1/deployments/{name}":                   true,
+	"PATCH /api/v1/deployments/{name}":                 true,
+	"DELETE /api/v1/deployments/{name}":                true,
+	"GET /api/v1/deployments/{name}/members":           true,
+	"POST /api/v1/deployments/{name}/members":          true,
+	"DELETE /api/v1/deployments/{name}/members/{user}": true,
+	"GET /api/v1/deployments/{name}/tokens":            true,
+	"POST /api/v1/deployments/{name}/tokens":           true,
+	"DELETE /api/v1/deployments/{name}/tokens/{id}":    true,
+	"POST /api/v1/deployments/{name}/deploys":          true,
+	"GET /api/v1/deployments/{name}/deploys":           true,
+	"GET /api/v1/deployments/{name}/deploys/{run}":     true,
+}
+
+// route is one API route: its mux pattern and the server method that serves it.
+type route struct {
+	pattern string
+	handler func(*server, http.ResponseWriter, *http.Request)
+}
+
+// routes are every route the API serves.
+var routes = []route{
+	{"GET /api/v1/health", (*server).health},
+	{"GET /api/v1/setup", (*server).setupStatus},
+	{"POST /api/v1/setup", (*server).setup},
+	{"POST /api/v1/auth/login", (*server).login},
+	{"POST /api/v1/auth/logout", (*server).logout},
+	{"GET /api/v1/auth/me", (*server).me},
+	{"GET /api/v1/auth/methods", (*server).authMethods},
+	{"GET /api/v1/auth/oidc/login", (*server).oidcLogin},
+	{"GET /api/v1/auth/oidc/callback", (*server).oidcCallback},
+	{"GET /api/v1/tokens", (*server).listTokens},
+	{"POST /api/v1/tokens", (*server).createToken},
+	{"DELETE /api/v1/tokens/{id}", (*server).deleteToken},
+	{"GET /api/v1/audit", (*server).listAudit},
+	{"GET /api/v1/users", (*server).listUsers},
+	{"POST /api/v1/users", (*server).createUser},
+	{"PATCH /api/v1/users/{id}", (*server).changeUser},
+	{"DELETE /api/v1/users/{id}", (*server).deleteUser},
+	{"GET /api/v1/registries", (*server).listRegistries},
+	{"POST /api/v1/registries", (*server).createRegistry},
+	{"GET /api/v1/registries/{id}", (*server).getRegistry},
+	{"PUT /api/v1/registries/{id}", (*server).updateRegistry},
+	{"DELETE /api/v1/registries/{id}", (*server).deleteRegistry},
+	{"GET /api/v1/registries/{id}/repositories", (*server).listRegistryRepositories},
+	{"GET /api/v1/registries/{id}/tags", (*server).listRegistryTags},
+	{"DELETE /api/v1/registries/{id}/tags", (*server).deleteRegistryTag},
+	{"GET /api/v1/registries/{id}/manifest", (*server).getRegistryManifest},
+	{"GET /api/v1/webhooks", (*server).listWebhooks},
+	{"POST /api/v1/webhooks", (*server).createWebhook},
+	{"GET /api/v1/webhooks/{id}", (*server).getWebhook},
+	{"PUT /api/v1/webhooks/{id}", (*server).updateWebhook},
+	{"DELETE /api/v1/webhooks/{id}", (*server).deleteWebhook},
+	{"POST /api/v1/webhooks/{id}/test", (*server).testWebhook},
+	{"GET /api/v1/environments", (*server).listEnvironments},
+	{"POST /api/v1/environments", (*server).createEnvironment},
+	{"GET /api/v1/environments/{env}", (*server).getEnvironment},
+	{"DELETE /api/v1/environments/{env}", (*server).deleteEnvironment},
+	{"POST /api/v1/environments/{env}/join-tokens", (*server).createJoinToken},
+	{"DELETE /api/v1/environments/{env}/credentials", (*server).revokeAgent},
+	{"POST /api/v1/agents/enroll", (*server).enrollAgent},
+	{"GET /api/v1/agents/connect", (*server).connectAgent},
+	{"GET /api/v1/environments/{env}/containers", (*server).listContainers},
+	{"POST /api/v1/environments/{env}/containers", (*server).createContainer},
+	{"GET /api/v1/environments/{env}/containers/{id}", (*server).getContainer},
+	{"GET /api/v1/environments/{env}/containers/{id}/spec", (*server).getContainerSpec},
+	{"POST /api/v1/environments/{env}/containers/{id}/recreate", (*server).recreateContainer},
+	{"POST /api/v1/environments/{env}/containers/{id}/update", (*server).updateContainer},
+	{"DELETE /api/v1/environments/{env}/containers/{id}", (*server).removeContainer},
+	{"POST /api/v1/environments/{env}/containers/{id}/start", (*server).startContainer},
+	{"POST /api/v1/environments/{env}/containers/{id}/stop", (*server).stopContainer},
+	{"POST /api/v1/environments/{env}/containers/{id}/restart", (*server).restartContainer},
+	{"POST /api/v1/environments/{env}/containers/{id}/kill", (*server).killContainer},
+	{"GET /api/v1/environments/{env}/containers/{id}/logs", (*server).containerLogs},
+	{"GET /api/v1/environments/{env}/containers/{id}/stats", (*server).containerStats},
+	{"GET /api/v1/environments/{env}/containers/{id}/exec", (*server).containerExec},
+	{"GET /api/v1/environments/{env}/stats", (*server).environmentStats},
+	{"GET /api/v1/environments/{env}/stats/summary", (*server).environmentSummary},
+	{"GET /api/v1/environments/{env}/events", (*server).environmentEvents},
+	{"GET /api/v1/environments/{env}/images", (*server).listImages},
+	{"POST /api/v1/environments/{env}/images/pull", (*server).pullImage},
+	{"POST /api/v1/environments/{env}/images/prune", (*server).pruneImages},
+	{"GET /api/v1/environments/{env}/images/{id}", (*server).getImage},
+	{"DELETE /api/v1/environments/{env}/images/{id}", (*server).removeImage},
+	{"GET /api/v1/environments/{env}/volumes", (*server).listVolumes},
+	{"POST /api/v1/environments/{env}/volumes", (*server).createVolume},
+	{"POST /api/v1/environments/{env}/volumes/prune", (*server).pruneVolumes},
+	{"POST /api/v1/environments/{env}/volumes/usage", (*server).measureVolumes},
+	{"GET /api/v1/environments/{env}/volumes/{id}", (*server).getVolume},
+	{"DELETE /api/v1/environments/{env}/volumes/{id}", (*server).removeVolume},
+	{"GET /api/v1/environments/{env}/networks", (*server).listNetworks},
+	{"POST /api/v1/environments/{env}/networks", (*server).createNetwork},
+	{"POST /api/v1/environments/{env}/networks/prune", (*server).pruneNetworks},
+	{"GET /api/v1/environments/{env}/networks/{id}", (*server).getNetwork},
+	{"DELETE /api/v1/environments/{env}/networks/{id}", (*server).removeNetwork},
+	{"POST /api/v1/stacks/check", (*server).checkStack},
+	{"GET /api/v1/environments/{env}/stacks", (*server).listStacks},
+	{"POST /api/v1/environments/{env}/stacks", (*server).createStack},
+	{"GET /api/v1/environments/{env}/stacks/{id}", (*server).getStack},
+	{"PUT /api/v1/environments/{env}/stacks/{id}", (*server).updateStack},
+	{"DELETE /api/v1/environments/{env}/stacks/{id}", (*server).removeStack},
+	{"POST /api/v1/environments/{env}/stacks/{id}/up", (*server).upStack},
+	{"POST /api/v1/environments/{env}/stacks/{id}/down", (*server).downStack},
+	{"POST /api/v1/environments/{env}/stacks/{id}/update", (*server).updateStackImages},
+	{"GET /api/v1/environments/{env}/updates", (*server).listUpdates},
+	{"POST /api/v1/environments/{env}/updates/check", (*server).checkUpdates},
+	{"GET /api/v1/environments/{env}/updates/history", (*server).listUpdateHistory},
+	{"GET /api/v1/environments/{env}/webhooks", (*server).listDeployHooks},
+	{"POST /api/v1/environments/{env}/webhooks", (*server).createDeployHook},
+	{"DELETE /api/v1/environments/{env}/webhooks/{id}", (*server).deleteDeployHook},
+	{"POST /api/v1/environments/{env}/webhooks/{id}/secret", (*server).rotateDeployHookSecret},
+	{"GET /api/v1/environments/{env}/webhooks/{id}/runs", (*server).listDeployHookRuns},
+	{"POST /api/v1/hooks/{id}", (*server).triggerDeployHook},
+	{"GET /api/v1/deployments", (*server).listDeployments},
+	{"POST /api/v1/deployments", (*server).createDeployment},
+	{"GET /api/v1/deployments/{name}", (*server).getDeployment},
+	{"PATCH /api/v1/deployments/{name}", (*server).changeDeployment},
+	{"DELETE /api/v1/deployments/{name}", (*server).deleteDeployment},
+	{"GET /api/v1/deployments/{name}/members", (*server).listDeploymentMembers},
+	{"POST /api/v1/deployments/{name}/members", (*server).setDeploymentMember},
+	{"DELETE /api/v1/deployments/{name}/members/{user}", (*server).removeDeploymentMember},
+	{"GET /api/v1/deployments/{name}/tokens", (*server).listDeployTokens},
+	{"POST /api/v1/deployments/{name}/tokens", (*server).createDeployToken},
+	{"DELETE /api/v1/deployments/{name}/tokens/{id}", (*server).deleteDeployToken},
+	{"POST /api/v1/deployments/{name}/deploys", (*server).startDeploymentRun},
+	{"GET /api/v1/deployments/{name}/deploys", (*server).listDeploymentRuns},
+	{"GET /api/v1/deployments/{name}/deploys/{run}", (*server).getDeploymentRun},
+	{"/api/", (*server).notFound},
 }
 
 // New returns the server's root handler: the API plus the web UI.
 func New(opts Options) http.Handler {
 	s := &server{
 		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries, audit: opts.Audit, updates: opts.Updates,
-		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, deployments: opts.Deployments, usage: opts.Usage, registryClient: opts.RegistryClient, isAdmin: opts.Admin,
+		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, deployments: opts.Deployments, usage: opts.Usage, registryClient: opts.RegistryClient,
 		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, oidc: opts.OIDC, oidcName: opts.OIDCName, noPasswordLogin: opts.NoPasswordLogin, recreating: map[string]bool{},
 		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{}, summaries: map[int64]*summaryEntry{},
 		checks: make(chan struct{}, maxStackChecks),
@@ -139,9 +283,6 @@ func New(opts Options) http.Handler {
 	}
 	if s.registryClient == nil {
 		s.registryClient = registryclient.New(registryclient.Options{})
-	}
-	if s.isAdmin == nil {
-		s.isAdmin = func(auth.User) bool { return true }
 	}
 	if opts.Context != nil {
 		s.done = opts.Context
@@ -158,114 +299,23 @@ func New(opts Options) http.Handler {
 		s.stackRunner = func(environments.Environment) stacks.Runner { return nil }
 	}
 	api := http.NewServeMux()
-	api.HandleFunc("GET /api/v1/health", s.health)
-	api.HandleFunc("GET /api/v1/setup", s.setupStatus)
-	api.HandleFunc("POST /api/v1/setup", s.setup)
-	api.HandleFunc("POST /api/v1/auth/login", s.login)
-	api.HandleFunc("POST /api/v1/auth/logout", s.logout)
-	api.HandleFunc("GET /api/v1/auth/me", s.me)
-	api.HandleFunc("GET /api/v1/auth/methods", s.authMethods)
-	api.HandleFunc("GET /api/v1/auth/oidc/login", s.oidcLogin)
-	api.HandleFunc("GET /api/v1/auth/oidc/callback", s.oidcCallback)
-	api.HandleFunc("GET /api/v1/tokens", s.listTokens)
-	api.HandleFunc("POST /api/v1/tokens", s.createToken)
-	api.HandleFunc("DELETE /api/v1/tokens/{id}", s.deleteToken)
-	api.HandleFunc("GET /api/v1/audit", s.listAudit)
-	api.HandleFunc("GET /api/v1/registries", s.listRegistries)
-	api.HandleFunc("POST /api/v1/registries", s.createRegistry)
-	api.HandleFunc("GET /api/v1/registries/{id}", s.getRegistry)
-	api.HandleFunc("PUT /api/v1/registries/{id}", s.updateRegistry)
-	api.HandleFunc("DELETE /api/v1/registries/{id}", s.deleteRegistry)
-	api.HandleFunc("GET /api/v1/registries/{id}/repositories", s.listRegistryRepositories)
-	api.HandleFunc("GET /api/v1/registries/{id}/tags", s.listRegistryTags)
-	api.HandleFunc("DELETE /api/v1/registries/{id}/tags", s.deleteRegistryTag)
-	api.HandleFunc("GET /api/v1/registries/{id}/manifest", s.getRegistryManifest)
-	api.HandleFunc("GET /api/v1/webhooks", s.listWebhooks)
-	api.HandleFunc("POST /api/v1/webhooks", s.createWebhook)
-	api.HandleFunc("GET /api/v1/webhooks/{id}", s.getWebhook)
-	api.HandleFunc("PUT /api/v1/webhooks/{id}", s.updateWebhook)
-	api.HandleFunc("DELETE /api/v1/webhooks/{id}", s.deleteWebhook)
-	api.HandleFunc("POST /api/v1/webhooks/{id}/test", s.testWebhook)
-	api.HandleFunc("GET /api/v1/environments", s.listEnvironments)
-	api.HandleFunc("POST /api/v1/environments", s.createEnvironment)
-	api.HandleFunc("GET /api/v1/environments/{env}", s.getEnvironment)
-	api.HandleFunc("DELETE /api/v1/environments/{env}", s.deleteEnvironment)
-	api.HandleFunc("POST /api/v1/environments/{env}/join-tokens", s.createJoinToken)
-	api.HandleFunc("DELETE /api/v1/environments/{env}/credentials", s.revokeAgent)
-	api.HandleFunc("POST /api/v1/agents/enroll", s.enrollAgent)
-	api.HandleFunc("GET /api/v1/agents/connect", s.connectAgent)
-	api.HandleFunc("GET /api/v1/environments/{env}/containers", s.listContainers)
-	api.HandleFunc("POST /api/v1/environments/{env}/containers", s.createContainer)
-	api.HandleFunc("GET /api/v1/environments/{env}/containers/{id}", s.getContainer)
-	api.HandleFunc("GET /api/v1/environments/{env}/containers/{id}/spec", s.getContainerSpec)
-	api.HandleFunc("POST /api/v1/environments/{env}/containers/{id}/recreate", s.recreateContainer)
-	api.HandleFunc("POST /api/v1/environments/{env}/containers/{id}/update", s.updateContainer)
-	api.HandleFunc("DELETE /api/v1/environments/{env}/containers/{id}", s.removeContainer)
-	api.HandleFunc("POST /api/v1/environments/{env}/containers/{id}/start", s.startContainer)
-	api.HandleFunc("POST /api/v1/environments/{env}/containers/{id}/stop", s.stopContainer)
-	api.HandleFunc("POST /api/v1/environments/{env}/containers/{id}/restart", s.restartContainer)
-	api.HandleFunc("POST /api/v1/environments/{env}/containers/{id}/kill", s.killContainer)
-	api.HandleFunc("GET /api/v1/environments/{env}/containers/{id}/logs", s.containerLogs)
-	api.HandleFunc("GET /api/v1/environments/{env}/containers/{id}/stats", s.containerStats)
-	api.HandleFunc("GET /api/v1/environments/{env}/containers/{id}/exec", s.containerExec)
-	api.HandleFunc("GET /api/v1/environments/{env}/stats", s.environmentStats)
-	api.HandleFunc("GET /api/v1/environments/{env}/stats/summary", s.environmentSummary)
-	api.HandleFunc("GET /api/v1/environments/{env}/events", s.environmentEvents)
-	api.HandleFunc("GET /api/v1/environments/{env}/images", s.listImages)
-	api.HandleFunc("POST /api/v1/environments/{env}/images/pull", s.pullImage)
-	api.HandleFunc("POST /api/v1/environments/{env}/images/prune", s.pruneImages)
-	api.HandleFunc("GET /api/v1/environments/{env}/images/{id}", s.getImage)
-	api.HandleFunc("DELETE /api/v1/environments/{env}/images/{id}", s.removeImage)
-	api.HandleFunc("GET /api/v1/environments/{env}/volumes", s.listVolumes)
-	api.HandleFunc("POST /api/v1/environments/{env}/volumes", s.createVolume)
-	api.HandleFunc("POST /api/v1/environments/{env}/volumes/prune", s.pruneVolumes)
-	api.HandleFunc("POST /api/v1/environments/{env}/volumes/usage", s.measureVolumes)
-	api.HandleFunc("GET /api/v1/environments/{env}/volumes/{id}", s.getVolume)
-	api.HandleFunc("DELETE /api/v1/environments/{env}/volumes/{id}", s.removeVolume)
-	api.HandleFunc("GET /api/v1/environments/{env}/networks", s.listNetworks)
-	api.HandleFunc("POST /api/v1/environments/{env}/networks", s.createNetwork)
-	api.HandleFunc("POST /api/v1/environments/{env}/networks/prune", s.pruneNetworks)
-	api.HandleFunc("GET /api/v1/environments/{env}/networks/{id}", s.getNetwork)
-	api.HandleFunc("DELETE /api/v1/environments/{env}/networks/{id}", s.removeNetwork)
-	api.HandleFunc("POST /api/v1/stacks/check", s.checkStack)
-	api.HandleFunc("GET /api/v1/environments/{env}/stacks", s.listStacks)
-	api.HandleFunc("POST /api/v1/environments/{env}/stacks", s.createStack)
-	api.HandleFunc("GET /api/v1/environments/{env}/stacks/{id}", s.getStack)
-	api.HandleFunc("PUT /api/v1/environments/{env}/stacks/{id}", s.updateStack)
-	api.HandleFunc("DELETE /api/v1/environments/{env}/stacks/{id}", s.removeStack)
-	api.HandleFunc("POST /api/v1/environments/{env}/stacks/{id}/up", s.upStack)
-	api.HandleFunc("POST /api/v1/environments/{env}/stacks/{id}/down", s.downStack)
-	api.HandleFunc("POST /api/v1/environments/{env}/stacks/{id}/update", s.updateStackImages)
-	api.HandleFunc("GET /api/v1/environments/{env}/updates", s.listUpdates)
-	api.HandleFunc("POST /api/v1/environments/{env}/updates/check", s.checkUpdates)
-	api.HandleFunc("GET /api/v1/environments/{env}/updates/history", s.listUpdateHistory)
-	api.HandleFunc("GET /api/v1/environments/{env}/webhooks", s.listDeployHooks)
-	api.HandleFunc("POST /api/v1/environments/{env}/webhooks", s.createDeployHook)
-	api.HandleFunc("DELETE /api/v1/environments/{env}/webhooks/{id}", s.deleteDeployHook)
-	api.HandleFunc("POST /api/v1/environments/{env}/webhooks/{id}/secret", s.rotateDeployHookSecret)
-	api.HandleFunc("GET /api/v1/environments/{env}/webhooks/{id}/runs", s.listDeployHookRuns)
-	api.HandleFunc("POST /api/v1/hooks/{id}", s.triggerDeployHook)
-	api.HandleFunc("GET /api/v1/deployments", s.listDeployments)
-	api.HandleFunc("POST /api/v1/deployments", s.createDeployment)
-	api.HandleFunc("GET /api/v1/deployments/{name}", s.getDeployment)
-	api.HandleFunc("PATCH /api/v1/deployments/{name}", s.changeDeployment)
-	api.HandleFunc("DELETE /api/v1/deployments/{name}", s.deleteDeployment)
-	api.HandleFunc("GET /api/v1/deployments/{name}/members", s.listDeploymentMembers)
-	api.HandleFunc("POST /api/v1/deployments/{name}/members", s.setDeploymentMember)
-	api.HandleFunc("DELETE /api/v1/deployments/{name}/members/{user}", s.removeDeploymentMember)
-	api.HandleFunc("GET /api/v1/deployments/{name}/tokens", s.listDeployTokens)
-	api.HandleFunc("POST /api/v1/deployments/{name}/tokens", s.createDeployToken)
-	api.HandleFunc("DELETE /api/v1/deployments/{name}/tokens/{id}", s.deleteDeployToken)
-	api.HandleFunc("POST /api/v1/deployments/{name}/deploys", s.startDeploymentRun)
-	api.HandleFunc("GET /api/v1/deployments/{name}/deploys", s.listDeploymentRuns)
-	api.HandleFunc("GET /api/v1/deployments/{name}/deploys/{run}", s.getDeploymentRun)
-	api.HandleFunc("/api/", s.notFound)
+	for _, rt := range routes {
+		api.HandleFunc(rt.pattern, func(w http.ResponseWriter, r *http.Request) { rt.handler(s, w, r) })
+	}
 
 	// tokenRefused answers the session-only routes for token requests, through a mux so
 	// the audit entry gets the route and its path values.
 	s.tokenRefused = http.NewServeMux()
 	for pattern := range sessionOnlyRoutes {
 		s.tokenRefused.HandleFunc(pattern, s.refuseToken)
+	}
+
+	// adminOnly answers users on every other route, through a mux for the audit entry too.
+	s.adminOnly = http.NewServeMux()
+	for _, rt := range routes {
+		if !userRoutes[rt.pattern] && !publicRoutes[rt.pattern] {
+			s.adminOnly.HandleFunc(rt.pattern, s.refuseUser)
+		}
 	}
 
 	s.deployTokens = s.deployTokenRoutes()
@@ -284,12 +334,9 @@ type server struct {
 
 	registries     *registries.Service
 	registryClient RegistryBrowser
-	// isAdmin gates admin-only actions (Options.Admin), such as managing every user's
-	// deploy webhooks.
-	isAdmin  func(auth.User) bool
-	audit    *audit.Service
-	updates  *updates.Service
-	webhooks *notify.Service
+	audit          *audit.Service
+	updates        *updates.Service
+	webhooks       *notify.Service
 	// deployHooks are the deploy webhooks.
 	deployHooks *deployhooks.Service
 	deployments *deployments.Service
@@ -315,6 +362,8 @@ type server struct {
 	checks chan struct{}
 	// tokenRefused serves sessionOnlyRoutes to API tokens.
 	tokenRefused *http.ServeMux
+	// adminOnly serves the routes outside userRoutes to users.
+	adminOnly *http.ServeMux
 
 	mu sync.Mutex
 	// recreating holds "<env>/<container ID>" of the recreates running now.
@@ -365,8 +414,8 @@ func (s *server) protect(api *http.ServeMux) http.Handler {
 }
 
 // authenticate serves public routes as they are and every other route only to the user
-// that lookup finds. With token set (lookup checks an API token) sessionOnlyRoutes are
-// refused.
+// that lookup finds, and to a user (not an admin) only userRoutes. With token set (lookup
+// checks an API token, which has its user's role) sessionOnlyRoutes are refused.
 func (s *server) authenticate(api *http.ServeMux, token bool, lookup func(*http.Request) (auth.User, error)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, pattern := api.Handler(r)
@@ -388,6 +437,10 @@ func (s *server) authenticate(api *http.ServeMux, token bool, lookup func(*http.
 			s.serveAudited(s.tokenRefused, w, r)
 			return
 		}
+		if !userRoutes[pattern] && !isAdmin(u) {
+			s.serveAudited(s.adminOnly, w, r)
+			return
+		}
 		s.serveAudited(api, w, r)
 	})
 }
@@ -395,6 +448,13 @@ func (s *server) authenticate(api *http.ServeMux, token bool, lookup func(*http.
 func (s *server) refuseToken(w http.ResponseWriter, _ *http.Request) {
 	s.writeError(w, http.StatusForbidden, "API tokens can't do this; sign in to the web UI")
 }
+
+func (s *server) refuseUser(w http.ResponseWriter, _ *http.Request) {
+	s.writeError(w, http.StatusForbidden, "admins only")
+}
+
+// isAdmin reports whether u may do admin-only actions.
+func isAdmin(u auth.User) bool { return u.Role == auth.RoleAdmin }
 
 type healthResponse struct {
 	Status  string `json:"status"`

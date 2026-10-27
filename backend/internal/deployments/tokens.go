@@ -61,7 +61,9 @@ type Token struct {
 	// ("" if they aren't a member); set by AuthenticateToken.
 	CreatorID   int64
 	CreatorRole Role
-	CreatedAt   time.Time
+	// CreatorAdmin says the creator is a nudge admin now.
+	CreatorAdmin bool
+	CreatedAt    time.Time
 	// ExpiresAt is nil for a token that doesn't expire.
 	ExpiresAt *time.Time
 	// LastUsedAt is nil until the token is used; it is updated at most once a minute.
@@ -254,24 +256,25 @@ func (s *Service) DeleteToken(ctx context.Context, actor Actor, name string, id 
 // token belongs to it, hasn't expired and has scope sc. Every mismatch but the scope is
 // ErrInvalidToken, so a token can't probe other deployments. A token acts for its
 // creator: the caller checks that the creator may still do what it asks (CreatorRole,
-// or the creator being an admin).
+// or CreatorAdmin). A disabled creator's tokens are ErrInvalidToken.
 func (s *Service) AuthenticateToken(ctx context.Context, name, secret string, sc Scope) (Deployment, Token, error) {
 	if !strings.HasPrefix(secret, TokenPrefix) || !ValidName(name) {
 		return Deployment{}, Token{}, ErrInvalidToken
 	}
 	var id, creator int64
 	var role string
-	t, err := scanToken(s.db.QueryRowContext(ctx, `SELECT `+tokenColumns+`, d.id, t.created_by, COALESCE(m.role, '') FROM deployment_tokens t
+	var admin bool
+	t, err := scanToken(s.db.QueryRowContext(ctx, `SELECT `+tokenColumns+`, d.id, t.created_by, COALESCE(m.role, ''), u.role = 'admin' FROM deployment_tokens t
 		JOIN users u ON u.id = t.created_by JOIN deployments d ON d.id = t.deployment_id
 		LEFT JOIN deployment_members m ON m.deployment_id = d.id AND m.user_id = t.created_by
-		WHERE t.token_hash = ? AND d.name = ?`, tokenHash(secret), name), &id, &creator, &role)
+		WHERE t.token_hash = ? AND d.name = ? AND NOT u.disabled`, tokenHash(secret), name), &id, &creator, &role, &admin)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Deployment{}, Token{}, ErrInvalidToken
 	}
 	if err != nil {
 		return Deployment{}, Token{}, fmt.Errorf("look up deploy token: %w", err)
 	}
-	t.CreatorID, t.CreatorRole = creator, Role(role)
+	t.CreatorID, t.CreatorRole, t.CreatorAdmin = creator, Role(role), admin
 	now := s.clock.Now()
 	if t.ExpiresAt != nil && !now.Before(*t.ExpiresAt) {
 		return Deployment{}, Token{}, ErrInvalidToken

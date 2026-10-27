@@ -5,7 +5,7 @@ import { createMemoryHistory } from 'vue-router';
 import { environments } from '../environments';
 import { createAppRouter } from '../router';
 import { currentUser } from '../session';
-import { admin, stubApi } from '../test-utils';
+import { admin, stubApi, user } from '../test-utils';
 import AppSidebar from './AppSidebar.vue';
 
 const envs = [{ id: 1, name: 'local', kind: 'local', online: true, created_at: '', last_seen_at: null }];
@@ -42,11 +42,21 @@ describe('AppSidebar', () => {
       'Registries',
       'Notifications',
       'API tokens',
+      'Users',
       'Audit log',
     ]);
     const envNav = wrapper.find('nav.env');
     expect(envNav.find('.group').text()).toBe('local');
     expect(envNav.find('a[href="/env/1/images"]').exists()).toBe(true);
+  });
+
+  it('shows a user only the pages open to users', async () => {
+    currentUser.value = user;
+    const wrapper = await mountSidebar('/deployments', '1');
+    expect(wrapper.find('.account .role').text()).toBe('User');
+    expect(labels(wrapper.findAll('nav[aria-label="Global"] a'))).toEqual(['Deployments', 'API tokens']);
+    expect(wrapper.find('nav.env').exists()).toBe(false);
+    expect(wrapper.find('.switcher').exists()).toBe(false);
   });
 
   it('leaves out the environment part when there is no environment', async () => {

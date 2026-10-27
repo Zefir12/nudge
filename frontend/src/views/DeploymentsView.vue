@@ -10,6 +10,7 @@ import {
   type StackSummary,
 } from '../api/client';
 import { environments, loadEnvironments } from '../environments';
+import { currentUser } from '../session';
 
 const router = useRouter();
 const deployments = ref<Deployment[] | null>(null);
@@ -24,6 +25,8 @@ const variables = ref('');
 const stacks = ref<StackSummary[]>([]);
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+// Creating a deployment, and the environments it needs, are for admins.
+const isAdmin = computed(() => !!currentUser.value?.admin);
 
 async function load() {
   try {
@@ -76,7 +79,8 @@ async function onCreate() {
 
 onMounted(() => {
   void load();
-  if (!environments.value) void loadEnvironments().catch((e: unknown) => (error.value ||= message(e)));
+  if (isAdmin.value && !environments.value)
+    void loadEnvironments().catch((e: unknown) => (error.value ||= message(e)));
 });
 </script>
 
@@ -88,7 +92,7 @@ onMounted(() => {
     the image a service runs (<code>image: ${API_IMAGE}</code> in the compose file).
   </p>
 
-  <section class="card">
+  <section v-if="isAdmin" class="card">
     <h2>New deployment</h2>
     <form class="create" @submit.prevent="onCreate">
       <label>
@@ -123,6 +127,7 @@ onMounted(() => {
   </section>
 
   <section class="card">
+    <p v-if="error && !isAdmin" class="error" role="alert">{{ error }}</p>
     <p v-if="deployments === null && !error" class="muted">Loading…</p>
     <p v-else-if="deployments && deployments.length === 0" class="muted">No deployments yet.</p>
     <div v-else-if="deployments" class="table-wrap">

@@ -67,7 +67,7 @@ func TestLogin(t *testing.T) {
 	}
 	want := Identity{Issuer: idp.URL, Subject: "user-1", Username: "alice", DisplayName: "Alice", Email: "alice@example.net", Roles: []string{"admin"}, Redirect: "/stacks"}
 	if id.Issuer != want.Issuer || id.Subject != want.Subject || id.Username != want.Username || id.DisplayName != want.DisplayName ||
-		id.Email != want.Email || id.Redirect != want.Redirect || len(id.Roles) != 1 {
+		id.Email != want.Email || id.Redirect != want.Redirect || len(id.Roles) != 1 || !id.Admin {
 		t.Errorf("identity = %+v, want %+v", id, want)
 	}
 	if got, want := c.LogoutURL(), idp.URL+"/logout?client_id=nudge"; got != want {
@@ -124,6 +124,40 @@ func TestLoginRefusals(t *testing.T) {
 				t.Errorf("err = %v, want refused with %q", err, tt.refused)
 			case tt.refused == "" && errors.As(err, &refused):
 				t.Errorf("err = %v, want a verification error", err)
+			}
+		})
+	}
+}
+
+func TestRoles(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		userRole  string
+		roles     []string
+		wantAdmin bool
+		refused   bool
+	}{
+		{name: "admin", userRole: "user", roles: []string{"admin"}, wantAdmin: true},
+		{name: "both is an admin", userRole: "user", roles: []string{"user", "admin"}, wantAdmin: true},
+		{name: "user", userRole: "user", roles: []string{"user"}},
+		{name: "other role", userRole: "user", roles: []string{"guest"}, refused: true},
+		{name: "users off", userRole: "", roles: []string{"user"}, refused: true},
+		// An empty roles claim never matches an empty user role.
+		{name: "no roles with users off", userRole: "", roles: []string{""}, refused: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c, idp, _ := newTestClient(t, func(o *Options) { o.UserRole = tt.userRole })
+			idp.Edit(func(_, c map[string]any) { c["roles"] = tt.roles })
+			id, err := login(t, c, idp)
+			var refused *RefusedError
+			switch {
+			case tt.refused && (!errors.As(err, &refused) || refused.Reason != "no role"):
+				t.Errorf("err = %v, want refused with no role", err)
+			case !tt.refused && (err != nil || id.Admin != tt.wantAdmin):
+				t.Errorf("identity = %+v, %v; want admin %v", id, err, tt.wantAdmin)
 			}
 		})
 	}

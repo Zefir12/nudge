@@ -47,7 +47,8 @@ Flags with `NUDGE_*` environment variable fallbacks; the defaults work in the im
 | `NUDGE_USAGE_INTERVAL` | `15m` | how often volume sizes are measured, `0` for never |
 | `NUDGE_OIDC_ISSUER`, `NUDGE_OIDC_CLIENT_ID`, `NUDGE_OIDC_CLIENT_SECRET` | unset | single sign-on through an OpenID Connect provider (secret env only; needs an `https://` public URL) |
 | `NUDGE_OIDC_NAME` | `SSO` | label of the single sign-on button |
-| `NUDGE_OIDC_ADMIN_ROLE` | `admin` | `roles` claim value that lets a user sign in as admin |
+| `NUDGE_OIDC_ADMIN_ROLE` | `admin` | `roles` claim value that makes a user an admin |
+| `NUDGE_OIDC_USER_ROLE` | `user` | `roles` claim value that makes a user a (non-admin) user |
 | `NUDGE_OIDC_REQUIRE_MFA` | `false` | refuse single sign-on without a second factor |
 | `NUDGE_OIDC_SESSION_TTL` | `12h` | how long a single sign-on session lasts |
 | `NUDGE_PASSWORD_LOGIN` | `true` | `false` leaves password login only to the local `admin` (with SSO) |

@@ -33,6 +33,7 @@ import StacksView from './views/StacksView.vue';
 import StackView from './views/StackView.vue';
 import SetupView from './views/SetupView.vue';
 import TokensView from './views/TokensView.vue';
+import UsersView from './views/UsersView.vue';
 import VolumesView from './views/VolumesView.vue';
 import VolumeView from './views/VolumeView.vue';
 import WebhooksView from './views/WebhooksView.vue';
@@ -41,6 +42,9 @@ declare module 'vue-router' {
   interface RouteMeta {
     // public routes are reachable without a session and shown without the sidebar.
     public?: boolean;
+    // users routes are open to users without the admin role, as on the API; every other
+    // page shows them a "not allowed" state.
+    users?: boolean;
   }
 }
 
@@ -68,18 +72,19 @@ export function createAppRouter(history: RouterHistory) {
       { path: '/env/:env/stacks/:id', name: 'stack', component: StackView },
       { path: '/env/:env/events', name: 'events', component: EventsView },
       { path: '/environments', name: 'environments', component: EnvironmentsView },
-      { path: '/deployments', name: 'deployments', component: DeploymentsView },
-      { path: '/deployments/:name', name: 'deployment', component: DeploymentView },
+      { path: '/deployments', name: 'deployments', component: DeploymentsView, meta: { users: true } },
+      { path: '/deployments/:name', name: 'deployment', component: DeploymentView, meta: { users: true } },
       { path: '/registries', name: 'registries', component: RegistriesView },
       { path: '/registries/:id', name: 'registry', component: RegistryView },
       // Repository names contain "/", so the name goes in the query (?name=team/app).
       { path: '/registries/:id/repository', name: 'registry-repository', component: RegistryRepositoryView },
       { path: '/webhooks', name: 'webhooks', component: WebhooksView },
-      { path: '/tokens', name: 'tokens', component: TokensView },
+      { path: '/tokens', name: 'tokens', component: TokensView, meta: { users: true } },
+      { path: '/users', name: 'users', component: UsersView },
       { path: '/audit', name: 'audit', component: AuditView },
       { path: '/setup', name: 'setup', component: SetupView, meta: { public: true } },
       { path: '/login', name: 'login', component: LoginView, meta: { public: true } },
-      { path: '/:pathMatch(.*)*', name: 'not-found', component: NotFoundView },
+      { path: '/:pathMatch(.*)*', name: 'not-found', component: NotFoundView, meta: { users: true } },
     ],
   });
 
@@ -106,7 +111,9 @@ async function guard(to: RouteLocationNormalized): Promise<RouteLocationRaw | tr
     if (!needed && to.name === 'setup') return { name: 'login' };
     return true;
   }
-  if (currentUser.value || (await loadUser())) return true;
+  const user = currentUser.value ?? (await loadUser());
+  // A user's home is the deployments: the dashboard is about environments.
+  if (user) return !user.admin && to.name === 'dashboard' ? { name: 'deployments' } : true;
   const { needed } = await getSetupStatus();
   if (needed) return { name: 'setup' };
   return { name: 'login', query: to.fullPath === '/' ? {} : { redirect: to.fullPath } };

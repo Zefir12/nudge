@@ -5,7 +5,7 @@ import { createMemoryHistory } from 'vue-router';
 import { environments } from '../environments';
 import { createAppRouter } from '../router';
 import { currentUser } from '../session';
-import { admin, stubApi } from '../test-utils';
+import { admin, stubApi, user } from '../test-utils';
 import DeploymentsView from './DeploymentsView.vue';
 
 const local = {
@@ -47,6 +47,16 @@ async function mountView() {
 }
 
 describe('DeploymentsView', () => {
+  it('shows a user the list without the create form or environments', async () => {
+    currentUser.value = user;
+    // No GET /environments stub: a user's view must not ask for them.
+    stubApi({ 'GET /deployments': { body: [{ ...shop, role: 'deployer' }] } });
+    const { wrapper } = await mountView();
+    expect(wrapper.find('form.create').exists()).toBe(false);
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+    expect(wrapper.find('tbody tr').text()).toContain('deployer');
+  });
+
   it('lists deployments', async () => {
     stubApi({ 'GET /deployments': { body: [shop] }, 'GET /environments': { body: [local] } });
     const { wrapper } = await mountView();

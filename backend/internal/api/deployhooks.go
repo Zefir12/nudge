@@ -83,7 +83,7 @@ func toDeployHookRunJSON(run deployhooks.Run) deployHookRunJSON {
 // hookActor is r's user as a webhook manager.
 func (s *server) hookActor(r *http.Request) deployhooks.Actor {
 	u, _ := userFrom(r.Context())
-	return deployhooks.Actor{UserID: u.ID, Admin: s.isAdmin(u)}
+	return deployhooks.Actor{UserID: u.ID, Admin: isAdmin(u)}
 }
 
 // deployHooksReady answers 503 if deploy webhooks aren't available.

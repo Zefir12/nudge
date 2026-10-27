@@ -62,11 +62,27 @@ type RateLimitedError struct{ RetryAfter time.Duration }
 
 func (e *RateLimitedError) Error() string { return "too many failed login attempts" }
 
+// Role is what a user may do: an admin everything, a user only the routes opened to
+// users.
+type Role string
+
+// The roles.
+const (
+	// RoleAdmin may do everything.
+	RoleAdmin Role = "admin"
+	// RoleUser may use the routes opened to users.
+	RoleUser Role = "user"
+)
+
+// Valid reports whether r is a known role.
+func (r Role) Valid() bool { return r == RoleAdmin || r == RoleUser }
+
 // User is an account.
 type User struct {
 	ID        int64
 	Username  string
 	CreatedAt time.Time
+	Role      Role
 	// Token is the name of the API token that authenticated the request; empty for a
 	// session.
 	Token string
@@ -162,7 +178,7 @@ func (s *Service) SetupNeeded(ctx context.Context) (bool, error) {
 	return !exists, nil
 }
 
-// CreateFirstUser creates the admin while no user exists. The check and the insert are
+// CreateFirstUser creates the first admin while no user exists. The check and the insert are
 // one statement, so concurrent calls create exactly one user; the others get
 // ErrSetupDone.
 func (s *Service) CreateFirstUser(ctx context.Context, username, password string) (User, error) {
@@ -183,10 +199,10 @@ func (s *Service) CreateFirstUser(ctx context.Context, username, password string
 		return User{}, err
 	}
 	now := s.now().Unix()
-	u := User{Username: username, CreatedAt: time.Unix(now, 0)}
+	u := User{Username: username, CreatedAt: time.Unix(now, 0), Role: RoleAdmin}
 	err = s.db.QueryRowContext(ctx, `
-		INSERT INTO users (username, password_hash, created_at, updated_at)
-		SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM users)
+		INSERT INTO users (username, password_hash, created_at, updated_at, role)
+		SELECT ?, ?, ?, ?, 'admin' WHERE NOT EXISTS (SELECT 1 FROM users)
 		RETURNING id`, username, hash, now, now).Scan(&u.ID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrSetupDone
@@ -231,9 +247,10 @@ func (s *Service) Login(ctx context.Context, ip, username, password string) (Ses
 	var u User
 	var hash string
 	var created int64
+	var disabled bool
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, username, password_hash, created_at FROM users WHERE username = ?`, username,
-	).Scan(&u.ID, &u.Username, &hash, &created)
+		`SELECT id, username, password_hash, created_at, role, disabled FROM users WHERE username = ?`, username,
+	).Scan(&u.ID, &u.Username, &hash, &created, &u.Role, &disabled)
 	// SSO users have no password: they count as unknown.
 	known := err == nil && hash != ""
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -258,7 +275,8 @@ func (s *Service) Login(ctx context.Context, ip, username, password string) (Ses
 		}
 		return Session{}, err
 	}
-	if !known || !ok {
+	// A disabled user's right password still fails, without saying the account exists.
+	if !known || !ok || disabled {
 		return Session{}, ErrInvalidCredentials
 	}
 	s.ipLimit.release(ip, now)
@@ -289,9 +307,9 @@ func (s *Service) SessionUser(ctx context.Context, token string) (User, error) {
 	var u User
 	var created, lastSeen, expires int64
 	err := s.db.QueryRowContext(ctx, `
-		SELECT u.id, u.username, u.created_at, u.oidc_issuer <> '', s.last_seen_at, s.expires_at
+		SELECT u.id, u.username, u.created_at, u.oidc_issuer <> '', u.role, s.last_seen_at, s.expires_at
 		FROM sessions s JOIN users u ON u.id = s.user_id
-		WHERE s.id_hash = ?`, id).Scan(&u.ID, &u.Username, &created, &u.SSO, &lastSeen, &expires)
+		WHERE s.id_hash = ? AND NOT u.disabled`, id).Scan(&u.ID, &u.Username, &created, &u.SSO, &u.Role, &lastSeen, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrNoSession
 	}

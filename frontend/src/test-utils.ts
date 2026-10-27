@@ -24,7 +24,21 @@ export function stubApi(routes: Routes) {
   return fn;
 }
 
-export const admin = { id: 1, username: 'admin', created_at: '2026-10-24T12:00:00Z', admin: true };
+export const admin = {
+  id: 1,
+  username: 'admin',
+  created_at: '2026-10-24T12:00:00Z',
+  role: 'admin' as const,
+  admin: true,
+};
+// user is a signed-in user without the admin role.
+export const user = {
+  id: 2,
+  username: 'bob',
+  created_at: '2026-10-24T12:00:00Z',
+  role: 'user' as const,
+  admin: false,
+};
 
 // FakeWebSocket stands in for the browser's WebSocket: stubSockets() installs it and
 // returns the sockets opened so far; a test sends frames with message() (JSON) or

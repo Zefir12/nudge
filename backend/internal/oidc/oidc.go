@@ -63,8 +63,11 @@ type Options struct {
 	ClientSecret string
 	// RedirectURL is <public URL>/api/v1/auth/oidc/callback.
 	RedirectURL string
-	// AdminRole is the roles claim value a user needs to sign in.
+	// AdminRole is the roles claim value that makes a user an admin.
 	AdminRole string
+	// UserRole is the roles claim value that makes a user a user; empty means only
+	// admins sign in. A user with both is an admin.
+	UserRole string
 	// RequireMFA refuses ID tokens whose amr lacks "mfa".
 	RequireMFA bool
 	// HTTPClient calls the provider; its transport is wrapped to cap bodies, and a zero
@@ -83,6 +86,8 @@ type Identity struct {
 	DisplayName string
 	Email       string
 	Roles       []string
+	// Admin says the roles claim has AdminRole; otherwise it has UserRole.
+	Admin bool
 	// Redirect is the path the login was started with.
 	Redirect string
 }
@@ -286,7 +291,8 @@ func (c *Client) Finish(ctx context.Context, state, binding, code string) (Ident
 		Issuer: idt.Issuer, Subject: idt.Subject, Username: cl.PreferredUsername,
 		DisplayName: cl.Name, Email: cl.Email, Roles: cl.Roles, Redirect: pend.redirect,
 	}
-	if !slices.Contains(cl.Roles, c.opts.AdminRole) {
+	id.Admin = slices.Contains(cl.Roles, c.opts.AdminRole)
+	if !id.Admin && (c.opts.UserRole == "" || !slices.Contains(cl.Roles, c.opts.UserRole)) {
 		return id, &RefusedError{Reason: "no role", Subject: id.Subject, Username: id.Username}
 	}
 	if c.opts.RequireMFA && !slices.Contains(cl.Amr, "mfa") {

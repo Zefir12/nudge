@@ -18,7 +18,6 @@ import (
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/image"
 
-	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/deployhooks"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker/dockertest"
@@ -180,14 +179,13 @@ func TestDeployHookOwnership(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	fake := &dockertest.Fake{Resources: dockertest.Resources{ContainerDetails: map[string]container.InspectResponse{"web": oldWeb()}}}
-	h, svc, db := newTestHandlerOpts(t, func(environments.Environment) (docker.Client, error) { return fake, nil }, func(o *Options) {
-		o.Admin = func(u auth.User) bool { return u.Username == "admin" }
-	})
+	h, svc, db := newTestHandlerWith(t, func(environments.Environment) (docker.Client, error) { return fake, nil })
 	admin, err := svc.CreateFirstUser(ctx, "admin", "longenough")
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := db.ExecContext(ctx, `INSERT INTO users (username, password_hash, created_at, updated_at) VALUES ('bob', 'x', 0, 0)`)
+	// bob is an admin while he creates his webhook, then a user.
+	res, err := db.ExecContext(ctx, `INSERT INTO users (username, password_hash, created_at, updated_at, role) VALUES ('bob', 'x', 0, 0, 'admin')`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,6 +218,9 @@ func TestDeployHookOwnership(t *testing.T) {
 	}
 	adminHook := decode(as(adminToken, "POST", path, `{"name":"deploy","container":"web"}`))
 	bobHook := decode(as(bobToken, "POST", path, `{"name":"deploy","container":"web"}`))
+	if _, err := db.ExecContext(ctx, `UPDATE users SET role = 'user' WHERE id = ?`, bobID); err != nil {
+		t.Fatal(err)
+	}
 
 	count := func(token string) int {
 		t.Helper()
@@ -229,9 +230,6 @@ func TestDeployHookOwnership(t *testing.T) {
 		}
 		return len(out)
 	}
-	if n := count(bobToken); n != 1 {
-		t.Errorf("bob sees %d webhooks, want his own", n)
-	}
 	if n := count(adminToken); n != 2 {
 		t.Errorf("admin sees %d webhooks, want both", n)
 	}
@@ -240,12 +238,22 @@ func TestDeployHookOwnership(t *testing.T) {
 		{"POST", path + "/" + adminHook.ID + "/secret"},
 		{"DELETE", path + "/" + adminHook.ID},
 	} {
-		if rec := as(bobToken, req.method, req.path, ""); rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "webhook not found") {
-			t.Errorf("bob %s %s = %d %s, want 404", req.method, req.path, rec.Code, rec.Body)
+		// Webhooks are admin-only until users get their own (the deployhooks tests cover
+		// the ownership filter).
+		if rec := as(bobToken, req.method, req.path, ""); rec.Code != http.StatusForbidden {
+			t.Errorf("bob %s %s = %d %s, want 403", req.method, req.path, rec.Code, rec.Body)
 		}
 	}
-	if rec := as(adminToken, "POST", path+"/"+bobHook.ID+"/secret", ""); rec.Code != http.StatusOK {
-		t.Errorf("admin rotates bob's = %d", rec.Code)
+	rec := as(adminToken, "POST", path+"/"+bobHook.ID+"/secret", "")
+	if err := json.Unmarshal(rec.Body.Bytes(), &bobHook); rec.Code != http.StatusOK || err != nil {
+		t.Fatalf("admin rotates bob's = %d %s", rec.Code, rec.Body)
+	}
+	// A disabled creator's webhook can't be triggered.
+	if _, err := db.ExecContext(ctx, `UPDATE users SET disabled = 1 WHERE id = ?`, bobID); err != nil {
+		t.Fatal(err)
+	}
+	if rec := trigger(t, h, bobHook.ID, "", "", bearer(bobHook.Secret)); rec.Code != http.StatusUnauthorized {
+		t.Errorf("trigger of a disabled user's webhook = %d, want 401", rec.Code)
 	}
 	if rec := as(adminToken, "DELETE", path+"/"+bobHook.ID, ""); rec.Code != http.StatusNoContent {
 		t.Errorf("admin deletes bob's = %d", rec.Code)

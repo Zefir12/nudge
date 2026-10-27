@@ -23,7 +23,8 @@ image without setting anything. A flag wins over its variable.
 | `-oidc-client-id` | `NUDGE_OIDC_CLIENT_ID` | unset | nudge's client ID at the provider |
 | — | `NUDGE_OIDC_CLIENT_SECRET` | unset | nudge's client secret (environment only) |
 | `-oidc-name` | `NUDGE_OIDC_NAME` | `SSO` | label of the login page's button ("Log in with …") |
-| `-oidc-admin-role` | `NUDGE_OIDC_ADMIN_ROLE` | `admin` | value of the ID token's `roles` claim that lets a user sign in (as admin) |
+| `-oidc-admin-role` | `NUDGE_OIDC_ADMIN_ROLE` | `admin` | value of the ID token's `roles` claim that makes a user an admin |
+| `-oidc-user-role` | `NUDGE_OIDC_USER_ROLE` | `user` | value of the `roles` claim that makes a user a (non-admin) user; `-oidc-user-role=""` signs in admins only; must differ from the admin role |
 | `-oidc-require-mfa` | `NUDGE_OIDC_REQUIRE_MFA` | `false` | refuse sign-ins whose `amr` claim lacks `mfa` |
 | `-oidc-session-ttl` | `NUDGE_OIDC_SESSION_TTL` | `12h` | how long a single sign-on session lasts (at least `5m`) |
 | `-password-login` | `NUDGE_PASSWORD_LOGIN` | `true` | `false` hides the password form and refuses password login to everyone but the local `admin` (needs single sign-on) |
@@ -176,9 +177,12 @@ refuses to start with only some of them) and an `https://` `NUDGE_PUBLIC_URL`. T
 redirect URI to register is `<public URL>/api/v1/auth/oidc/callback`; the scopes are
 `openid profile email`.
 
-- **Roles.** The ID token's `roles` claim (an array) must hold `NUDGE_OIDC_ADMIN_ROLE`; it
-  is read on every login. Without it the login is refused with a 403 page and audited.
-  Until nudge has more roles, only admins sign in.
+- **Roles.** The ID token's `roles` claim (an array) must hold `NUDGE_OIDC_ADMIN_ROLE`
+  (the user is an admin) or `NUDGE_OIDC_USER_ROLE` (a user; with both, an admin). It is
+  read on every login and sets the user's role in nudge, which an admin can't change
+  there. Without either role the login is refused with a 403 page and audited, as is a
+  user an admin disabled in nudge. The provider's role wins even when it demotes the last
+  admin (logged as a warning): keep the break-glass `admin` for that case.
 - **Users** are matched by issuer and subject (`sub`) only. A local user with the same
   name or email is never linked: the SSO user gets a name of its own (its preferred
   username, else its email, with `-2`… on a clash; never `admin`). Display name and email
@@ -196,8 +200,10 @@ redirect URI to register is `<public URL>/api/v1/auth/oidc/callback`; the scopes
 - Failed SSO logins land on the login page with a generic error, are logged with the
   detail and count against the per-IP login limit (shared with password login).
 - **Revoking access.** Roles and MFA are checked at login only: a user whose admin role is
-  taken away keeps their session until `NUDGE_OIDC_SESSION_TTL` ends it, and API tokens
-  they created keep working until deleted in nudge.
+  taken away keeps their session (as an admin) until `NUDGE_OIDC_SESSION_TTL` ends it or
+  they log in again, and API tokens they created keep working until deleted in nudge.
+  Disabling the user in nudge (Users page) ends their sessions and stops their tokens
+  at once.
 - **Break-glass.** SSO users count as users, so `NUDGE_ADMIN_PASSWORD` creates the local
   `admin` only on a fresh install: set it before the first SSO login if you want a way in
   without the provider (or after turning SSO off).
