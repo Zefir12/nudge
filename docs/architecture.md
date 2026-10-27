@@ -13,17 +13,28 @@ browser ──HTTPS──▶ nudge serve ──unix socket──▶ local docker
                        ▲
                        │ WebSocket (agent dials out), yamux streams
                        │
-                  nudge agent ──unix socket──▶ remote dockerd
+                  nudge-agent ──unix socket──▶ remote dockerd
 ```
 
 - **Server** (`nudge serve`): API under `/api/v1`, embedded web UI, SQLite store in
   `/data/nudge.db`, the registry of connected agents.
-- **Agent** (`nudge agent`): same binary and image, on each remote host with that host's
-  socket mounted. It dials the server; it has no API of its own and stores only its
-  credential in `/data`.
+- **Agent** (`nudge-agent`): its own binary (`cmd/nudge-agent`) and image, on each remote
+  host with that host's socket mounted. It dials the server; it has no API of its own and
+  stores only its credential in `/data`.
 - **Environment**: one Docker host the server manages. Kinds: `local` (a socket on the
   server's host, created on first start if `/var/run/docker.sock` is reachable) and
   `agent`. Every Docker route is scoped to one: `/api/v1/environments/{env}/...`.
+
+### Images (#89)
+Two images from one Dockerfile, built and tagged together: `nudge` (`--target server`,
+the default) and `nudge-agent` (`--target agent`). Until #89 one binary and image served
+both roles; the split keeps the API, auth, SQLite, the stack store and the web UI off agent
+hosts (a smaller attack surface, and a binary about half the size). Both images carry
+docker-compose, since stacks deploy next to the daemon they run on. The shared
+subcommands (`agent`, `probe`) live in `internal/cli`; a test in `cmd/nudge-agent` fails
+if the agent binary starts importing server packages. The server binary keeps `nudge
+agent`, with a warning, for hosts set up before the split. Server and agent of different
+versions still meet through the tunnel's protocol version check.
 
 ## Docker access
 `internal/docker` builds one `*client.Client` (github.com/moby/moby/client) per
@@ -285,7 +296,7 @@ backstops that need host setup, applied by `buildTenant` to users' containers on
 - The host's size: a user's environment detail shows its CPUs, memory and kernel.
 
 ### Alternative: one VM per user
-For untrusted users the stronger setup is a small VM per user running `nudge agent`,
+For untrusted users the stronger setup is a small VM per user running `nudge-agent`,
 with the user granted only that environment (layer 3): the hypervisor enforces the
 limits and a kernel bug reaches only their own VM. Roles, environment access and
 ownership (#111, #112) already cover that setup; the shared-host layers 5 to 8 are only
@@ -368,7 +379,7 @@ to the UI as they are.
     deploys again without waiting and warns.
   - `POST /v1/stacks/{name}/probe` `{"container", "port", "path", "status", "timeout"}`
     (timeout in nanoseconds): a deployment's HTTP check. The agent starts a helper
-    container from its own image with `network_mode: container:<id>` running `nudge
+    container from its own image with `network_mode: container:<id>` running `nudge-agent
     probe` against `127.0.0.1`, and answers `{"failed": "..."}` (empty when it passed);
     `409` when the agent doesn't run in a container of that daemon. An agent from before
     it answers `404`, and the server skips the check with a warning. The local

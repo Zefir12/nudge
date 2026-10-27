@@ -3,7 +3,7 @@
 # `docker compose -f deploy/agent.compose.yml up -d`. No inbound port: the agent dials out.
 services:
   nudge-agent:
-    image: registrydedic.zefirlabs.net/nudge:latest
+    image: registrydedic.zefirlabs.net/nudge-agent:latest
     command: agent
     container_name: nudge-agent
     restart: unless-stopped

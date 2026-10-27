@@ -7,7 +7,8 @@
 
 A small self-hosted Docker manager: one container with the Docker socket gives you a web
 UI and a REST API for your containers, images, volumes, networks and stacks, and
-remote Docker hosts join through an agent (the same image) that dials out to the server.
+remote Docker hosts join through an agent (its own image, `nudge-agent`) that dials out
+to the server.
 
 Status: early. Phase 0 (skeleton) is done; see [PLAN.md](PLAN.md) for the roadmap.
 
@@ -56,7 +57,7 @@ Flags with `NUDGE_*` environment variable fallbacks; the defaults work in the im
 | `NUDGE_TENANT_RUNTIME` | | OCI runtime of users' containers (e.g. `runsc`) |
 | `NUDGE_TENANT_STORAGE_SIZE` | | disk cap of a user's container's writable layer (e.g. `10G`) |
 
-Remote hosts run the same image as `nudge agent` with `NUDGE_SERVER_URL` and
+Remote hosts run the agent image, `registrydedic.zefirlabs.net/nudge-agent`, with `NUDGE_SERVER_URL` and
 `NUDGE_JOIN_TOKEN` (the UI's "Add environment" prints the `docker run` command and a
 compose file, as in [deploy/agent.compose.yml](deploy/agent.compose.yml)).
 
@@ -80,5 +81,5 @@ make build       # build the image
 make web-dev     # Vite+ dev server on :5173, proxying /api to :8080 (host Node needed)
 ```
 
-Layout: `backend/` (Go 1.27 module: `cmd/nudge`, `internal/...`), `frontend/` (Vue 3,
+Layout: `backend/` (Go 1.27 module: `cmd/nudge`, `cmd/nudge-agent`, `internal/...`), `frontend/` (Vue 3,
 TypeScript, Vite+), `deploy/`, `docs/`. Architecture: [docs/architecture.md](docs/architecture.md).

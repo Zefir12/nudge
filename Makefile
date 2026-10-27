@@ -1,6 +1,7 @@
 # --- CONFIG ---
 REGISTRY ?= registrydedic.zefirlabs.net
 IMAGE ?= $(REGISTRY)/nudge
+AGENT_IMAGE ?= $(REGISTRY)/nudge-agent
 TAG ?= latest
 
 # Keep in sync with backend/go.mod, the Dockerfile and .forgejo/workflows/ci.yaml.
@@ -93,15 +94,20 @@ web-dev:
 
 # --- IMAGE (publishing is done by zefir, not by Claude) ---
 
+# Two images with the same tag: nudge (the Dockerfile's server target) and nudge-agent.
 build:
-	docker build --build-arg VERSION=$(VERSION) -t $(IMAGE):$(TAG) .
+	docker build --build-arg VERSION=$(VERSION) --target server -t $(IMAGE):$(TAG) .
+	docker build --build-arg VERSION=$(VERSION) --target agent -t $(AGENT_IMAGE):$(TAG) .
 
 push:
 	docker push $(IMAGE):$(TAG)
+	docker push $(AGENT_IMAGE):$(TAG)
 
 publish:
-	docker buildx build --build-arg VERSION=$(VERSION) -t $(IMAGE):$(TAG) --push .
+	docker buildx build --build-arg VERSION=$(VERSION) --target server -t $(IMAGE):$(TAG) --push .
+	docker buildx build --build-arg VERSION=$(VERSION) --target agent -t $(AGENT_IMAGE):$(TAG) --push .
 
 publish-hash:
 	tag=$$(git rev-parse --short HEAD) && \
-	docker buildx build --build-arg VERSION=$$tag -t $(IMAGE):$$tag --push .
+	docker buildx build --build-arg VERSION=$$tag --target server -t $(IMAGE):$$tag --push . && \
+	docker buildx build --build-arg VERSION=$$tag --target agent -t $(AGENT_IMAGE):$$tag --push .

@@ -2,11 +2,13 @@
 
 A self-hosted Docker manager (like Portainer/Dockhand): one container with the Docker
 socket mounted serves a REST API and a Vue web UI, and remote hosts join through an agent
-mode of the same binary. Read PLAN.md for the roadmap and docs/ for decisions.
+with its own image. Read PLAN.md for the roadmap and docs/ for decisions.
 
 ## How it works
-- One Go binary, one image. `nudge serve` (default) runs the API under `/api/v1` and the
-  embedded web UI; `nudge agent` (phase 2) runs on a remote host and dials out to a server.
+- Two binaries, two images from one Dockerfile and one tag: `nudge` (`nudge serve`,
+  default) runs the API under `/api/v1` and the embedded web UI; `nudge-agent` runs on a
+  remote host and dials out to a server. Keep server packages out of the agent binary
+  (`cmd/nudge-agent` tests that); shared subcommands go in `internal/cli`.
 - Every Docker host is an "environment". The local one talks to `/var/run/docker.sock`;
   a remote one is reached through the agent's tunnel (yamux over WebSocket), on which the
   server's Docker client dials. docs/architecture.md has the design.
@@ -32,7 +34,9 @@ mode of the same binary. Read PLAN.md for the roadmap and docs/ for decisions.
 - Everything runs in Docker by default; `make ... LOCAL=1` uses a host toolchain.
 
 ## Layout
-- backend/cmd/nudge          entrypoint: subcommands, wiring, graceful shutdown
+- backend/cmd/nudge          server entrypoint: subcommands, wiring, graceful shutdown
+- backend/cmd/nudge-agent    agent entrypoint (agent image)
+- backend/internal/cli       subcommands both binaries share (agent, probe)
 - backend/internal/api       HTTP handlers and routing under /api/v1
 - backend/internal/config    flags with NUDGE_* env fallbacks
 - backend/internal/web       embedded frontend build (dist/), SPA fallback
@@ -48,7 +52,7 @@ mode of the same binary. Read PLAN.md for the roadmap and docs/ for decisions.
 - `make format`: gofmt/goimports and `vp check --fix`
 - `make tidy`: `go mod tidy` (after adding or removing imports)
 - `make web-build`: builds the frontend and copies it into backend/internal/web/dist
-- `make build`: builds the Docker image locally
+- `make build`: builds both Docker images (nudge, nudge-agent) locally
 Always run `make test lint` before committing. Fix failures yourself.
 
 ## Conventions

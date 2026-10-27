@@ -1,4 +1,6 @@
-# Builds the image (Dockerfile: frontend, then the Go binary with the frontend embedded).
+# Builds the two images, one job each with the same tag: nudge (Dockerfile target
+# `server`: frontend, then the Go binary with the frontend embedded) and nudge-agent
+# (target `agent`).
 # On a pull request it only builds, as a check, and only when the PR touches what the
 # image build depends on beyond the code (ci.yaml already compiles and tests that). On a
 # push to develop it also pushes it to the registry as `develop-<sha>` and `develop`; run
@@ -30,13 +32,22 @@ concurrency:
 
 jobs:
   image:
-    name: image
+    name: image (${{ matrix.target }})
     runs-on: docker
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: server
+            image: registrydedic.zefirlabs.net/nudge
+          - target: agent
+            image: registrydedic.zefirlabs.net/nudge-agent
     container:
       image: node:24
     env:
-      IMAGE: registrydedic.zefirlabs.net/nudge
+      IMAGE: ${{ matrix.image }}
+      TARGET: ${{ matrix.target }}
       PUSH: ${{ forgejo.event_name != 'pull_request' }}
 
     steps:
@@ -69,6 +80,6 @@ jobs:
             else
               set -- --no-push;
             fi;
-            /kaniko/executor --context "dir://$PWD" --dockerfile "$PWD/Dockerfile" \
+            /kaniko/executor --context "dir://$PWD" --dockerfile "$PWD/Dockerfile" --target "$TARGET" \
               --build-arg "VERSION=$TAG" --single-snapshot "$@"
             '

@@ -7,7 +7,7 @@ import JoinTokenCard from './JoinTokenCard.vue';
 const joinToken: JoinToken = {
   token: 'nudge_join_secret',
   expires_at: '2026-10-25T12:00:00Z',
-  docker_run: 'docker run -d -e NUDGE_JOIN_TOKEN=nudge_join_secret nudge:latest agent',
+  docker_run: 'docker run -d -e NUDGE_JOIN_TOKEN=nudge_join_secret nudge-agent:latest agent',
   compose: 'services:\n  nudge-agent:\n    environment:\n      NUDGE_JOIN_TOKEN: "nudge_join_secret"\n',
 };
 

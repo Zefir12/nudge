@@ -67,7 +67,7 @@ func TestCreateAgentEnvironment(t *testing.T) {
 	if !strings.HasPrefix(jt.Token, "nudge_join_") || jt.ExpiresAt.IsZero() {
 		t.Errorf("join token = %+v", jt)
 	}
-	for _, want := range []string{"-e NUDGE_SERVER_URL=http://example.com ", "-e NUDGE_JOIN_TOKEN=" + jt.Token + " ", "nudge:latest agent"} {
+	for _, want := range []string{"-e NUDGE_SERVER_URL=http://example.com ", "-e NUDGE_JOIN_TOKEN=" + jt.Token + " ", "nudge-agent:latest agent"} {
 		if !strings.Contains(jt.DockerRun, want) {
 			t.Errorf("docker run %q lacks %q", jt.DockerRun, want)
 		}

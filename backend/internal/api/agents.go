@@ -17,8 +17,9 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/tunnel"
 )
 
-// agentImage is the image the docker run command starts; the agent is the same binary.
-const agentImage = "registrydedic.zefirlabs.net/nudge:latest"
+// agentImage is the image the docker run command and the compose file start: the
+// agent's own image, nudge-agent, with the same tag as the server's.
+const agentImage = "registrydedic.zefirlabs.net/nudge-agent:latest"
 
 // hostHeader matches the host names and ports allowed into the docker run command, which
 // users paste into a shell.

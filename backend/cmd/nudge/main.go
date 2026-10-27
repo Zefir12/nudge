@@ -21,16 +21,15 @@ import (
 	"syscall"
 	"time"
 
-	"git.zefirlabs.net/zefir/nudge/backend/internal/agent"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/allowances"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/api"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/audit"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/certs"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/cli"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/config"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/deployhooks"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/deployments"
-	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/events"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/notify"
@@ -87,24 +86,11 @@ func realMain(ctx context.Context, args []string, getenv func(string) string, st
 		}
 		return 0
 	case "agent":
-		cfg, err := config.LoadAgent(args, getenv, stderr)
-		if errors.Is(err, flag.ErrHelp) {
-			return 0
-		}
-		if err != nil {
-			_, _ = fmt.Fprintln(stderr, "nudge:", err)
-			return 2
-		}
-		log := slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: cfg.LogLevel}))
-		if err := runAgent(ctx, cfg, log); err != nil {
-			log.Error("agent stopped", "err", err)
-			return 1
-		}
-		return 0
+		return cli.Agent(ctx, args, getenv, stderr, "agents have their own image now: switch this host to registrydedic.zefirlabs.net/nudge-agent (deploy/agent.compose.yml)")
 	case "deploy":
 		return runDeploy(ctx, args, getenv, stdout, stderr)
 	case "probe":
-		return runProbe(ctx, args, stdout, stderr)
+		return cli.Probe(ctx, args, stdout, stderr)
 	case "version":
 		_, _ = fmt.Fprintln(stdout, version.Version)
 		return 0
@@ -129,10 +115,10 @@ func warnTrustedProxies(log *slog.Logger, proxies []netip.Prefix) {
 
 func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error) {
 	warnTrustedProxies(log, cfg.TrustedProxies)
-	if err := prepareDataDir(cfg.DataDir); err != nil {
+	if err := cli.PrepareDataDir(cfg.DataDir); err != nil {
 		return err
 	}
-	if err := cleanComposeConfigs(composeConfigDir(cfg.DataDir), log); err != nil {
+	if err := cli.CleanComposeConfigs(cli.ComposeConfigDir(cfg.DataDir), log); err != nil {
 		return err
 	}
 	var certLoader *certs.Loader
@@ -325,55 +311,6 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 	return nil
 }
 
-func runAgent(ctx context.Context, cfg config.Agent, log *slog.Logger) error {
-	if err := prepareDataDir(cfg.DataDir); err != nil {
-		return err
-	}
-	if err := cleanComposeConfigs(composeConfigDir(cfg.DataDir), log); err != nil {
-		return err
-	}
-	dial, err := docker.LocalDialer(cfg.DockerHost)
-	if err != nil {
-		return err
-	}
-	if cfg.ServerURL.Scheme == "http" {
-		log.Warn("connecting over http:// (-insecure): the agent secret and all Docker traffic travel in clear text")
-	}
-	hostname, err := os.Hostname()
-	if err != nil {
-		log.Warn("hostname unknown", "err", err)
-	}
-	// HTTP checks start a helper container from the agent's own image.
-	dc, err := docker.New(dial)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = dc.Close() }()
-	self := stacks.SelfID(os.ReadFile, os.Hostname)
-	prober := probe.New(probe.Options{
-		Docker: func() (probe.Docker, error) { return dc, nil },
-		Self:   self.ID, Hostname: self.Hostname,
-	})
-	log.Info("agent starting", "server", cfg.ServerURL.Redacted(), "docker_host", cfg.DockerHost, "version", version.Version)
-	err = agent.New(agent.Options{
-		ServerURL: cfg.ServerURL,
-		JoinToken: cfg.JoinToken,
-		DataDir:   cfg.DataDir,
-		Dial:      dial,
-		Control: stacks.NewControl(stacks.NewLocal(stacks.LocalOptions{
-			Dir: stacks.NewDir(cfg.StacksDir), Compose: cfg.Compose, DockerHost: cfg.DockerHost,
-			ConfigDir: composeConfigDir(cfg.DataDir), Probe: prober.Run,
-		}), log),
-		Version:  version.Version,
-		Hostname: hostname,
-		Log:      log,
-	}).Run(ctx)
-	if err == nil {
-		log.Info("agent stopped")
-	}
-	return err
-}
-
 // stackRunner deploys the local environment's stacks with compose here, and an agent
 // environment's through its agent's control service; both pull with the stored registry
 // credentials.
@@ -393,34 +330,12 @@ func stackRunner(cfg config.Server, envs *environments.Service, regs *registries
 		})
 		return stacks.NewLocal(stacks.LocalOptions{
 			Dir: dir, Compose: cfg.Compose, DockerHost: cfg.DockerHost, Credentials: creds,
-			ConfigDir: composeConfigDir(cfg.DataDir),
+			ConfigDir: cli.ComposeConfigDir(cfg.DataDir),
 			Mounts:    stacks.ContainerMounts(self, func() (stacks.Inspector, error) { return envs.Client(env) }),
 			Log:       log.With("env", env.ID),
 			Probe:     prober.Run,
 		})
 	}
-}
-
-// composeConfigDir is where compose runs get their temporary Docker configs with the
-// registry credentials: on the data volume, private to nudge (not in the stacks
-// directory, which stacks may bind-mount).
-func composeConfigDir(dataDir string) string {
-	if dataDir == "" {
-		return ""
-	}
-	return filepath.Join(dataDir, "compose-config")
-}
-
-// cleanComposeConfigs prepares dir and removes the Docker configs a killed run left there.
-func cleanComposeConfigs(dir string, log *slog.Logger) error {
-	n, err := stacks.CleanConfigDir(dir)
-	if err != nil {
-		return err
-	}
-	if n > 0 {
-		log.Warn("removed docker configs left by an interrupted compose run", "count", n, "dir", dir)
-	}
-	return nil
 }
 
 // stackCredentials finds the stored credentials of the registries a stack's files name.
@@ -436,25 +351,4 @@ func stackCredentials(regs *registries.Service) stacks.CredentialFunc {
 		}
 		return creds, nil
 	}
-}
-
-// prepareDataDir creates the data directory (0700) if it is missing and checks that it
-// is writable, so a bad volume fails at start with a clear message instead of on the
-// first write.
-func prepareDataDir(dir string) error {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("create data directory: %w", err)
-	}
-	f, err := os.CreateTemp(dir, ".write-test-*")
-	if err != nil {
-		return fmt.Errorf("data directory %s is not writable: %w", dir, err)
-	}
-	name := f.Name()
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("data directory %s is not writable: %w", dir, err)
-	}
-	if err := os.Remove(name); err != nil {
-		return fmt.Errorf("data directory %s: remove %s: %w", dir, filepath.Base(name), err)
-	}
-	return nil
 }
