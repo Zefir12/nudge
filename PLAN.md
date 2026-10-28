@@ -73,4 +73,4 @@ dependency order. Every task includes tests, docs (docs/api.md, docs/config/, RE
 
 ## Later / ideas
 - Users and roles (read-only, per-environment access), OIDC login.
-- Backup/restore of `/data`.
+- Backup/restore of `/data` (#145).

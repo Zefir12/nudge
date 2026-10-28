@@ -10,6 +10,7 @@ import {
 import { getSetupStatus, setUnauthorizedHandler } from './api/client';
 import { apiError, currentUser, loadUser } from './session';
 import AuditView from './views/AuditView.vue';
+import BackupView from './views/BackupView.vue';
 import ContainerFormView from './views/ContainerFormView.vue';
 import ContainersView from './views/ContainersView.vue';
 import ContainerView from './views/ContainerView.vue';
@@ -96,6 +97,7 @@ export function createAppRouter(history: RouterHistory) {
       { path: '/tokens', name: 'tokens', component: TokensView, meta: { users: true } },
       { path: '/users', name: 'users', component: UsersView },
       { path: '/audit', name: 'audit', component: AuditView },
+      { path: '/backup', name: 'backup', component: BackupView },
       { path: '/setup', name: 'setup', component: SetupView, meta: { public: true } },
       { path: '/login', name: 'login', component: LoginView, meta: { public: true } },
       { path: '/:pathMatch(.*)*', name: 'not-found', component: NotFoundView, meta: { users: true } },

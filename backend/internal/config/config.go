@@ -68,6 +68,17 @@ type Server struct {
 	// UserRegistries are the registry hosts users' pulls may reach, "*" for any; nil
 	// means the API's default (Docker Hub and the big public registries).
 	UserRegistries []string
+	// Backup is the scheduled backup; a zero Interval turns it off.
+	Backup Backup
+}
+
+// Backup configures scheduled backups to <data>/backups.
+type Backup struct {
+	Interval time.Duration
+	// Keep is how many scheduled backups are kept.
+	Keep int
+	// PassphraseFile holds the passphrase the backups are encrypted with.
+	PassphraseFile string
 }
 
 // Tenant is the hardening of users' containers that needs the host set up for it
@@ -181,6 +192,17 @@ func LoadServer(args []string, getenv func(string) string, out io.Writer) (Serve
 	userRegistries := fs.String("user-registries", getenv("NUDGE_USER_REGISTRIES"), "comma-separated registry hosts users' pulls may reach, * for any (NUDGE_USER_REGISTRIES; default docker.io and the big public registries)")
 	storageSize := fs.String("tenant-storage-size", getenv("NUDGE_TENANT_STORAGE_SIZE"), "disk cap of a user's container's writable layer, e.g. 10G, where the storage driver supports it (NUDGE_TENANT_STORAGE_SIZE)")
 	deniedLabels := fs.String("tenant-denied-labels", envOr(getenv, "NUDGE_TENANT_DENIED_LABELS", DefaultDeniedLabels), "comma-separated label prefixes users may not set on their containers, or none (NUDGE_TENANT_DENIED_LABELS)")
+	backupInterval, err := time.ParseDuration(envOr(getenv, "NUDGE_BACKUP_INTERVAL", "0"))
+	if err != nil {
+		return Server{}, fmt.Errorf("NUDGE_BACKUP_INTERVAL %q: want a duration such as 24h", getenv("NUDGE_BACKUP_INTERVAL"))
+	}
+	fs.DurationVar(&c.Backup.Interval, "backup-interval", backupInterval, "how often to save a backup to <data>/backups, 0 for never (NUDGE_BACKUP_INTERVAL)")
+	backupKeep, err := strconv.Atoi(envOr(getenv, "NUDGE_BACKUP_KEEP", "7"))
+	if err != nil {
+		return Server{}, fmt.Errorf("NUDGE_BACKUP_KEEP %q: want a number", getenv("NUDGE_BACKUP_KEEP"))
+	}
+	fs.IntVar(&c.Backup.Keep, "backup-keep", backupKeep, "how many scheduled backups to keep (NUDGE_BACKUP_KEEP)")
+	fs.StringVar(&c.Backup.PassphraseFile, "backup-passphrase-file", getenv("NUDGE_BACKUP_PASSPHRASE_FILE"), "file with the passphrase scheduled backups are encrypted with (NUDGE_BACKUP_PASSPHRASE_FILE)")
 	level := fs.String("log-level", envOr(getenv, "NUDGE_LOG_LEVEL", "info"), "debug, info, warn or error (NUDGE_LOG_LEVEL)")
 	if err := fs.Parse(args); err != nil {
 		return Server{}, err
@@ -248,6 +270,72 @@ func LoadServer(args []string, getenv func(string) string, out io.Writer) (Serve
 	}
 	if err := c.Tenant.check(); err != nil {
 		return Server{}, err
+	}
+	if err := c.Backup.check(); err != nil {
+		return Server{}, err
+	}
+	return c, nil
+}
+
+func (b Backup) check() error {
+	if b.Interval == 0 {
+		return nil
+	}
+	if b.Interval < 5*time.Minute {
+		return errors.New("backup interval must be 0 (off) or at least 5m")
+	}
+	if b.Keep < 1 {
+		return errors.New("backup keep must be at least 1")
+	}
+	if b.PassphraseFile == "" {
+		return errors.New("scheduled backups need -backup-passphrase-file (NUDGE_BACKUP_PASSPHRASE_FILE)")
+	}
+	return nil
+}
+
+// Restore is `nudge restore`'s configuration.
+type Restore struct {
+	// File is the backup to restore.
+	File      string
+	DataDir   string
+	StacksDir string
+	// PassphraseFile holds the backup's passphrase.
+	PassphraseFile string
+	// Force moves existing data aside instead of refusing.
+	Force bool
+}
+
+// LoadRestore parses `nudge restore`'s args like LoadServer; the data and stacks
+// directories take the server's flags and variables.
+func LoadRestore(args []string, getenv func(string) string, out io.Writer) (Restore, error) {
+	var c Restore
+	fs := flag.NewFlagSet("nudge restore", flag.ContinueOnError)
+	fs.SetOutput(out)
+	fs.StringVar(&c.File, "file", "", "the backup file to restore (required)")
+	fs.StringVar(&c.DataDir, "data", envOr(getenv, "NUDGE_DATA", "/data"), "data directory (NUDGE_DATA)")
+	fs.StringVar(&c.StacksDir, "stacks-dir", getenv("NUDGE_STACKS_DIR"), "compose stacks directory (NUDGE_STACKS_DIR; default <data>/stacks)")
+	fs.StringVar(&c.PassphraseFile, "passphrase-file", getenv("NUDGE_BACKUP_PASSPHRASE_FILE"), "file with the backup's passphrase (NUDGE_BACKUP_PASSPHRASE_FILE; required)")
+	fs.BoolVar(&c.Force, "force", false, "move existing data aside to <data>/pre-restore-<time> instead of refusing")
+	if err := fs.Parse(args); err != nil {
+		return Restore{}, err
+	}
+	if fs.NArg() > 0 {
+		return Restore{}, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	if c.File == "" {
+		return Restore{}, errors.New("-file is required")
+	}
+	if c.PassphraseFile == "" {
+		return Restore{}, errors.New("-passphrase-file (NUDGE_BACKUP_PASSPHRASE_FILE) is required")
+	}
+	if c.DataDir == "" {
+		return Restore{}, errors.New("data directory must not be empty")
+	}
+	if c.StacksDir == "" {
+		c.StacksDir = filepath.Join(c.DataDir, "stacks")
+	}
+	if !filepath.IsAbs(c.StacksDir) {
+		return Restore{}, errors.New("stacks directory must be an absolute path")
 	}
 	return c, nil
 }
