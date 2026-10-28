@@ -162,9 +162,15 @@ func (s *server) changePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	case errors.Is(err, auth.ErrBusy):
 		w.Header().Set("Retry-After", "1")
-		s.writeError(w, http.StatusServiceUnavailable, "too many concurrent logins, try again")
+		s.writeError(w, http.StatusServiceUnavailable, "too many password checks at once, try again")
 		return
 	case errors.Is(err, context.Canceled):
+		return
+	case errors.Is(err, auth.ErrUserNotFound):
+		s.writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	case errors.Is(err, auth.ErrPasswordChanged):
+		s.writeError(w, http.StatusConflict, "your password was changed meanwhile; sign in again")
 		return
 	case errors.Is(err, auth.ErrInvalidCredentials):
 		s.log.Warn("password change: wrong current password", "username", u.Username, "ip", ip)

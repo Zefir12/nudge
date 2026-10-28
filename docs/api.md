@@ -181,7 +181,8 @@ that asked stays, and API tokens keep working. Session only: an API token gets `
 leaked token can't take over the account. A wrong current password is
 `403 {"error":"the current password is wrong"}` and counts toward the failed-login limits
 above (`429` once they are reached); a new password that breaks the rules above, or an
-SSO user (no password in nudge), is `400`. Audited without the passwords.
+SSO user (no password in nudge), is `400`; `409` if an admin reset the password while it
+was checked. Audited without the passwords.
 
 ### Tokens
 `POST /api/v1/tokens` with `{"name": "ci"}` answers `201` with

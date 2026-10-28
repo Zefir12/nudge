@@ -285,6 +285,10 @@ func (s *Service) Login(ctx context.Context, ip, username, password string) (Ses
 	return s.newSession(ctx, u, s.ttl)
 }
 
+// ErrPasswordChanged means the password was changed (an admin's reset) while
+// ChangePassword checked the current one.
+var ErrPasswordChanged = errors.New("the password was changed meanwhile")
+
 // ChangePassword sets user id's password to next if current is their password, and ends
 // their other sessions (keep is the session token that asked, which stays). A wrong
 // current password counts toward the login rate limits like a failed login, and is
@@ -345,7 +349,7 @@ func (s *Service) ChangePassword(ctx context.Context, ip string, id int64, keep,
 	if n, err := res.RowsAffected(); err != nil {
 		return fmt.Errorf("change password: %w", err)
 	} else if n == 0 {
-		return ErrInvalidCredentials
+		return ErrPasswordChanged
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ? AND id_hash <> ?`, id, tokenHash(keep)); err != nil {
 		return fmt.Errorf("end other sessions: %w", err)
