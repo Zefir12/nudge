@@ -95,7 +95,7 @@ async function onLogout() {
 }
 
 .brand {
-  --logo-height: 1.5rem;
+  --logo-height: 2.1rem;
 
   flex-shrink: 0;
   width: calc(248px - 1.25rem - 1rem);
