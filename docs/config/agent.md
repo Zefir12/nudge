@@ -14,10 +14,10 @@ docker run -d --name nudge-agent --restart unless-stopped \
   registrydedic.zefirlabs.net/nudge-agent:latest agent
 ```
 
-The server image still runs `nudge agent` for hosts set up before the split, with a
-warning at start. To move one, change its image to `nudge-agent` and keep the same
-`/data` volume (the agent's credentials are in `agent.json` there), no new join token
-needed. Keep the server and the agents on the same tag; the tunnel's protocol version
+The server image (`nudge`) runs `nudge agent` too, and is just as valid an agent;
+`nudge-agent` is the smaller one (no API, web UI or SQLite). To switch a host between
+them, change its image and keep the same `/data` volume (the agent's credentials are in
+`agent.json` there), no new join token needed. Keep the server and the agents on the same tag; the tunnel's protocol version
 refuses an agent the server can't talk to.
 
 It also shows the same agent as a compose file:
