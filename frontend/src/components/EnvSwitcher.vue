@@ -2,8 +2,8 @@
 import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
+import { envIcon } from '../envIcon';
 import { environments, loadEnvironments, rememberEnvironment } from '../environments';
-import EnvStatus from './EnvStatus.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -41,21 +41,25 @@ onMounted(async () => {
   <div class="switcher">
     <label class="field">
       <span class="muted">Environment</span>
-      <select :value="current" :disabled="!environments" @change="onChange">
-        <option v-if="!current" value="" disabled>Choose…</option>
-        <option
-          v-else-if="environments && !environments.some((e) => String(e.id) === current)"
-          :value="current"
-          disabled
-        >
-          Unknown environment
-        </option>
-        <option v-for="env in environments ?? []" :key="env.id" :value="String(env.id)">
-          {{ env.name }}{{ env.online ? '' : ' (offline)' }}
-        </option>
-      </select>
+      <span class="pick" :class="{ 'has-icon': currentEnv }">
+        <svg v-if="currentEnv" viewBox="0 0 24 24" aria-hidden="true">
+          <path :d="envIcon(currentEnv.name)" />
+        </svg>
+        <select :value="current" :disabled="!environments" @change="onChange">
+          <option v-if="!current" value="" disabled>Choose…</option>
+          <option
+            v-else-if="environments && !environments.some((e) => String(e.id) === current)"
+            :value="current"
+            disabled
+          >
+            Unknown environment
+          </option>
+          <option v-for="env in environments ?? []" :key="env.id" :value="String(env.id)">
+            {{ env.name }}{{ env.online ? '' : ' (offline)' }}
+          </option>
+        </select>
+      </span>
     </label>
-    <EnvStatus v-if="currentEnv" :env="currentEnv" />
     <span v-if="error" class="error">{{ error }}</span>
   </div>
 </template>
@@ -65,10 +69,6 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
-  padding: 0.6rem 0.65rem 0.7rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
 }
 
 .field {
@@ -84,14 +84,35 @@ onMounted(async () => {
   letter-spacing: 0.12em;
 }
 
+.pick {
+  position: relative;
+  display: block;
+}
+
+.pick svg {
+  position: absolute;
+  top: 50%;
+  left: 0.55rem;
+  width: 16px;
+  height: 16px;
+  color: var(--accent);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.has-icon select {
+  padding-left: 2rem;
+}
+
 select {
   width: 100%;
   font-family: var(--font-display);
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
-}
-
-.switcher > :deep(.status) {
-  font-size: 12px;
 }
 </style>

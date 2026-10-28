@@ -178,8 +178,9 @@ code {
 input,
 select,
 textarea {
-  padding: 0.45rem 0.65rem;
+  padding: 0.25rem 0.5rem;
   font: inherit;
+  font-size: 13px;
   color: var(--text);
   background: rgb(255 255 255 / 3.5%);
   border: 1px solid var(--border-strong);
@@ -191,8 +192,55 @@ textarea::placeholder {
   color: var(--muted);
 }
 
+/* The chevron is drawn here so it sits as far from the right edge as from top and bottom. */
+select {
+  padding-right: 1.9rem;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2397979d' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.55rem center;
+  background-size: 12px;
+  appearance: none;
+}
+
 select option {
   background: var(--surface-solid);
+}
+
+/* Where the browser lets the open list be styled, it follows the theme instead of the
+   system's white border and blue highlight. Elsewhere the list stays native. */
+@supports (appearance: base-select) {
+  select,
+  ::picker(select) {
+    appearance: base-select;
+  }
+
+  select::picker-icon,
+  select option::checkmark {
+    display: none;
+  }
+
+  ::picker(select) {
+    margin-top: 2px;
+    padding: 0.2rem 0;
+    background: var(--surface-solid);
+    border: 1px solid var(--accent-border);
+    border-radius: var(--radius);
+  }
+
+  select option {
+    padding: 0.25rem 0.5rem;
+  }
+
+  select option:hover:not(:disabled),
+  select option:focus-visible {
+    color: var(--text);
+    background: var(--accent-soft);
+    outline: none;
+  }
+
+  select option:checked {
+    color: var(--accent-strong);
+  }
 }
 
 textarea {
@@ -205,9 +253,8 @@ input[type='radio'] {
   accent-color: var(--accent);
 }
 
-input:focus-visible,
-select:focus-visible,
-textarea:focus-visible,
+input[type='checkbox']:focus-visible,
+input[type='radio']:focus-visible,
 button:focus-visible,
 a:focus-visible {
   outline: 2px solid var(--accent-border);
@@ -220,11 +267,18 @@ textarea:focus-visible {
   border-color: var(--accent-border);
 }
 
+/* Fields show no focus ring; only their border changes. */
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+}
+
 button,
 a.button {
-  padding: 0.45rem 0.95rem;
+  padding: 0.25rem 0.7rem;
   font: inherit;
-  font-size: 13.5px;
+  font-size: 12.5px;
   font-weight: 600;
   color: var(--text);
   background: rgb(255 255 255 / 3%);
@@ -314,7 +368,7 @@ th,
 td {
   padding: 0.6rem 0.75rem;
   text-align: left;
-  vertical-align: top;
+  vertical-align: middle;
   border-bottom: 1px solid var(--border);
 }
 

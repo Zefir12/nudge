@@ -12,7 +12,8 @@ only the variables, never raw colours.
   edge fades from transparent to `--accent-border` and back.
 - **Sidebar** (248px, sticky), `AppSidebar.vue`:
   - Global part, the same on every page: account box (avatar initial, name, role, log out),
-    environment picker (`EnvSwitcher`), then Dashboard, Environments, Registries,
+    environment picker (`EnvSwitcher`: no box or status, an icon picked by hashing the
+    environment's name, `envIcon.ts`), then Dashboard, Environments, Registries,
     Notifications, API tokens, Audit log.
   - Per-environment part below a divider: headed by the open (or last used) environment's
     name and lamp; Overview, Stacks, Containers, Images, Volumes, Networks, Events. Pages that
@@ -49,7 +50,7 @@ Dark only for now (`color-scheme: dark`); a light theme would redefine the same 
 Self-hosted in `frontend/src/assets/fonts/` (SIL OFL, licences next to the files), latin subset,
 variable weight. No requests to font CDNs.
 - **Space Grotesk** 600 (`--font-display`): headings, big numbers, the environment picker.
-- **Inter** 400–600 (`--font`): body 14px, nav 13.5px, buttons 13.5px/600.
+- **Inter** 400–600 (`--font`): body 14px, nav 13.5px, buttons 12.5px/600, fields 13px.
 - **JetBrains Mono** (`--mono`): IDs, digests, ports, addresses, versions.
 - Labels above groups: 11px, 600, uppercase, letter-spacing 0.12–0.16em (`.eyebrow` in accent,
   table headers and nav groups in `--muted`).
@@ -57,7 +58,12 @@ variable weight. No requests to font CDNs.
 ## Components
 - **Buttons**: default is a faint fill with `--border-strong`; `.primary` is the orange
   gradient with an inner highlight and a soft orange shadow; `.danger` is red text on
-  `--danger-soft`. 3px radius.
+  `--danger-soft`. 3px radius, compact padding (0.25rem 0.7rem).
+- **Fields** (input, select, textarea): compact padding (0.25rem 0.5rem); no focus ring,
+  the border turns `--accent-border`. Selects draw their own chevron, inset as far from the
+  right as from top and bottom; where `appearance: base-select` is supported the open list
+  is themed (orange border, `--accent-soft` highlight).
+- **Tables**: cells centred vertically.
 - **Lamps** (`.lamp`, `.on`, `.bad`, `.warn`): 8px dots that glow in their colour; off is `--faint`.
 - **Chips** (`.chip`): uppercase pill naming a kind (socket, agent).
 - **Status badges**: 2px radius, tinted background (`--ok-soft`, `--accent-soft`, …).
