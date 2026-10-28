@@ -86,7 +86,7 @@ func realMain(ctx context.Context, args []string, getenv func(string) string, st
 		}
 		return 0
 	case "agent":
-		return cli.Agent(ctx, args, getenv, stderr, "agents have their own image now: switch this host to registrydedic.zefirlabs.net/nudge-agent (deploy/agent.compose.yml)")
+		return cli.Agent(ctx, args, getenv, stderr, "")
 	case "deploy":
 		return runDeploy(ctx, args, getenv, stdout, stderr)
 	case "probe":

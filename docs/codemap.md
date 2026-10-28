@@ -23,7 +23,7 @@ lets patterns in `publicRoutes` through without either credential, refuses token
 ## Backend packages (backend/)
 | Package | What | Entry points |
 |---|---|---|
-| `cmd/nudge` | the server image's binary: subcommands, wiring, graceful shutdown; deploy.go: `nudge deploy` (CI client of the progress stream); `agent` (deprecated, warns) and `probe` come from `internal/cli` | `realMain`, `serve`, `runDeploy` |
+| `cmd/nudge` | the server image's binary: subcommands, wiring, graceful shutdown; deploy.go: `nudge deploy` (CI client of the progress stream); `agent` and `probe` come from `internal/cli` | `realMain`, `serve`, `runDeploy` |
 | `cmd/nudge-agent` | the agent image's binary: `agent` (default), `probe`, `version`; `TestServerCodeLeftOut` keeps server packages out of it | `realMain` |
 | `internal/cli` | subcommands both binaries run: `Agent` (config, wiring of the agent with its stacks runner and prober), `Probe` (the HTTP check's helper); data directory helpers `serve` shares | `Agent`, `Probe`, `PrepareDataDir`, `ComposeConfigDir`, `CleanComposeConfigs` |
 | `internal/probe` | a deployment's HTTP check: a helper container from nudge's own image (server or agent) in the target's network namespace runs `probe` against 127.0.0.1 (exit codes say the result) | `New`, `Options`, `Prober.Run`, `Request`, `Check`, `FailedError`, `ErrNoSelf`; tests use a small fake `Docker` |

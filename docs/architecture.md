@@ -33,7 +33,7 @@ hosts (a smaller attack surface, and a binary about half the size). Both images 
 docker-compose, since stacks deploy next to the daemon they run on. The shared
 subcommands (`agent`, `probe`) live in `internal/cli`; a test in `cmd/nudge-agent` fails
 if the agent binary starts importing server packages. The server binary keeps `nudge
-agent`, with a warning, for hosts set up before the split. Server and agent of different
+agent` as well: either image is a valid agent, `nudge-agent` is the smaller one. Server and agent of different
 versions still meet through the tunnel's protocol version check.
 
 ## Docker access
