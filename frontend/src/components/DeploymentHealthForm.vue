@@ -1,4 +1,5 @@
-<!-- A deployment's health checks: what makes a run succeed, and rollback. Emits save
+<!-- A deployment's health checks: what makes a run succeed, rollback and the clean-up
+     of one-off containers after it. Emits save
      with the settings; the parent saves them. -->
 <script setup lang="ts">
 import { ref, watch } from 'vue';
@@ -17,6 +18,7 @@ const path = ref('/');
 const status = ref(200);
 const timeout = ref(5);
 const rollback = ref(false);
+const removeOneOffs = ref(false);
 
 watch(
   () => props.health,
@@ -30,6 +32,7 @@ watch(
     status.value = h.http?.status ?? 200;
     timeout.value = h.http?.timeout_seconds ?? 5;
     rollback.value = h.rollback;
+    removeOneOffs.value = h.remove_oneoffs;
   },
   { immediate: true },
 );
@@ -48,6 +51,7 @@ function onSubmit() {
         }
       : undefined,
     rollback: rollback.value,
+    remove_oneoffs: removeOneOffs.value,
   });
 }
 </script>
@@ -95,6 +99,11 @@ function onSubmit() {
     <label class="check">
       <input v-model="rollback" name="rollback" type="checkbox" />
       Roll back when a check fails (redeploys the replaced values; the run still fails)
+    </label>
+    <label class="check">
+      <input v-model="removeOneOffs" name="remove-oneoffs" type="checkbox" />
+      Remove finished one-off containers after a successful run (exited with 0, restart "no", such as
+      migrations; their logs go with them)
     </label>
     <div>
       <button type="submit" :disabled="busy">Save health checks</button>

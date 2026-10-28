@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/moby/moby/api/types/container"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/deployments"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/docker/dockertest"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/probe"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/stacks"
 )
@@ -245,12 +247,110 @@ func TestDeployHealth(t *testing.T) {
 	}
 }
 
+func TestDeployRemoveOneOffs(t *testing.T) {
+	t.Parallel()
+	errRemove := errors.New("removal in progress")
+	tests := []struct {
+		name     string
+		health   string
+		setup    func(ht *healthTest)
+		status   string
+		removed  []string
+		warnings []string
+	}{
+		{name: "off by default", health: `{}`, status: "succeeded"},
+		{name: "removes finished one-off containers", health: `{"remove_oneoffs":true}`, status: "succeeded", removed: []string{"m1", "n1"}},
+		{
+			name: "kept when the check fails", health: `{"remove_oneoffs":true,"http":{"service":"app","port":8080}}`,
+			setup:  func(ht *healthTest) { ht.runner.probeErr = &probe.FailedError{Msg: "answered another status than 200"} },
+			status: "failed",
+		},
+		{
+			name: "kept when the run rolls back", health: `{"remove_oneoffs":true,"http":{"service":"app","port":8080},"rollback":true}`,
+			setup:  func(ht *healthTest) { ht.runner.probeErr = &probe.FailedError{Msg: "answered another status than 200"} },
+			status: "rolled_back",
+		},
+		{
+			name: "a failed removal is a warning", health: `{"remove_oneoffs":true}`,
+			setup: func(ht *healthTest) {
+				ht.fake.FailAction = func(a dockertest.Action) error {
+					if a.Name == "remove" {
+						return errRemove
+					}
+					return nil
+				}
+			},
+			status: "succeeded", warnings: []string{"couldn't remove the finished one-off container web-migrate-1", "couldn't remove the finished one-off container web-init-1"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ht := newHealthTest(t, tt.health)
+			labels := func(stack, svc string) map[string]string {
+				return map[string]string{stacks.ProjectLabel: stack, stacks.ServiceLabel: svc}
+			}
+			exited := func(code int, restart container.RestartPolicyMode) container.InspectResponse {
+				return container.InspectResponse{
+					State:      &container.State{Status: container.StateExited, ExitCode: code},
+					HostConfig: &container.HostConfig{RestartPolicy: container.RestartPolicy{Name: restart}},
+				}
+			}
+			onRun := ht.runner.onRun
+			ht.runner.onRun = func() {
+				onRun()
+				ht.fake.Containers = append(ht.fake.Containers,
+					container.Summary{ID: "m1", Names: []string{"/web-migrate-1"}, State: container.StateExited, Labels: labels("web", "migrate")},
+					container.Summary{ID: "f1", Names: []string{"/web-seed-1"}, State: container.StateExited, Labels: labels("web", "seed")},
+					container.Summary{ID: "r1", Names: []string{"/web-cron-1"}, State: container.StateExited, Labels: labels("web", "cron")},
+					container.Summary{ID: "o1", Names: []string{"/shop-migrate-1"}, State: container.StateExited, Labels: labels("shop", "migrate")},
+					// Listed as exited, but running (or restarting) when inspected.
+					container.Summary{ID: "s1", Names: []string{"/web-worker-1"}, State: container.StateExited, Labels: labels("web", "worker")},
+					container.Summary{ID: "s2", Names: []string{"/web-queue-1"}, State: container.StateExited, Labels: labels("web", "queue")},
+					// Exited with 0, no restart policy known.
+					container.Summary{ID: "n1", Names: []string{"/web-init-1"}, State: container.StateExited, Labels: labels("web", "init")},
+					// Gone by the time it is inspected.
+					container.Summary{ID: "g1", Names: []string{"/web-gone-1"}, State: container.StateExited, Labels: labels("web", "gone")},
+				)
+				ht.fake.ContainerDetails["a2"] = container.InspectResponse{ID: "a2",
+					State: &container.State{Status: container.StateRunning, Running: true}, HostConfig: &container.HostConfig{}}
+				ht.fake.ContainerDetails["s1"] = container.InspectResponse{State: &container.State{Status: container.StateRunning, Running: true}}
+				ht.fake.ContainerDetails["s2"] = container.InspectResponse{State: &container.State{Status: container.StateRestarting, Restarting: true}}
+				ht.fake.ContainerDetails["n1"] = container.InspectResponse{State: &container.State{Status: container.StateExited}}
+				ht.fake.ContainerDetails["m1"] = exited(0, container.RestartPolicyDisabled)
+				ht.fake.ContainerDetails["f1"] = exited(1, container.RestartPolicyDisabled)
+				ht.fake.ContainerDetails["r1"] = exited(0, container.RestartPolicyUnlessStopped)
+				ht.fake.ContainerDetails["o1"] = exited(0, "")
+			}
+			if tt.setup != nil {
+				tt.setup(ht)
+			}
+			_, run := ht.deploy(t)
+			if run.Status != tt.status {
+				t.Fatalf("status = %s %q, want %s", run.Status, run.Error, tt.status)
+			}
+			var removed []string
+			for _, a := range ht.fake.Actions() {
+				if a.Name == "remove" {
+					removed = append(removed, a.ID)
+				}
+			}
+			if !slices.Equal(removed, tt.removed) {
+				t.Errorf("removed = %q, want %q", removed, tt.removed)
+			}
+			if !slices.Equal(run.Warnings, tt.warnings) {
+				t.Errorf("warnings = %q, want %q", run.Warnings, tt.warnings)
+			}
+		})
+	}
+}
+
 func TestDeployHealthSettings(t *testing.T) {
 	t.Parallel()
 	st := newDeploymentTest(t)
 	rec := do(t, st.h, request{method: "PATCH", path: "/api/v1/deployments/shop", cookie: st.cookie,
-		body: `{"health":{"wait_seconds":90,"http":{"service":"app","port":80},"rollback":true}}`})
-	want := `"health":{"wait_seconds":90,"stable_seconds":0,"http":{"service":"app","port":80,"path":"/","status":200,"timeout_seconds":5},"rollback":true}`
+		body: `{"health":{"wait_seconds":90,"http":{"service":"app","port":80},"rollback":true,"remove_oneoffs":true}}`})
+	want := `"health":{"wait_seconds":90,"stable_seconds":0,"http":{"service":"app","port":80,"path":"/","status":200,"timeout_seconds":5},"rollback":true,"remove_oneoffs":true}`
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), want) {
 		t.Errorf("set health = %d %s", rec.Code, rec.Body)
 	}

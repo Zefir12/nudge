@@ -32,6 +32,9 @@ type Health struct {
 	HTTP *HTTPCheck `json:"http,omitempty"`
 	// Rollback redeploys the replaced variable values when a check fails.
 	Rollback bool `json:"rollback"`
+	// RemoveOneOffs removes the stack's finished one-off containers (exited with 0,
+	// restart policy no) once a run has succeeded.
+	RemoveOneOffs bool `json:"remove_oneoffs"`
 }
 
 // HTTPCheck is a GET of http://127.0.0.1:Port/Path inside a container of Service.

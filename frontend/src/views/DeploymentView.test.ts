@@ -14,7 +14,7 @@ const shop = (can: string[] = all, role = 'owner') => ({
   stack: 'web',
   description: '',
   variables: ['API_IMAGE'],
-  health: { wait_seconds: 0, stable_seconds: 0, rollback: false },
+  health: { wait_seconds: 0, stable_seconds: 0, rollback: false, remove_oneoffs: false },
   created_at: '2026-10-26T12:00:00Z',
   updated_at: '2026-10-26T12:00:00Z',
   role,
@@ -166,15 +166,17 @@ describe('DeploymentView', () => {
     await wrapper.find('input[name="http-port"]').setValue('8080');
     await wrapper.find('input[name="http-path"]').setValue('/health');
     await wrapper.find('input[name="rollback"]').setValue(true);
+    await wrapper.find('input[name="remove-oneoffs"]').setValue(true);
     await wrapper.find('form.health').trigger('submit');
     await flushPromises();
     const patch = fetch.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH');
-    expect(JSON.parse(String((patch?.[1] as RequestInit).body))).toEqual({
+    expect(JSON.parse(String((patch?.[1] as RequestInit | undefined)?.body))).toEqual({
       health: {
         wait_seconds: 60,
         stable_seconds: 0,
         http: { service: 'web', port: 8080, path: '/health', status: 200, timeout_seconds: 5 },
         rollback: true,
+        remove_oneoffs: true,
       },
     });
   });

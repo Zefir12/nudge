@@ -1076,7 +1076,7 @@ even when you can't see that deployment); at most 1000 deployments.
   skipped or worked around (say, a check an older agent can't run).
 - **Health.** `health` (on create and `PATCH`; a `PATCH` replaces all of it) says when a
   run succeeded: `{"wait_seconds": 0-1800, "stable_seconds": 0-600, "http": {"service",
-  "port", "path": "/", "status": 200, "timeout_seconds": 5}, "rollback": false}`, `http`
+  "port", "path": "/", "status": 200, "timeout_seconds": 5}, "rollback": false, "remove_oneoffs": false}`, `http`
   optional, the defaults shown. `wait_seconds` has compose wait for the services to run
   and pass their healthchecks (`up --wait`). `stable_seconds` then requires every
   container to keep running without a restart (a container that exited with 0 is a
@@ -1085,7 +1085,10 @@ even when you can't see that deployment); at most 1000 deployments.
   ends the run `failed` with an `error` naming the step and the service, and puts the
   `.env` back; with `rollback` the replaced values are also deployed again (recorded in
   the update history) and the run ends `rolled_back` (`502` like a failure). Agents built
-  before a check skip it with a warning. docs/deployments.md is the how-to.
+  before a check skip it with a warning. With `remove_oneoffs`, a run that ended
+  `succeeded` then removes the stack's containers that exited with 0 and have restart
+  policy `no` (migrations); the progress names them, and a failed removal is a warning.
+  docs/deployments.md is the how-to.
 - **Progress stream.** `POST .../deploys?stream=1` answers `200` with JSON lines once the
   run is queued (errors before that are ordinary JSON errors): `{"run": 7, "message":
   "queued"}`, then progress `{"step", "service", "message", "warning"}`, an empty `{}`

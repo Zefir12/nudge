@@ -110,6 +110,9 @@ func (s *server) deployDeployment(ctx context.Context, d deployments.Deployment,
 		problem = s.checkDeployment(ctx, runner, c, d, report)
 	}
 	if problem == "" {
+		if h.RemoveOneOffs {
+			s.removeOneOffs(ctx, c, d, run, report)
+		}
 		report(deployments.Progress{Message: "deployed"})
 		return out
 	}
@@ -135,6 +138,71 @@ func (s *server) deployDeployment(ctx context.Context, d deployments.Deployment,
 	out.Error += "; rolled back to the previous values"
 	report(deployments.Progress{Message: "rolled back to the previous values"})
 	return out
+}
+
+// removeOneOffs removes the containers of a succeeded run's stack that finished: exited
+// with 0 and not restarted by Docker (a migration, a seed). Compose creates them again
+// on the next up. A failure is a warning on the run; the caller holds the stack.
+func (s *server) removeOneOffs(ctx context.Context, c docker.Client, d deployments.Deployment, run deployments.Run, report deployments.Report) {
+	warn := func(msg string, err error) {
+		s.log.Warn("deployment run: remove one-off containers", "deployment", d.Name, "run", run.ID, "err", err)
+		report(deployments.Progress{Message: msg, Warning: true})
+	}
+	listCtx, cancel := context.WithTimeout(ctx, dockerTimeout)
+	items, err := projectContainers(listCtx, c, d.Stack)
+	cancel()
+	if err != nil {
+		warn("couldn't list the stack's containers to remove the finished one-off ones", err)
+		return
+	}
+	var removed []string
+	for _, it := range items {
+		if it.State != container.StateExited || it.Labels[stacks.ProjectLabel] != d.Stack {
+			continue
+		}
+		name := it.ID
+		if len(it.Names) > 0 {
+			name = strings.TrimPrefix(it.Names[0], "/")
+		}
+		ok, err := s.removeOneOff(ctx, c, it.ID)
+		if err != nil {
+			warn("couldn't remove the finished one-off container "+name, err)
+		}
+		if ok {
+			removed = append(removed, name)
+		}
+	}
+	if len(removed) > 0 {
+		s.log.Info("deployment run: removed one-off containers", "deployment", d.Name, "run", run.ID, "containers", removed)
+		report(deployments.Progress{Message: "removed finished one-off containers: " + strings.Join(removed, ", ")})
+	}
+}
+
+// removeOneOff removes container id if it is a finished one-off; ok says it was removed.
+// Without Force, the daemon refuses one that started again in between.
+func (s *server) removeOneOff(ctx context.Context, c docker.Client, id string) (ok bool, err error) {
+	ctx, cancel := context.WithTimeout(ctx, dockerTimeout)
+	defer cancel()
+	info, err := c.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
+	if docker.NotFound(err) || err == nil && !finishedOneOff(info.Container) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if _, err := c.ContainerRemove(ctx, id, client.ContainerRemoveOptions{}); err != nil && !docker.NotFound(err) {
+		return false, err
+	}
+	return true, nil
+}
+
+// finishedOneOff is a container that exited with 0 and that Docker doesn't restart.
+func finishedOneOff(info container.InspectResponse) bool {
+	st := info.State
+	if st == nil || st.Status != container.StateExited || st.Running || st.Restarting || st.ExitCode != 0 {
+		return false
+	}
+	return info.HostConfig == nil || info.HostConfig.RestartPolicy.IsNone()
 }
 
 // errRollbackExit is a rollback whose compose up failed.

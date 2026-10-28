@@ -1285,12 +1285,14 @@ export type DeploymentRole = 'viewer' | 'deployer' | 'maintainer' | 'owner';
 
 // DeploymentHealth says when a deployment's run succeeded: compose waits up to
 // wait_seconds for healthy services, every container keeps running for stable_seconds,
-// then the HTTP check runs; rollback redeploys the replaced values when one fails.
+// then the HTTP check runs; rollback redeploys the replaced values when one fails, and
+// remove_oneoffs removes the containers that exited with 0 after a run succeeded.
 export interface DeploymentHealth {
   wait_seconds: number;
   stable_seconds: number;
   http?: DeploymentHttpCheck;
   rollback: boolean;
+  remove_oneoffs: boolean;
 }
 
 // DeploymentHttpCheck is a GET of http://127.0.0.1:port/path inside a container of service.
