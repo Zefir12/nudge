@@ -135,9 +135,11 @@ var publicRoutes = map[string]bool{
 var sessionOnlyRoutes = map[string]bool{
 	"POST /api/v1/tokens":                    true,
 	"POST /api/v1/deployments/{name}/tokens": true,
-	// A user's password is a credential too.
-	"POST /api/v1/users":       true,
-	"PATCH /api/v1/users/{id}": true,
+	// A user's password is a credential too; a token mustn't be able to take over the
+	// account by changing it.
+	"POST /api/v1/auth/password": true,
+	"POST /api/v1/users":         true,
+	"PATCH /api/v1/users/{id}":   true,
 	// A backup holds the key to the stored registry passwords and every credential hash.
 	"POST /api/v1/backup": true,
 	// A join token enrolls an agent, whose credentials stay valid until revoked.
@@ -157,6 +159,8 @@ var userRoutes = map[string]bool{
 	"/api/":                    true,
 	"GET /api/v1/auth/me":      true,
 	"POST /api/v1/auth/logout": true,
+	// Their own password.
+	"POST /api/v1/auth/password": true,
 	// Their own API tokens.
 	"GET /api/v1/tokens":         true,
 	"POST /api/v1/tokens":        true,
@@ -224,6 +228,7 @@ var routes = []route{
 	{"POST /api/v1/setup", (*server).setup},
 	{"POST /api/v1/auth/login", (*server).login},
 	{"POST /api/v1/auth/logout", (*server).logout},
+	{"POST /api/v1/auth/password", (*server).changePassword},
 	{"GET /api/v1/auth/me", (*server).me},
 	{"GET /api/v1/auth/methods", (*server).authMethods},
 	{"GET /api/v1/auth/oidc/login", (*server).oidcLogin},

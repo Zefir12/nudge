@@ -79,6 +79,8 @@ export interface User {
   role: Role;
   // admin: the user may do admin-only actions (the UI hides them otherwise).
   admin: boolean;
+  // sso: signs in through the SSO provider; no password to change in nudge.
+  sso: boolean;
 }
 
 export interface Credentials {
@@ -104,6 +106,10 @@ export const getAuthMethods = () =>
 // ssoLoginUrl is where the browser goes (a navigation, not a fetch) to sign in with SSO.
 export const ssoLoginUrl = (redirect: string) =>
   `/api/v1/auth/oidc/login?redirect=${encodeURIComponent(redirect)}`;
+// changePassword changes the signed-in user's password; their other sessions end.
+export const changePassword = (current: string, next: string) =>
+  apiFetch<void>('/auth/password', post({ current, new: next }));
+
 export const getMe = () => apiFetch<User>('/auth/me', undefined, { redirectOn401: false });
 
 export interface Token {

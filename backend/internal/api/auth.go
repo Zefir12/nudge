@@ -35,10 +35,12 @@ type userResponse struct {
 	Role auth.Role `json:"role"`
 	// Admin says whether the user may do admin-only actions, so the UI can hide them.
 	Admin bool `json:"admin"`
+	// SSO says the user signs in through the SSO provider and has no password in nudge.
+	SSO bool `json:"sso"`
 }
 
 func (s *server) toUserResponse(u auth.User) userResponse {
-	return userResponse{ID: u.ID, Username: u.Username, CreatedAt: u.CreatedAt.UTC(), Role: u.Role, Admin: isAdmin(u)}
+	return userResponse{ID: u.ID, Username: u.Username, CreatedAt: u.CreatedAt.UTC(), Role: u.Role, Admin: isAdmin(u), SSO: u.SSO}
 }
 
 type credentials struct {
@@ -128,6 +130,58 @@ func (s *server) startSession(w http.ResponseWriter, r *http.Request, c credenti
 	s.log.Info("logged in", "username", sess.User.Username, "ip", ip)
 	s.setSessionCookie(w, r, sess.Token, sess.ExpiresAt, 0)
 	s.writeJSON(w, code, s.toUserResponse(sess.User))
+}
+
+// changePassword changes the logged-in user's own password and ends their other
+// sessions; this one stays.
+func (s *server) changePassword(w http.ResponseWriter, r *http.Request) {
+	u, ok := userFrom(r.Context())
+	if !ok {
+		s.writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	var req struct {
+		Current string `json:"current"`
+		New     string `json:"new"`
+	}
+	if !s.decodeJSON(w, r, &req) {
+		return
+	}
+	ip := clientIP(r)
+	err := s.auth.ChangePassword(r.Context(), ip, u.ID, sessionToken(r), req.Current, req.New)
+	var limited *auth.RateLimitedError
+	var inputErr *auth.InputError
+	switch {
+	case errors.As(err, &inputErr):
+		s.writeError(w, http.StatusBadRequest, inputErr.Msg)
+		return
+	case errors.As(err, &limited):
+		s.log.Warn("password change rate limited", "username", u.Username, "ip", ip)
+		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(limited.RetryAfter.Seconds()))))
+		s.writeError(w, http.StatusTooManyRequests, "too many failed attempts, try again later")
+		return
+	case errors.Is(err, auth.ErrBusy):
+		w.Header().Set("Retry-After", "1")
+		s.writeError(w, http.StatusServiceUnavailable, "too many password checks at once, try again")
+		return
+	case errors.Is(err, context.Canceled):
+		return
+	case errors.Is(err, auth.ErrUserNotFound):
+		s.writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	case errors.Is(err, auth.ErrPasswordChanged):
+		s.writeError(w, http.StatusConflict, "your password was changed meanwhile; sign in again")
+		return
+	case errors.Is(err, auth.ErrInvalidCredentials):
+		s.log.Warn("password change: wrong current password", "username", u.Username, "ip", ip)
+		s.writeError(w, http.StatusForbidden, "the current password is wrong")
+		return
+	case err != nil:
+		s.internalError(w, "change password", err)
+		return
+	}
+	s.log.Info("password changed", "username", u.Username, "ip", ip)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 type logoutResponse struct {

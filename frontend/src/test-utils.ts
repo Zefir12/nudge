@@ -31,6 +31,7 @@ export const admin = {
   created_at: '2026-10-24T12:00:00Z',
   role: 'admin' as const,
   admin: true,
+  sso: false,
 };
 // user is a signed-in user without the admin role.
 export const user = {
@@ -39,6 +40,7 @@ export const user = {
   created_at: '2026-10-24T12:00:00Z',
   role: 'user' as const,
   admin: false,
+  sso: false,
 };
 
 // FakeWebSocket stands in for the browser's WebSocket: stubSockets() installs it and

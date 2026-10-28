@@ -94,10 +94,10 @@ function globalActive(to: string, exact?: boolean) {
   <aside class="sidebar">
     <div v-if="currentUser" class="account">
       <span class="avatar" aria-hidden="true">{{ currentUser.username.slice(0, 1).toUpperCase() }}</span>
-      <span class="who">
+      <RouterLink to="/account" class="who" title="Your account">
         <span class="name">{{ currentUser.username }}</span>
         <span class="role">{{ currentUser.admin ? 'Admin' : 'User' }}</span>
-      </span>
+      </RouterLink>
       <button type="button" class="logout" aria-label="Log out" title="Log out" @click="emit('logout')">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" />
@@ -187,6 +187,12 @@ function globalActive(to: string, exact?: boolean) {
   flex-grow: 1;
   min-width: 0;
   line-height: 1.3;
+  color: inherit;
+  text-decoration: none;
+}
+
+.who:hover .name {
+  color: var(--accent-strong);
 }
 
 .name {
