@@ -128,6 +128,12 @@ var sessionOnlyRoutes = map[string]bool{
 	// A user's password is a credential too.
 	"POST /api/v1/users":       true,
 	"PATCH /api/v1/users/{id}": true,
+	// A join token enrolls an agent, whose credentials stay valid until revoked.
+	"POST /api/v1/environments":                   true,
+	"POST /api/v1/environments/{env}/join-tokens": true,
+	// A deploy webhook's secret triggers deploys as its creator.
+	"POST /api/v1/environments/{env}/webhooks":             true,
+	"POST /api/v1/environments/{env}/webhooks/{id}/secret": true,
 }
 
 // userRoutes are the routes open to users; every other authenticated route is for admins

@@ -97,9 +97,9 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | POST | `/api/v1/environments/{env}/updates/check` | session | check the environment's images now |
 | GET | `/api/v1/environments/{env}/updates/history` | session | updates made through nudge, with the image each replaced |
 | GET | `/api/v1/environments/{env}/webhooks` | session | the deploy webhooks the user may see (`?container=` / `?stack=` name); see Webhooks |
-| POST | `/api/v1/environments/{env}/webhooks` | session | create a deploy webhook `{"name", "container" or "stack", "tag_filter"}`; `201` with its secret |
+| POST | `/api/v1/environments/{env}/webhooks` | session only | create a deploy webhook `{"name", "container" or "stack", "tag_filter"}`; `201` with its secret |
 | DELETE | `/api/v1/environments/{env}/webhooks/{id}` | session | delete a deploy webhook and its runs; `204` |
-| POST | `/api/v1/environments/{env}/webhooks/{id}/secret` | session | new secret for a deploy webhook; the old one stops working at once |
+| POST | `/api/v1/environments/{env}/webhooks/{id}/secret` | session only | new secret for a deploy webhook; the old one stops working at once |
 | GET | `/api/v1/environments/{env}/webhooks/{id}/runs` | session | a deploy webhook's runs, newest first |
 | POST | `/api/v1/hooks/{id}` | public (webhook secret) | trigger a deploy webhook: pull and redeploy its target; see Webhooks |
 | GET | `/api/v1/deployments` | session | the deployments you may view (`?environment=` narrows), by name; see Deployments |
@@ -207,6 +207,8 @@ nudge stores its SHA-256 hash. `GET /api/v1/tokens` lists the same objects witho
 - The last enabled admin can't be demoted, disabled or deleted: `409`. Concurrent changes
   can't get around this (each change checks it in the statement that writes).
 - Creating a user and changing one are session-only, as a password is a credential.
+  So are the other routes that mint a credential: creating an agent environment or a join
+  token, creating a deploy webhook or rotating its secret, and creating a deploy token.
 - `DELETE /api/v1/users/{id}` removes the user and everything they own: sessions, API
   tokens, deploy tokens, deploy webhooks and deployment memberships.
 - Every change is in the audit log with the username as the target.
@@ -390,6 +392,9 @@ refuses with `409 over your allowance: ...` if the new total is over:
 - `POST /api/v1/environments/{env}/join-tokens` replaces the environment's join token
   (`201`, same object as `join_token`), for an agent that never enrolled or lost its
   credentials. Existing credentials keep working until a new agent enrolls.
+- Creating an agent environment and creating a join token are session-only: an API token
+  gets `403`, since an agent enrolled with the join token keeps its credentials after the
+  API token is revoked.
 - `DELETE /api/v1/environments/{env}/credentials` revokes the agent: deletes its
   credentials and any pending join token (`204`). The environment stays.
   Both answer `409` for a non-agent environment.
@@ -949,8 +954,9 @@ request, like the agent join command).
   all. nudge has no roles yet, so today every user is an admin: any user can list,
   rotate and delete any user's webhooks (and, with the new secret, trigger them), and the
   runs still go as the creator, so the audit log and update history name the creator,
-  not the user who rotated the secret. Deleting a user deletes their webhooks. API tokens
-  can manage webhooks like sessions (scoped tokens are #33).
+  not the user who rotated the secret. Deleting a user deletes their webhooks. Creating a
+  webhook and rotating its secret are session-only (an API token gets `403`), as the
+  secret outlives the token's revocation; API tokens can list, delete and read the runs.
 - `last_status` is the newest run's `status` (below), `""` before the first run.
 - `GET .../webhooks/{id}/runs` lists the runs, newest first, at most 50 per webhook:
   `{"id": 7, "trigger": "signature", "status": "updated", "queued_at": "...",

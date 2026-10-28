@@ -18,6 +18,7 @@ import (
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/image"
 
+	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/deployhooks"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker/dockertest"
@@ -185,12 +186,12 @@ func TestDeployHookOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	// bob is an admin while he creates his webhook, then a user.
-	res, err := db.ExecContext(ctx, `INSERT INTO users (username, password_hash, created_at, updated_at, role) VALUES ('bob', 'x', 0, 0, 'admin')`)
+	bob, err := svc.CreateUser(ctx, "bob", "longenough", auth.RoleAdmin)
 	if err != nil {
 		t.Fatal(err)
 	}
-	bobID, _ := res.LastInsertId()
-	res, err = db.ExecContext(ctx, `INSERT INTO environments (name, kind, created_at) VALUES ('local', 'local', 0)`)
+	bobID := bob.ID
+	res, err := db.ExecContext(ctx, `INSERT INTO environments (name, kind, created_at) VALUES ('local', 'local', 0)`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,6 +208,20 @@ func TestDeployHookOwnership(t *testing.T) {
 		t.Helper()
 		return do(t, h, request{method: method, path: path, body: body, headers: bearer(token)})
 	}
+	// Creating a webhook and rotating its secret are session-only.
+	login := func(name string) *http.Cookie {
+		t.Helper()
+		rec := do(t, h, request{method: "POST", path: "/api/v1/auth/login", body: `{"username":"` + name + `","password":"longenough"}`})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("login %s: %d %s", name, rec.Code, rec.Body)
+		}
+		return sessionCookieOf(t, rec)
+	}
+	adminSession, bobSession := login("admin"), login("bob")
+	inSession := func(cookie *http.Cookie, method, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		return do(t, h, request{method: method, path: path, body: body, cookie: cookie})
+	}
 	path := fmt.Sprintf("/api/v1/environments/%d/webhooks", env)
 	decode := func(rec *httptest.ResponseRecorder) deployHookSecretJSON {
 		t.Helper()
@@ -216,8 +231,11 @@ func TestDeployHookOwnership(t *testing.T) {
 		}
 		return out
 	}
-	adminHook := decode(as(adminToken, "POST", path, `{"name":"deploy","container":"web"}`))
-	bobHook := decode(as(bobToken, "POST", path, `{"name":"deploy","container":"web"}`))
+	if rec := as(adminToken, "POST", path, `{"name":"deploy","container":"web"}`); rec.Code != http.StatusForbidden {
+		t.Errorf("create with a token = %d %s, want 403", rec.Code, rec.Body)
+	}
+	adminHook := decode(inSession(adminSession, "POST", path, `{"name":"deploy","container":"web"}`))
+	bobHook := decode(inSession(bobSession, "POST", path, `{"name":"deploy","container":"web"}`))
 	if _, err := db.ExecContext(ctx, `UPDATE users SET role = 'user' WHERE id = ?`, bobID); err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +262,10 @@ func TestDeployHookOwnership(t *testing.T) {
 			t.Errorf("bob %s %s = %d %s, want 403", req.method, req.path, rec.Code, rec.Body)
 		}
 	}
-	rec := as(adminToken, "POST", path+"/"+bobHook.ID+"/secret", "")
+	if rec := as(adminToken, "POST", path+"/"+bobHook.ID+"/secret", ""); rec.Code != http.StatusForbidden {
+		t.Errorf("rotate with a token = %d %s, want 403", rec.Code, rec.Body)
+	}
+	rec := inSession(adminSession, "POST", path+"/"+bobHook.ID+"/secret", "")
 	if err := json.Unmarshal(rec.Body.Bytes(), &bobHook); rec.Code != http.StatusOK || err != nil {
 		t.Fatalf("admin rotates bob's = %d %s", rec.Code, rec.Body)
 	}
