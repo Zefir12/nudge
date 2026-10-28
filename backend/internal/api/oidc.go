@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"html"
 	"net/http"
 	"net/url"
@@ -99,7 +100,11 @@ func (s *server) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	case errors.As(err, &refused):
 		sub, name := clipLog(refused.Subject), clipLog(refused.Username)
 		s.log.Warn("sso login refused", "reason", refused.Reason, "subject", sub, "username", name, "ip", ip)
-		s.auditSSO(r, name, sub+": "+refused.Reason, http.StatusForbidden)
+		target := sub + ": " + refused.Reason
+		if refused.Reason == oidc.ReasonNoRole {
+			name, target = s.revokeSSO(r, id, name, target)
+		}
+		s.auditSSO(r, name, target, http.StatusForbidden)
 		s.ssoRefusedPage(w, refused.Reason)
 		return
 	case errors.Is(err, context.Canceled):
@@ -151,11 +156,32 @@ func (s *server) auditSSO(r *http.Request, username, target string, status int) 
 	}
 }
 
+// revokeSSO ends the sessions and deletes the API tokens of a user the provider no longer
+// gives a role, so losing it at the provider ends their access at their next sign-in
+// attempt instead of at session expiry. It returns the audit entry's username (the nudge
+// user's, when there is one) and target (with what was revoked).
+func (s *server) revokeSSO(r *http.Request, id oidc.Identity, name, target string) (string, string) {
+	// Not the request's context: a client that goes away mustn't stop the revocation.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), auditTimeout)
+	defer cancel()
+	rev, err := s.auth.RevokeSSO(ctx, id.Issuer, id.Subject)
+	if err != nil {
+		s.log.Error("revoke sso user", "err", err, "subject", clipLog(id.Subject))
+		return name, target + "; revoking sessions and tokens failed"
+	}
+	if rev.Username == "" {
+		return name, target
+	}
+	s.log.Warn("sso user without a role: sessions and tokens revoked", "username", rev.Username,
+		"sessions", rev.Sessions, "tokens", rev.Tokens)
+	return rev.Username, fmt.Sprintf("%s; revoked %d sessions, %d API tokens", target, rev.Sessions, rev.Tokens)
+}
+
 // ssoRefusedPage answers a sign-in the provider vouched for but nudge refuses.
 func (s *server) ssoRefusedPage(w http.ResponseWriter, reason string) {
 	msg := "Your account has no access to nudge. Ask an administrator for a nudge role."
 	switch reason {
-	case "no second factor":
+	case oidc.ReasonNoMFA:
 		msg = "nudge needs a second factor. Sign in again with your authenticator code."
 	case "disabled":
 		msg = "Your nudge account is disabled. Ask an administrator."

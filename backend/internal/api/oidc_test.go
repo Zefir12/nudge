@@ -151,6 +151,52 @@ func TestSSOLoginFailures(t *testing.T) {
 	}
 }
 
+// TestSSOLostRole signs in an admin with a session and an API token. A login refused for
+// a missing second factor keeps both; one refused because the provider took the role
+// away revokes both, audited under the nudge user.
+func TestSSOLostRole(t *testing.T) {
+	t.Parallel()
+	h, svc, db, idp := newSSOHandler(t, func(o *oidc.Options) { o.RequireMFA = true })
+	idp.Edit(func(_, c map[string]any) { c["amr"] = []string{"pwd", "mfa"} })
+	session := sessionCookieOf(t, ssoLogin(t, h, idp, "/", true))
+	users, err := svc.ListUsers(context.Background())
+	if err != nil || len(users) != 1 {
+		t.Fatalf("users = %+v, %v", users, err)
+	}
+	_, secret, err := svc.CreateToken(context.Background(), users[0].ID, "ci")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bearer := map[string]string{"Authorization": "Bearer " + secret}
+	access := func(t *testing.T, want int) {
+		t.Helper()
+		if rec := do(t, h, request{method: http.MethodGet, path: "/api/v1/auth/me", cookie: session}); rec.Code != want {
+			t.Errorf("session = %d, want %d", rec.Code, want)
+		}
+		if rec := do(t, h, request{method: http.MethodGet, path: "/api/v1/environments", headers: bearer}); rec.Code != want {
+			t.Errorf("token = %d, want %d", rec.Code, want)
+		}
+	}
+	access(t, http.StatusOK)
+
+	idp.Edit(nil)
+	if rec := ssoLogin(t, h, idp, "/", true); rec.Code != http.StatusForbidden {
+		t.Fatalf("no second factor: %d %s", rec.Code, rec.Body)
+	}
+	access(t, http.StatusOK)
+
+	idp.Edit(func(_, c map[string]any) { c["roles"], c["amr"] = []string{"none"}, []string{"mfa"} })
+	if rec := ssoLogin(t, h, idp, "/", true); rec.Code != http.StatusForbidden {
+		t.Fatalf("no role: %d %s", rec.Code, rec.Body)
+	}
+	access(t, http.StatusUnauthorized)
+	var username, target string
+	if err := db.QueryRow(`SELECT username, target FROM audit_log WHERE target LIKE '%no role%'`).Scan(&username, &target); err != nil ||
+		username != users[0].Username || target != "user-1: no role; revoked 1 sessions, 1 API tokens" {
+		t.Errorf("audit = %q %q, %v", username, target, err)
+	}
+}
+
 // TestSSOUserRole signs in with the provider's user role: a nudge user, refused on
 // admin routes; a later login with the admin role makes them an admin, and a disabled
 // one is refused.

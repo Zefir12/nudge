@@ -47,6 +47,14 @@ var (
 	ErrState = errors.New("unknown or expired sso login")
 )
 
+// Reasons a RefusedError gives.
+const (
+	// ReasonNoRole: the roles claim has neither the admin nor the user role.
+	ReasonNoRole = "no role"
+	// ReasonNoMFA: a second factor is required and amr lacks mfa.
+	ReasonNoMFA = "no second factor"
+)
+
 // RefusedError is a valid sign-in nudge refuses (no role, no second factor).
 type RefusedError struct {
 	Reason   string
@@ -293,10 +301,10 @@ func (c *Client) Finish(ctx context.Context, state, binding, code string) (Ident
 	}
 	id.Admin = slices.Contains(cl.Roles, c.opts.AdminRole)
 	if !id.Admin && (c.opts.UserRole == "" || !slices.Contains(cl.Roles, c.opts.UserRole)) {
-		return id, &RefusedError{Reason: "no role", Subject: id.Subject, Username: id.Username}
+		return id, &RefusedError{Reason: ReasonNoRole, Subject: id.Subject, Username: id.Username}
 	}
 	if c.opts.RequireMFA && !slices.Contains(cl.Amr, "mfa") {
-		return id, &RefusedError{Reason: "no second factor", Subject: id.Subject, Username: id.Username}
+		return id, &RefusedError{Reason: ReasonNoMFA, Subject: id.Subject, Username: id.Username}
 	}
 	return id, nil
 }

@@ -135,8 +135,10 @@ With an OpenID Connect provider configured (docs/config/server.md, Single sign-o
   session cookie and answers `302` to the saved path. A failure answers `302` to
   `/login?error=sso`; a valid sign-in without the admin or user role (or without `mfa` in `amr`
   when MFA is required) answers a `403` page. Both are audited as
-  `GET /api/v1/auth/oidc/callback` with the subject as target. Every attempt counts against
-  the per-IP login limit until it succeeds.
+  `GET /api/v1/auth/oidc/callback` with the subject as target. A sign-in refused for having
+  no role also ends every session and deletes every API token of that SSO user (if they
+  signed in before); its audit entry names the nudge user and says how many were revoked.
+  Every attempt counts against the per-IP login limit until it succeeds.
 - The session cookie stays `SameSite=Strict`: the callback's redirect follows the
   provider's cross-site navigation, so the cookie isn't sent with that one request, but it
   loads only the web UI, whose own API calls are same-site.
