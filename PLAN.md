@@ -77,7 +77,7 @@ dependency order. Every task includes tests, docs (docs/api.md, docs/config/, RE
 - Deployments for CI with health checks and rollback (#98, #99, #107, #143). ✅
 
 ## Next (gap review, 2026-10-28)
-- Backup/restore of `/data` (#145).
+- Backup/restore of `/data` (#145). ✅
 - Users change their own password (#146); TOTP second factor for local accounts (#147).
 - Stacks from a git repository (#148).
 - Integration tests against a real Docker daemon in CI (#149).

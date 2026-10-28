@@ -44,6 +44,7 @@ describe('AppSidebar', () => {
       'API tokens',
       'Users',
       'Audit log',
+      'Backup',
     ]);
     const envNav = wrapper.find('nav.env');
     expect(envNav.find('.group').text()).toBe('local');

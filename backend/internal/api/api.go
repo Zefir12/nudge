@@ -16,6 +16,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/allowances"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/audit"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/backup"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/deployhooks"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/deployments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
@@ -62,6 +63,8 @@ type Options struct {
 	Deployments *deployments.Service
 	// Usage keeps the measured volume sizes; nil means sizes aren't available.
 	Usage *usage.Service
+	// Backups writes backups; nil means none can be downloaded.
+	Backups *backup.Service
 	// Allowances are the users' allowances, checked before a user's container is
 	// created, recreated, updated or started.
 	Allowances *allowances.Service
@@ -135,6 +138,8 @@ var sessionOnlyRoutes = map[string]bool{
 	// A user's password is a credential too.
 	"POST /api/v1/users":       true,
 	"PATCH /api/v1/users/{id}": true,
+	// A backup holds the key to the stored registry passwords and every credential hash.
+	"POST /api/v1/backup": true,
 	// A join token enrolls an agent, whose credentials stay valid until revoked.
 	"POST /api/v1/environments":                   true,
 	"POST /api/v1/environments/{env}/join-tokens": true,
@@ -227,6 +232,7 @@ var routes = []route{
 	{"POST /api/v1/tokens", (*server).createToken},
 	{"DELETE /api/v1/tokens/{id}", (*server).deleteToken},
 	{"GET /api/v1/audit", (*server).listAudit},
+	{"POST /api/v1/backup", (*server).createBackup},
 	{"GET /api/v1/users", (*server).listUsers},
 	{"POST /api/v1/users", (*server).createUser},
 	{"PATCH /api/v1/users/{id}", (*server).changeUser},
@@ -334,7 +340,7 @@ var routes = []route{
 func New(opts Options) http.Handler {
 	s := &server{
 		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries, audit: opts.Audit, updates: opts.Updates,
-		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, deployments: opts.Deployments, usage: opts.Usage, allowances: opts.Allowances, tenant: opts.Tenant, deniedLabels: opts.DeniedLabels, registryClient: opts.RegistryClient,
+		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, deployments: opts.Deployments, usage: opts.Usage, backups: opts.Backups, allowances: opts.Allowances, tenant: opts.Tenant, deniedLabels: opts.DeniedLabels, registryClient: opts.RegistryClient,
 		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, oidc: opts.OIDC, oidcName: opts.OIDCName, noPasswordLogin: opts.NoPasswordLogin, recreating: map[string]bool{},
 		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{}, summaries: map[summaryKey]*summaryEntry{},
 		checks:         make(chan struct{}, maxStackChecks),
@@ -406,6 +412,7 @@ type server struct {
 	// deployTokens serves the requests that carry a deploy token.
 	deployTokens *http.ServeMux
 	usage        *usage.Service
+	backups      *backup.Service
 	allowances   *allowances.Service
 	// tenant is the host-side hardening of users' containers (tenant_host.go).
 	tenant TenantHosting

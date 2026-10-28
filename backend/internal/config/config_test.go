@@ -196,6 +196,17 @@ func TestLoadServer(t *testing.T) {
 			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute,
 				UserRegistries: []string{"*"}},
 		},
+		{
+			name: "scheduled backups",
+			env:  map[string]string{"NUDGE_BACKUP_INTERVAL": "24h", "NUDGE_BACKUP_KEEP": "3", "NUDGE_BACKUP_PASSPHRASE_FILE": "/run/secrets/backup"},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute,
+				Backup: Backup{Interval: 24 * time.Hour, Keep: 3, PassphraseFile: "/run/secrets/backup"}},
+		},
+		{name: "scheduled backups without a passphrase", args: []string{"-backup-interval", "24h"}, wantErr: true},
+		{name: "backup interval too short", args: []string{"-backup-interval", "1m", "-backup-passphrase-file", "/p"}, wantErr: true},
+		{name: "backup keep zero", args: []string{"-backup-interval", "1h", "-backup-keep", "0", "-backup-passphrase-file", "/p"}, wantErr: true},
+		{name: "backup interval not a duration", env: map[string]string{"NUDGE_BACKUP_INTERVAL": "daily"}, wantErr: true},
+		{name: "backup keep not a number", env: map[string]string{"NUDGE_BACKUP_KEEP": "all"}, wantErr: true},
 		{name: "user registries with scheme", args: []string{"-user-registries", "https://ghcr.io"}, wantErr: true},
 		{name: "user registries with path", args: []string{"-user-registries", "ghcr.io/me"}, wantErr: true},
 		{name: "user registries empty entry", args: []string{"-user-registries", "docker.io,,ghcr.io"}, wantErr: true},
@@ -218,7 +229,49 @@ func TestLoadServer(t *testing.T) {
 			if tt.want.Tenant.DeniedLabels == nil {
 				tt.want.Tenant.DeniedLabels = defaultDenied
 			}
+			if tt.want.Backup.Keep == 0 {
+				tt.want.Backup.Keep = 7
+			}
 			if err == nil && !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("got %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadRestore(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		args    []string
+		env     map[string]string
+		want    Restore
+		wantErr bool
+	}{
+		{
+			name: "defaults",
+			args: []string{"-file", "/b/x.nudgebak", "-passphrase-file", "/p"},
+			want: Restore{File: "/b/x.nudgebak", DataDir: "/data", StacksDir: "/data/stacks", PassphraseFile: "/p"},
+		},
+		{
+			name: "env and force",
+			args: []string{"-file", "x.nudgebak", "-force"},
+			env:  map[string]string{"NUDGE_DATA": "/srv/nudge", "NUDGE_STACKS_DIR": "/srv/stacks", "NUDGE_BACKUP_PASSPHRASE_FILE": "/run/p"},
+			want: Restore{File: "x.nudgebak", DataDir: "/srv/nudge", StacksDir: "/srv/stacks", PassphraseFile: "/run/p", Force: true},
+		},
+		{name: "no file", args: []string{"-passphrase-file", "/p"}, wantErr: true},
+		{name: "no passphrase", args: []string{"-file", "x"}, wantErr: true},
+		{name: "relative stacks dir", args: []string{"-file", "x", "-passphrase-file", "/p", "-stacks-dir", "stacks"}, wantErr: true},
+		{name: "extra argument", args: []string{"-file", "x", "-passphrase-file", "/p", "now"}, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := LoadRestore(tt.args, func(k string) string { return tt.env[k] }, io.Discard)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err == nil && got != tt.want {
 				t.Errorf("got %+v, want %+v", got, tt.want)
 			}
 		})
