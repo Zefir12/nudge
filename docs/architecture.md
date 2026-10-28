@@ -194,7 +194,7 @@ object or setting is the admins' until something explicitly opens it to users.
 - A container is a user's only if its image sets no owner label: Docker merges image
   labels into the container's, so an image could otherwise hand a user a container an
   admin runs from it. Creating a user's container from such an image is refused
-  (`refuseOwnerImage`).
+  (`refuseImageLabels`).
 - The event stream passes a user only events of containers they own (each container
   checked once, bounded `ownerCache` per stream); volume and network events carry no
   labels, so users get none. Environment stats and the usage summary sample only the

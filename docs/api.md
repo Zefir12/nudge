@@ -256,7 +256,9 @@ above stays admin-only.
   user's `u<id>-` prefix; on a recreate an empty one keeps the name. `cpus_milli` (at most
   1000000) and `memory_bytes` (6 MiB to 1 TiB) are required. At most 64 ports, mounts,
   networks and labels and 256 environment entries; labels in Docker's `com.docker.`
-  namespace (compose projects) are refused like nudge's own. `host_port` 0 takes the lowest free port of
+  namespace (compose projects) are refused like nudge's own, and so are labels starting
+  with a prefix of `NUDGE_TENANT_DENIED_LABELS` (reverse proxies, updaters; see
+  docs/config/server.md), also when the image sets them (400). `host_port` 0 takes the lowest free port of
   the user's range. `mounts` name the user's own volumes; `networks` the user's own
   networks by name (empty: their default network). `healthcheck` runs its command in exec
   form; null keeps the image's.
