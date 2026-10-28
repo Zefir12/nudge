@@ -68,6 +68,13 @@ expect v2.0.0 "second release"
 git switch -q develop
 commit chore4
 expect v2.0.1 "commit after the second release"
+git merge -q --no-ff -m "Merge main into develop" main
+expect v2.0.1 "merging main back into develop is not a PR"
+git switch -q -c feat/4
+commit f5
+git switch -q develop
+merge feat/4
+expect v2.1.0 "PR after the back-merge"
 
 git clone -q --depth 1 "file://$dir/repo" "$dir/shallow"
 if (cd "$dir/shallow" && sh "$script" >/dev/null 2>&1); then

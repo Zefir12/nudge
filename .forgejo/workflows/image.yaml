@@ -61,7 +61,8 @@ jobs:
       # binaries' version (vMAJOR.MINOR.PATCH), shown in the web UI.
       - name: Tag
         run: |
-          echo "VERSION=$(scripts/version.sh)" >> "$FORGEJO_ENV"
+          version=$(scripts/version.sh)
+          echo "VERSION=$version" >> "$FORGEJO_ENV"
           branch=$(echo "${{ forgejo.ref_name }}" | tr -c 'A-Za-z0-9_.\n-' '-')
           echo "TAG=$branch-$(git rev-parse --short=12 HEAD)" >> "$FORGEJO_ENV"
           if [ "$branch" = develop ]; then echo "MOVING=develop" >> "$FORGEJO_ENV"; fi

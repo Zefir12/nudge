@@ -11,7 +11,8 @@ file: the same commit always gets the same version.
 | PATCH | commits on `develop` since the last PR merge | on a PR merge or a release |
 
 The counts follow the first-parent line, so a PR's own commits don't count once it is
-merged: the merge commit bumps MINOR. On a feature branch, PATCH is develop's patch plus
+merged: the merge commit bumps MINOR. Merging `main` back into `develop` (a merge whose
+second parent is on `main`'s first-parent line) is not a PR and bumps nothing. On a feature branch, PATCH is develop's patch plus
 the branch's commits. Release #88 is the first merge into `main`, so the versions start
 at v1.
 

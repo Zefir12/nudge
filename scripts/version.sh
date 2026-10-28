@@ -1,7 +1,8 @@
 #!/bin/sh
 # Prints HEAD's version, vMAJOR.MINOR.PATCH, counted from git history (no version file):
 #   MAJOR  releases: merges into main that HEAD contains (the merge, or the commit it merged)
-#   MINOR  PRs merged into develop (merges on HEAD's first-parent line) since the last release
+#   MINOR  PRs merged into develop (merges on HEAD's first-parent line) since the last release;
+#          merging main back into develop is not a PR and doesn't count
 #   PATCH  commits on HEAD's first-parent line since the last of those merges
 # main is VERSION_MAIN_REF, else origin/main, else main. Prints "dev" outside a git
 # repository, and fails on a shallow clone, whose counts would be wrong.
@@ -41,10 +42,21 @@ if [ -n "$main" ]; then
 	done
 fi
 
+# A merge whose second parent is on main's first-parent line brought main back into
+# develop. main's line only grows, so a commit's version never changes later.
+mainline=
+if [ -n "$main" ]; then mainline=$(git rev-list --first-parent "$main"); fi
 range=HEAD
 if [ -n "$base" ]; then range=$base..HEAD; fi
-minor=$(git rev-list --first-parent --merges --count "$range")
-last=$(git rev-list --first-parent --merges -n 1 "$range")
+minor=0
+last=
+for m in $(git rev-list --first-parent --merges "$range"); do
+	if [ -n "$mainline" ] && printf '%s\n' "$mainline" | grep -qx "$(git rev-parse "$m^2")"; then
+		continue
+	fi
+	minor=$((minor + 1))
+	if [ -z "$last" ]; then last=$m; fi
+done
 from=${last:-$base}
 if [ -n "$from" ]; then range=$from..HEAD; fi
 patch=$(git rev-list --first-parent --no-merges --count "$range")
