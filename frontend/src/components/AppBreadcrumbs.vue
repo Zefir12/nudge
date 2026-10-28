@@ -35,6 +35,7 @@ const sectionOf: Record<string, { label: string; list: string }> = {
   tokens: { label: 'API tokens', list: 'tokens' },
   users: { label: 'Users', list: 'users' },
   audit: { label: 'Audit log', list: 'audit' },
+  backup: { label: 'Backup', list: 'backup' },
 };
 
 // A crumb links somewhere unless it is the page itself (to is null).

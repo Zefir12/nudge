@@ -43,6 +43,7 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | GET | `/api/v1/users/{id}/environments` | admin | the environments a user may use `{"environments": [1, 3]}`; see Ownership |
 | PUT | `/api/v1/users/{id}/environments` | admin | replace them `{"environments": [1, 3]}`; `200` with the stored list |
 | GET | `/api/v1/audit` | session | the audit log, newest first, paged and filtered; see Audit log |
+| POST | `/api/v1/backup` | admin, session only | download an encrypted backup of the server's data `{"passphrase"}`; see Backup |
 | GET | `/api/v1/registries` | session | registry credentials for pulls, by name; see below |
 | POST | `/api/v1/registries` | session | add registry credentials; `201` |
 | GET | `/api/v1/registries/{id}` | session | one registry, without its password |
@@ -1120,6 +1121,18 @@ Entries are deleted after `NUDGE_AUDIT_RETENTION_DAYS` (default 90); see
 docs/config/server.md, and beyond the newest million. A pull that fails after its stream
 started (answered `200`) is recorded as `502`. Entries carry the time the request
 started.
+
+### Backup
+`POST /api/v1/backup` with `{"passphrase": "..."}` (at least 12 characters) answers `200`
+with the backup as `application/octet-stream` and
+`Content-Disposition: attachment; filename="nudge-20261028-120000.nudgebak"`: the
+database snapshot, `secret.key` and the stacks' compose files, encrypted with the
+passphrase (docs/config/server.md, "Backup and restore", has the contents and the
+restore). The backup is written to a temporary file in the data directory first, so the
+data volume needs room for one. Admins only and session only: the file holds the key to
+the stored credentials. Errors: `400` a missing or short passphrase, `409` another backup
+is being made. Audited with the file name as the target; the passphrase is never
+recorded.
 
 Docker errors (every environment route):
 - `404` unknown environment.

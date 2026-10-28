@@ -46,6 +46,9 @@ Flags with `NUDGE_*` environment variable fallbacks; the defaults work in the im
 | `NUDGE_AUDIT_RETENTION_DAYS` | `90` | days the audit log keeps entries |
 | `NUDGE_UPDATE_CHECK_INTERVAL` | `6h` | how often images are checked for updates, `0` for never |
 | `NUDGE_USAGE_INTERVAL` | `15m` | how often volume sizes are measured, `0` for never |
+| `NUDGE_BACKUP_INTERVAL` | `0` (off) | how often an encrypted backup is saved to `<data>/backups` |
+| `NUDGE_BACKUP_KEEP` | `7` | how many scheduled backups are kept |
+| `NUDGE_BACKUP_PASSPHRASE_FILE` | unset | file with the backups' passphrase (needed for scheduled backups and `nudge restore`) |
 | `NUDGE_OIDC_ISSUER`, `NUDGE_OIDC_CLIENT_ID`, `NUDGE_OIDC_CLIENT_SECRET` | unset | single sign-on through an OpenID Connect provider (secret env only; needs an `https://` public URL) |
 | `NUDGE_OIDC_NAME` | `SSO` | label of the single sign-on button |
 | `NUDGE_OIDC_ADMIN_ROLE` | `admin` | `roles` claim value that makes a user an admin |
@@ -67,6 +70,10 @@ CI deploys a deployment with `nudge deploy --server URL --deployment NAME --var
 NAME=value` (token in `NUDGE_DEPLOY_TOKEN`, server also from `NUDGE_SERVER_URL`); it
 prints the progress and exits 0 only when the run succeeded. See
 [docs/deployments.md](docs/deployments.md).
+
+Admins download an encrypted backup from the UI's Backup page (or `POST /api/v1/backup`);
+`nudge restore -file B -passphrase-file P` puts one back with the server stopped. See
+[docs/config/server.md](docs/config/server.md#backup-and-restore).
 
 Details: [docs/config/server.md](docs/config/server.md), agents:
 [docs/config/agent.md](docs/config/agent.md). API: [docs/api.md](docs/api.md).

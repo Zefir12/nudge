@@ -41,6 +41,7 @@ const globalItems = [
     icon: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8',
   },
   { to: '/audit', label: 'Audit log', icon: 'M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01' },
+  { to: '/backup', label: 'Backup', icon: 'M21 8v13H3V8M1 3h22v5H1zM10 12h4' },
 ];
 
 const isAdmin = computed(() => !!currentUser.value?.admin);

@@ -18,6 +18,9 @@ image without setting anything. A flag wins over its variable.
 | `-audit-retention-days` | `NUDGE_AUDIT_RETENTION_DAYS` | `90` | days the audit log keeps entries (at least 1); older ones are deleted hourly |
 | `-update-check-interval` | `NUDGE_UPDATE_CHECK_INTERVAL` | `6h` | how often every environment's images are checked for updates (a Go duration, at least `5m`; `0` turns the scheduled check off, the UI's check still works); the first check runs two minutes after start |
 | `-usage-interval` | `NUDGE_USAGE_INTERVAL` | `15m` | how often every environment's volume sizes are measured (a Go duration, at least `1m`; `0` turns the scheduled measurement off, the UI's "Measure sizes" still works); the first measurement runs two minutes after start. Docker walks every volume to size it, so on hosts with large volumes a longer interval is kinder to the disks |
+| `-backup-interval` | `NUDGE_BACKUP_INTERVAL` | `0` | how often an encrypted backup is saved to `<data>/backups/` (a Go duration, at least `5m`; `0` turns scheduled backups off); needs `-backup-passphrase-file`. See [Backup and restore](#backup-and-restore) |
+| `-backup-keep` | `NUDGE_BACKUP_KEEP` | `7` | how many scheduled backups are kept; older ones are deleted after each new one |
+| `-backup-passphrase-file` | `NUDGE_BACKUP_PASSPHRASE_FILE` | unset | file holding the passphrase (at least 12 characters; a trailing newline is ignored) scheduled backups are encrypted with; `nudge restore` reads its passphrase from here too |
 | — | `NUDGE_ADMIN_PASSWORD` | unset | create the user `admin` with this password at start if no user exists |
 | `-oidc-issuer` | `NUDGE_OIDC_ISSUER` | unset | OpenID Connect issuer URL (`https://`); with the client ID and secret it turns on single sign-on (see Single sign-on) |
 | `-oidc-client-id` | `NUDGE_OIDC_CLIENT_ID` | unset | nudge's client ID at the provider |
@@ -40,9 +43,49 @@ error if it cannot write there. The database is `<data>/nudge.db` (SQLite in WAL
 `nudge.db-wal` and `nudge.db-shm` sit next to it); schema migrations run at start.
 `<data>/secret.key` (32 random bytes, mode 0600, created at the first start) encrypts the
 registry passwords and the notification webhooks' URLs and header values in the database.
-Back up the whole directory while the server is stopped; without its `secret.key` a
-restored database's registry passwords and webhooks must be entered again. A database migrated by a newer nudge
-is refused by an older one.
+Back it up with nudge's own backups (below) rather than by copying the files: a copy of
+`nudge.db` taken while the server runs can miss what is still in `nudge.db-wal`. A
+database migrated by a newer nudge is refused by an older one.
+
+## Backup and restore
+A backup is one file, `nudge-<UTC time>.nudgebak`, holding a consistent snapshot of the
+database (SQLite `VACUUM INTO`, taken while the server runs), `secret.key`, and every
+stack's `compose.yaml` and `.env`. It doesn't hold containers' volumes, files that stacks
+bind-mount from their directory, or the agents' own `agent.json` (agents keep theirs, and
+their credentials are in the database, so they reconnect after a restore without
+enrolling again).
+
+The file is encrypted with a passphrase of at least 12 characters: AES-256-GCM in 64 KiB
+chunks, the key derived with argon2id from the passphrase and a random salt. It holds the
+key to the stored registry passwords and webhook URLs, so keep the passphrase apart from
+the backups; without it a backup can't be restored.
+
+- **From the UI or the API**: the Backup page (admins) or `POST /api/v1/backup` downloads
+  one; see docs/api.md.
+- **On a schedule**: `-backup-interval 24h` with `-backup-passphrase-file` saves one to
+  `<data>/backups/` every interval (the first one an interval after start) and keeps the
+  newest `-backup-keep`. They sit on the same volume as the data, so copy them elsewhere
+  (a host-side job that syncs the volume's `backups/` directory) to survive losing it.
+
+**Restore** with the server stopped, on the volume the server will use (`docker volume ls`
+shows its name; compose prefixes the project's), with the server image's `restore`
+command:
+
+```sh
+docker compose stop nudge
+docker run --rm -v nudge_nudge-data:/data -v "$PWD:/backup" registrydedic.zefirlabs.net/nudge:latest \
+  restore -file /backup/nudge-20261028-120000.nudgebak -passphrase-file /backup/passphrase
+docker compose start nudge
+```
+
+`restore` takes `-data` and `-stacks-dir` (or `NUDGE_DATA`, `NUDGE_STACKS_DIR`) like
+`serve`, and `-passphrase-file` (or `NUDGE_BACKUP_PASSPHRASE_FILE`). It decrypts and checks
+the whole archive before it changes anything, so a wrong passphrase or a damaged or cut
+file leaves the data alone. It refuses a data directory that already has a database, key
+or stacks; with `-force` it moves them to `<data>/pre-restore-<time>/` and the stacks
+directory to `<stacks>.pre-restore-<time>` first. A backup from a newer nudge is refused;
+one from an older nudge is migrated when the server starts. Run it with the server stopped:
+a running server keeps writing to the database file restore moved aside.
 
 ## Stacks
 Stacks live in `<stacks dir>/<environment ID>/<name>/` (`compose.yaml`, `.env`), and the

@@ -82,3 +82,26 @@ func (s *Store) Close() error {
 
 // errNewerSchema means the database was migrated by a newer nudge.
 var errNewerSchema = errors.New("database schema is newer than this binary")
+
+// SchemaVersion is the newest migration this binary has, the schema version a database
+// it opened is at.
+func SchemaVersion() (int, error) {
+	ms, err := loadMigrations(migrationsFS, migrationsDir)
+	if err != nil {
+		return 0, err
+	}
+	if len(ms) == 0 {
+		return 0, nil
+	}
+	return ms[len(ms)-1].version, nil
+}
+
+// Snapshot writes a consistent copy of the database to path, which must not exist:
+// VACUUM INTO reads one snapshot, so writes going on meanwhile are either all in the
+// copy or not at all, and the copy has no WAL file to go with it.
+func (s *Store) Snapshot(ctx context.Context, path string) error {
+	if _, err := s.db.ExecContext(ctx, `VACUUM INTO ?`, path); err != nil {
+		return fmt.Errorf("snapshot database: %w", err)
+	}
+	return nil
+}
