@@ -393,6 +393,9 @@ to the UI as they are.
     `409` when the agent doesn't run in a container of that daemon. An agent from before
     it answers `404`, and the server skips the check with a warning. The local
     environment runs the same helper through the server's own container.
+  - `GET /v1/self`: `{"id", "hostname", "docker_host"}`, the agent's own container
+    (`stacks.SelfID`) and how it reaches Docker, so the server can update the agent
+    (Self-update below). An agent from before it answers `404`.
   - `DELETE /v1/stacks/{name}`: removes the files after `down`.
   - Not built yet: `GET /v1/stacks` with names and a SHA-256 of each project's files, so
     the server can show a stack that differs from what it last sent.
@@ -432,6 +435,43 @@ for registry credentials; update it" (`stacks.ErrOldAgent`).
 
 Out of scope for phase 5: swarm stacks, compose `build` with large contexts (git URLs
 are fine), and editing a project's extra files beyond compose.yaml and `.env` in the UI.
+
+## Self-update (#159)
+nudge replaces its own container (the server's, or an agent's) with a newer image of the
+same tag, from Settings in the UI or the API. A process can't recreate the container it
+runs in: stopping it ends the process halfway (the generic container update stops the
+old container first), so `internal/selfupdate` hands the swap to a helper.
+
+1. Find: the container is `stacks.SelfID` (mountinfo/hostname), inspected on the
+   environment's daemon and checked by hostname; for an agent, the server asks the agent
+   over its control stream (`GET /v1/self`). It needs the Docker socket bind-mounted
+   (the helper mounts the same one) and an image by tag.
+2. The server pulls the tag with the stored registry credentials (through the tunnel for
+   an agent). If that brought nothing newer, nothing else happens.
+3. Launch: a helper container from the new image runs `self-update -docker-host <socket>
+   <container>` (both binaries have the subcommand), labelled
+   `net.zefirlabs.nudge.self-update=<container>` and removed when it exits. A running
+   helper for the same container refuses a second update.
+4. Swap (the helper, independent of the old process): wait two seconds so the server's
+   answer gets out; stop the old container, rename it `<name>-nudge-old`, create the new
+   one with the same settings (`docker.RecreateSettings`, the old image's defaults
+   dropped, anonymous volumes kept), start it and wait until it has run, or been healthy
+   if it has a health check, for 15 s (at most 3 min). Then the old one is removed. If
+   any step fails, the new one is removed and the old one renamed back and started.
+5. The UI waits for the server (health) or the agent to stop answering and come back,
+   then reloads (server) or checks again (agent).
+
+Limits: the rollback needs the helper to live. If it is killed or the host reboots
+between the stop and the end of the settle wait, the old container is left stopped as
+`<name>-nudge-old`: start it (or rename it back) by hand. A leftover stopped
+`<name>-nudge-old` is removed by the next update; a running one refuses it. Rolling back
+to the old image after the new one migrated the database may not work: the backups
+(docs/config/server.md, backups) are the safety net. One update per environment runs at a time
+(the API's lock and the helper label).
+
+The generic container recreate/update and stack runs refuse nudge's own container and its
+compose project (`409`), since they would stop it halfway. Agents from before
+`GET /v1/self` can't be found, so they are updated by hand once.
 
 ## Storage
 SQLite (`modernc.org/sqlite`, pure Go, so the image stays static) with numbered SQL

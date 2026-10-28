@@ -455,6 +455,17 @@ class HttpError {
   ) {}
 }
 
+// selfUpdate is nudge's own container with a newer image in the registry.
+const selfUpdate = (version: string, image = 'registrydedic.zefirlabs.net/nudge:latest') => ({
+  version,
+  image,
+  status: 'available',
+  local_digest: `sha256:${hex(`d${image}`)}`,
+  remote_digest: `sha256:${hex(`r${image}`)}`,
+  checked_at: ago(20),
+  can_update: true,
+});
+
 // withEnv resolves the environment and refuses offline ones, like the real server.
 const withEnv =
   (fn: (env: number, m: string[], body: unknown, url: URL) => unknown) =>
@@ -473,6 +484,20 @@ const found = <T>(v: T | undefined, what: string) => {
 const routes: Route[] = [
   ['GET', /^\/health$/, () => ({ status: 'ok', version: 'v1.29.1' })],
   ['GET', /^\/setup$/, () => ({ needed: false })],
+  ['GET', /^\/system\/update$/, () => selfUpdate('v1.29.1')],
+  ['POST', /^\/system\/update\/check$/, () => selfUpdate('v1.29.1')],
+  ['POST', /^\/system\/update$/, () => ({ started: true })],
+  [
+    'GET',
+    new RegExp(`^${envRe}/agent/update$`),
+    withEnv(() => selfUpdate('v1.28.0', 'registrydedic.zefirlabs.net/nudge-agent:latest')),
+  ],
+  [
+    'POST',
+    new RegExp(`^${envRe}/agent/update/check$`),
+    withEnv(() => selfUpdate('v1.28.0', 'registrydedic.zefirlabs.net/nudge-agent:latest')),
+  ],
+  ['POST', new RegExp(`^${envRe}/agent/update$`), withEnv(() => ({ started: true }))],
   ['GET', /^\/auth\/methods$/, () => ({ password: true, oidc: { name: 'Authentik' } })],
   ['GET', /^\/auth\/me$/, () => me],
   ['POST', /^\/auth\/login$/, () => me],

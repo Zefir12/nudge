@@ -38,6 +38,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/probe"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/registries"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/secretbox"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/selfupdate"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/stacks"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/store"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/updates"
@@ -49,12 +50,13 @@ import (
 const usage = `usage: nudge [command] [flags]
 
 commands:
-  serve    run the API and web UI (default)
-  agent    connect this host's Docker to a nudge server
-  deploy   start a deployment run and follow it (for CI; token in NUDGE_DEPLOY_TOKEN)
-  probe    one HTTP check (what a deployment's HTTP check runs in a helper container)
-  restore  restore a backup into the data directory (with the server stopped)
-  version  print the version
+  serve        run the API and web UI (default)
+  agent        connect this host's Docker to a nudge server
+  deploy       start a deployment run and follow it (for CI; token in NUDGE_DEPLOY_TOKEN)
+  probe        one HTTP check (what a deployment's HTTP check runs in a helper container)
+  self-update  replace this container with its image's newer version (what a self-update's helper runs)
+  restore      restore a backup into the data directory (with the server stopped)
+  version      print the version
 
 Run "nudge <command> -h" for a command's flags.
 `
@@ -93,6 +95,8 @@ func realMain(ctx context.Context, args []string, getenv func(string) string, st
 		return runDeploy(ctx, args, getenv, stdout, stderr)
 	case "probe":
 		return cli.Probe(ctx, args, stdout, stderr)
+	case "self-update":
+		return cli.SelfUpdate(ctx, args, stderr)
 	case "restore":
 		return runRestore(ctx, args, getenv, stdout, stderr)
 	case "version":
@@ -288,6 +292,11 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 			PublicURL:      cfg.PublicURL,
 			SecureCookies:  cfg.TLS() || strings.HasPrefix(cfg.PublicURL, "https://"),
 			TrustedProxies: cfg.TrustedProxies,
+			Self:           stacks.SelfID(os.ReadFile, os.Hostname),
+			DockerHost:     cfg.DockerHost,
+			AgentSelf: func(ctx context.Context, env environments.Environment) (stacks.Self, string, error) {
+				return selfupdate.RemoteSelf(ctx, envs.ControlDialer(env.ID))
+			},
 
 			OIDC:            sso,
 			OIDCName:        cfg.OIDC.Name,

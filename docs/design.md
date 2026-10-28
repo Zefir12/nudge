@@ -8,7 +8,8 @@ only the variables, never raw colours.
 
 ## Layout
 - **Top bar** (56px, sticky, translucent with blur): logo (links to `/`), breadcrumb
-  (Dashboard / environment / section; the current page is plain text). A hairline along the bottom
+  (Dashboard / environment / section; the current page is plain text), and for admins a
+  gear on the right (Settings modal: nudge's version and update). A hairline along the bottom
   edge fades from transparent to `--accent-border` and back.
 - **Sidebar** (248px, sticky), `AppSidebar.vue`:
   - Global part, the same on every page: account box (avatar initial, name, role, log out),
@@ -64,6 +65,9 @@ variable weight. No requests to font CDNs.
   right as from top and bottom; where `appearance: base-select` is supported the open list
   is themed (orange border, `--accent-soft` highlight).
 - **Tables**: cells centred vertically.
+- **Settings** (`SettingsDialog`): native `<dialog>` modal, `--surface-solid`, blurred dark
+  backdrop; opened by a `GearButton` (top bar for the server, an agent environment's
+  dashboard header for its agent).
 - **Lamps** (`.lamp`, `.on`, `.bad`, `.warn`): 8px dots that glow in their colour; off is `--faint`.
 - **Chips** (`.chip`): uppercase pill naming a kind (socket, agent).
 - **Status badges**: 2px radius, tinted background (`--ok-soft`, `--accent-soft`, …).

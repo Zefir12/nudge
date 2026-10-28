@@ -1,16 +1,20 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router';
 
 import { logout } from './api/client';
 import AppBreadcrumbs from './components/AppBreadcrumbs.vue';
 import AppSidebar from './components/AppSidebar.vue';
 import BrandLogo from './components/BrandLogo.vue';
+import GearButton from './components/GearButton.vue';
+import SelfUpdatePanel from './components/SelfUpdatePanel.vue';
+import SettingsDialog from './components/SettingsDialog.vue';
 import { lastEnvironment, rememberEnvironment } from './environments';
 import { apiError, currentUser } from './session';
 
 const route = useRoute();
 const router = useRouter();
+const settingsOpen = ref(false);
 
 // The environment part of the sidebar follows the open environment, or the one used last.
 const env = computed(() => (typeof route.params.env === 'string' ? route.params.env : lastEnvironment()));
@@ -51,7 +55,11 @@ async function onLogout() {
     <header class="topbar">
       <RouterLink to="/" class="brand"><BrandLogo /></RouterLink>
       <AppBreadcrumbs />
+      <GearButton v-if="currentUser?.admin" class="settings" label="Settings" @click="settingsOpen = true" />
     </header>
+    <SettingsDialog v-if="settingsOpen" title="Settings" @close="settingsOpen = false">
+      <SelfUpdatePanel />
+    </SettingsDialog>
     <div class="layout">
       <AppSidebar :env="env" @logout="onLogout" />
       <main class="content">
@@ -81,6 +89,10 @@ async function onLogout() {
   padding: 0 1.25rem;
   background: var(--topbar);
   backdrop-filter: blur(10px);
+}
+
+.settings {
+  margin-left: auto;
 }
 
 /* A hairline that fades out at both ends. */

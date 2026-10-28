@@ -81,6 +81,30 @@ describe('DashboardView', () => {
     expect(wrapper.find('.totals').text()).toContain('12.5% CPU');
     expect(wrapper.find('.attention').text()).toContain('Nothing needs attention.');
     expect(wrapper.find('.recent').exists()).toBe(true);
+    // The server's own settings are in the top bar, not on its environment.
+    expect(wrapper.find('[aria-label="Agent settings"]').exists()).toBe(false);
+  });
+
+  it("opens an agent environment's settings from its gear", async () => {
+    stubApi({
+      'GET /environments/2': { body: { ...env, id: 2, name: 'nas', kind: 'agent' } },
+      'GET /environments/2/volumes': { body: [] },
+      'GET /environments/2/networks': { body: [] },
+      'GET /environments/2/stats': {
+        body: { containers: [], total: { cpu_percent: 0, memory_usage: 0, network_rx: 0, network_tx: 0 } },
+      },
+      'GET /environments/2/containers': { body: [] },
+      'GET /environments/2/images': { body: [] },
+      'GET /environments/2/updates': { body: [] },
+      'GET /environments/2/agent/update': {
+        body: { version: 'v0.9.0', status: 'current', can_update: true },
+      },
+    });
+    const wrapper = await mountAt('/env/2');
+    await wrapper.find('[aria-label="Agent settings"]').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('dialog').text()).toContain('Agent of nas');
+    expect(wrapper.find('dialog').text()).toContain('v0.9.0');
   });
 
   it('shows an offline environment', async () => {

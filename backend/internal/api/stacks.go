@@ -476,6 +476,9 @@ func (s *server) startStackEdit(ctx context.Context, env environments.Environmen
 	if runner == nil {
 		return nil, nil, errNoStackRunner
 	}
+	if s.selfStack(ctx, env, name) {
+		return nil, nil, errSelfStack
+	}
 	key := stackKey(env.ID, name)
 	if !s.lockStack(key) {
 		return nil, nil, errStackBusy

@@ -74,7 +74,7 @@ func TestServerCodeLeftOut(t *testing.T) {
 	const internal = "git.zefirlabs.net/zefir/nudge/backend/internal/"
 	allowed := map[string]bool{
 		"agent": true, "cli": true, "config": true, "docker": true, "probe": true,
-		"stacks": true, "tunnel": true, "version": true,
+		"selfupdate": true, "stacks": true, "tunnel": true, "version": true,
 	}
 	for pkg := range strings.FieldsSeq(string(out)) {
 		name, ok := strings.CutPrefix(pkg, internal)
