@@ -289,8 +289,10 @@ backstops that need host setup, applied by `buildTenant` to users' containers on
 - Network: users' bridges are isolated from each other, but Docker lets containers reach
   the host's addresses, so a user's container can connect to anything listening on the
   host, including ports other users and admins publish (which listen on all addresses)
-  and the host's own services. Firewall the host (Docker's `DOCKER-USER` chain) if that
-  matters.
+  and the host's own services. nudge can't change the host's firewall: it names users'
+  bridges `nudge…` (#132) so two host rules (`DOCKER-USER` and `INPUT` on `-i nudge+`)
+  close this; docs/config/server.md, "Network", has them and a manual check. Without
+  them it stays open.
 - Labels outside nudge's and Docker's namespaces are free, so tools on the host that act
   on container labels (a reverse proxy's Docker provider, for example) act on users'
   containers too.
