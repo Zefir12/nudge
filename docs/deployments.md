@@ -47,9 +47,12 @@ Under the deployment's Settings → Health checks:
   migration stays to inspect. The next deploy creates them again, and `depends_on:
   condition: service_completed_successfully` still waits for them. Their logs go with
   them; the run's progress (and the server log) names the removed containers, and a
-  removal that fails is a warning on the run, not a failure. It's a setting rather than a
-  compose label because exit 0 with no restart already marks a one-off job, and it keeps
-  the compose file free of nudge-only labels.
+  removal that fails is a warning on the run, not a failure. The rule is exactly that: any
+  service of the stack that is exited with 0 and has no restart policy once the run
+  succeeded counts, whatever its name. It's a setting rather than a compose label because
+  that rule already marks a one-off job (compose's own `oneoff` label is only set by
+  `compose run`, not on a `migrate` service), and it keeps the compose file free of
+  nudge-only labels.
 
 A failed run without rollback puts the `.env` back, so the next start of the stack uses
 the values that worked. The containers the failed run started keep running until then.
