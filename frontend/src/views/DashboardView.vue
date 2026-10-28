@@ -1,14 +1,17 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { RouterLink } from 'vue-router';
 
 import { getAllowance, getEnvironment, listNetworks, listVolumes } from '../api/client';
 import AllowanceUsage from '../components/AllowanceUsage.vue';
 import EnvironmentUsage from '../components/EnvironmentUsage.vue';
+import GearButton from '../components/GearButton.vue';
 import KeyValues from '../components/KeyValues.vue';
 import LoadState from '../components/LoadState.vue';
 import NeedsAttention from '../components/NeedsAttention.vue';
 import RecentEvents from '../components/RecentEvents.vue';
+import SelfUpdatePanel from '../components/SelfUpdatePanel.vue';
+import SettingsDialog from '../components/SettingsDialog.vue';
 import { useLoad } from '../composables/useLoad';
 import { useParams } from '../composables/params';
 import { formatBytes } from '../format';
@@ -18,6 +21,7 @@ const { env } = useParams();
 // A user's overview is about their own things: their allowance instead of images, the
 // host and what needs an admin's attention.
 const isAdmin = computed(() => !!currentUser.value?.admin);
+const settingsOpen = ref(false);
 
 // Docker's info has container and image counts; volumes and networks need their lists.
 const { data, error, reload } = useLoad(env, async (id) => {
@@ -36,7 +40,20 @@ const { data, error, reload } = useLoad(env, async (id) => {
     <span v-if="data" class="lamp" :class="{ on: data.detail.online }" aria-hidden="true" />
     <h1>{{ data?.detail.name ?? 'Dashboard' }}</h1>
     <span v-if="data" class="chip">{{ data.detail.kind === 'local' ? 'socket' : 'agent' }}</span>
+    <GearButton
+      v-if="data && isAdmin && data.detail.kind === 'agent'"
+      class="settings"
+      label="Agent settings"
+      @click="settingsOpen = true"
+    />
   </div>
+  <SettingsDialog
+    v-if="settingsOpen"
+    :title="`Agent of ${data?.detail.name ?? ''}`"
+    @close="settingsOpen = false"
+  >
+    <SelfUpdatePanel :env="env" />
+  </SettingsDialog>
   <p v-if="data && isAdmin" class="host">
     Docker {{ data.detail.docker.version }} · {{ data.detail.docker.os_type }}/{{
       data.detail.docker.architecture
@@ -128,6 +145,10 @@ const { data, error, reload } = useLoad(env, async (id) => {
   flex-wrap: wrap;
   align-items: center;
   gap: 0.75rem;
+}
+
+.head .settings {
+  margin-left: auto;
 }
 
 .head .lamp {

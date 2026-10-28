@@ -98,6 +98,12 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | GET | `/api/v1/environments/{env}/updates` | session | the last image update check; see Image updates |
 | POST | `/api/v1/environments/{env}/updates/check` | session | check the environment's images now |
 | GET | `/api/v1/environments/{env}/updates/history` | session | updates made through nudge, with the image each replaced |
+| GET | `/api/v1/system/update` | admin | the server's version and update state; see Self-update |
+| POST | `/api/v1/system/update/check` | admin | check the server's image now |
+| POST | `/api/v1/system/update` | admin | update the server to the newest image of its tag |
+| GET | `/api/v1/environments/{env}/agent/update` | admin | the agent's version and update state |
+| POST | `/api/v1/environments/{env}/agent/update/check` | admin | check the agent's image now |
+| POST | `/api/v1/environments/{env}/agent/update` | admin | update the agent to the newest image of its tag |
 | GET | `/api/v1/environments/{env}/webhooks` | session | the deploy webhooks the user may see (`?container=` / `?stack=` name); see Webhooks |
 | POST | `/api/v1/environments/{env}/webhooks` | session only | create a deploy webhook `{"name", "container" or "stack", "tag_filter"}`; `201` with its secret |
 | DELETE | `/api/v1/environments/{env}/webhooks/{id}` | session | delete a deploy webhook and its runs; `204` |
@@ -885,6 +891,34 @@ hand: the previous image stays on the host (untagged) until it is pruned.
   stack's row; a digest is empty when the image has none from that repository. The last
   20 updates per container or stack (a stack's with a row per service) and 5000 rows per
   environment are kept. `400` an unknown kind.
+
+### Self-update
+nudge updates its own container, the server's or an agent's, to the newest image of the
+tag it runs (docs/architecture.md, Self-update). Admins only.
+
+- `GET /api/v1/system/update` and `GET /api/v1/environments/{env}/agent/update` answer
+  `{"version": "v1.2.0", "image": "registry.example/nudge:latest", "status": "available",
+  "local_digest": "sha256:…", "remote_digest": "sha256:…", "checked_at": "...", "error":
+  "", "can_update": true, "reason": ""}`. `status` and the digests are the last image
+  update check of `image` on that environment (Image updates); `error` says why it is
+  `unknown` (`not checked yet`, `checked before the last update; check again`, …).
+  `can_update` is false, with `reason`, when nudge can't replace the container itself:
+  it doesn't run in a container on that host, the Docker socket isn't bind-mounted, the
+  image is pinned by ID or digest, or the agent is too old (update it by hand once).
+  `version` is the server's, or the version the agent reported.
+- `POST .../check` checks the environment's images now (as `updates/check`, with its
+  `409` while another check runs) and answers the same.
+- `POST /api/v1/system/update` and `POST /api/v1/environments/{env}/agent/update` (no
+  body) pull the image with the stored registry credentials. If that brought nothing
+  newer: `200 {"started": false}`. Otherwise a helper container replaces nudge's
+  container and `202 {"started": true}` answers before it does; the server (or agent)
+  restarts a few seconds later, and if the new one doesn't come up the old one is
+  started again. `409` when it can't update itself (the reasons above) or an update is
+  already running; pull errors as in a recreate. The agent endpoints answer `404` on the
+  local environment.
+- Recreating or updating nudge's own container through the container endpoints, and
+  running its compose project through the stack endpoints, answers `409`: they would
+  stop nudge halfway.
 
 ### Notifications
 `POST /api/v1/webhooks` with `{"name": "Chat", "url": "https://hooks.example.com/T0/abc",

@@ -345,7 +345,7 @@ func toTenantSpec(ct container.InspectResponse, img *dockerspec.DockerOCIImageCo
 	}
 	if ct.Config != nil {
 		cfg := *ct.Config
-		dropImageDefaults(&cfg, img)
+		docker.DropImageDefaults(&cfg, img)
 		sp.Image, sp.Command, sp.Entrypoint, sp.Env = cfg.Image, nonNil(cfg.Cmd), nonNil(cfg.Entrypoint), nonNil(cfg.Env)
 		sp.Labels = nonNilMap(maps.Clone(cfg.Labels))
 		maps.DeleteFunc(sp.Labels, func(k, _ string) bool { return reservedKey(k) })

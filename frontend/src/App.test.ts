@@ -5,7 +5,7 @@ import { createMemoryHistory } from 'vue-router';
 import App from './App.vue';
 import { createAppRouter } from './router';
 import { currentUser } from './session';
-import { stubApi, user } from './test-utils';
+import { admin, stubApi, user } from './test-utils';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -40,5 +40,21 @@ describe('App', () => {
     const wrapper = await mountApp('/tokens');
     expect(wrapper.text()).not.toContain('Not allowed');
     expect(wrapper.find('main h1').text()).toBe('API tokens');
+    expect(wrapper.find('[aria-label="Settings"]').exists()).toBe(false);
+  });
+
+  it('opens the settings from the gear for admins', async () => {
+    currentUser.value = admin;
+    stubApi({
+      'GET /tokens': { body: [] },
+      'GET /system/update': { body: { version: 'v1.2.0', status: 'current', can_update: true } },
+    });
+    const wrapper = await mountApp('/tokens');
+    expect(wrapper.find('dialog').exists()).toBe(false);
+    await wrapper.find('[aria-label="Settings"]').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('dialog').text()).toContain('v1.2.0');
+    await wrapper.find('dialog [aria-label="Close"]').trigger('click');
+    expect(wrapper.find('dialog').exists()).toBe(false);
   });
 });

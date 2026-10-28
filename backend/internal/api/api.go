@@ -101,6 +101,14 @@ type Options struct {
 	// NoPasswordLogin hides the password form; the auth service refuses everyone but the
 	// break-glass admin.
 	NoPasswordLogin bool
+	// Self is nudge's own container (stacks.SelfID) and DockerHost how the server reaches
+	// the local environment's daemon: what an update of the server replaces, and what the
+	// generic recreate, update and stack runs refuse to touch.
+	Self       stacks.Self
+	DockerHost string
+	// AgentSelf asks an agent environment's agent for its own container and Docker host
+	// (selfupdate.RemoteSelf); nil means agents can't be updated from the server.
+	AgentSelf func(ctx context.Context, env environments.Environment) (stacks.Self, string, error)
 	// TrustedProxies are the reverse proxies whose X-Forwarded-For (client IP for the
 	// login limiter and logs) and X-Forwarded-Proto are believed; empty means none.
 	TrustedProxies []netip.Prefix
@@ -315,6 +323,12 @@ var routes = []route{
 	{"POST /api/v1/environments/{env}/stacks/{id}/up", (*server).upStack},
 	{"POST /api/v1/environments/{env}/stacks/{id}/down", (*server).downStack},
 	{"POST /api/v1/environments/{env}/stacks/{id}/update", (*server).updateStackImages},
+	{"GET /api/v1/system/update", (*server).getSystemUpdate},
+	{"POST /api/v1/system/update/check", (*server).checkSystemUpdate},
+	{"POST /api/v1/system/update", (*server).startSystemUpdate},
+	{"GET /api/v1/environments/{env}/agent/update", (*server).getAgentUpdate},
+	{"POST /api/v1/environments/{env}/agent/update/check", (*server).checkAgentUpdate},
+	{"POST /api/v1/environments/{env}/agent/update", (*server).startAgentUpdate},
 	{"GET /api/v1/environments/{env}/updates", (*server).listUpdates},
 	{"POST /api/v1/environments/{env}/updates/check", (*server).checkUpdates},
 	{"GET /api/v1/environments/{env}/updates/history", (*server).listUpdateHistory},
@@ -348,6 +362,7 @@ func New(opts Options) http.Handler {
 		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, deployments: opts.Deployments, usage: opts.Usage, backups: opts.Backups, allowances: opts.Allowances, tenant: opts.Tenant, deniedLabels: opts.DeniedLabels, registryClient: opts.RegistryClient,
 		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, oidc: opts.OIDC, oidcName: opts.OIDCName, noPasswordLogin: opts.NoPasswordLogin, recreating: map[string]bool{},
 		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{}, summaries: map[summaryKey]*summaryEntry{},
+		self: opts.Self, dockerHost: opts.DockerHost, agentSelf: opts.AgentSelf,
 		checks:         make(chan struct{}, maxStackChecks),
 		done:           context.Background(),
 		userRegistries: newRegistrySet(opts.UserRegistries),
@@ -405,6 +420,11 @@ type server struct {
 	version string
 	auth    *auth.Service
 	envs    *environments.Service
+
+	// self, dockerHost and agentSelf find nudge's own containers (Options).
+	self       stacks.Self
+	dockerHost string
+	agentSelf  func(ctx context.Context, env environments.Environment) (stacks.Self, string, error)
 
 	registries     *registries.Service
 	registryClient RegistryBrowser

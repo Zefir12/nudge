@@ -18,9 +18,10 @@ import (
 const usage = `usage: nudge-agent [command] [flags]
 
 commands:
-  agent    connect this host's Docker to a nudge server (default)
-  probe    one HTTP check (what a deployment's HTTP check runs in a helper container)
-  version  print the version
+  agent        connect this host's Docker to a nudge server (default)
+  probe        one HTTP check (what a deployment's HTTP check runs in a helper container)
+  self-update  replace this container with its image's newer version (what a self-update's helper runs)
+  version      print the version
 
 Run "nudge-agent <command> -h" for a command's flags.
 `
@@ -42,6 +43,8 @@ func realMain(ctx context.Context, args []string, getenv func(string) string, st
 		return cli.Agent(ctx, args, getenv, stderr, "")
 	case "probe":
 		return cli.Probe(ctx, args, stdout, stderr)
+	case "self-update":
+		return cli.SelfUpdate(ctx, args, stderr)
 	case "version":
 		_, _ = fmt.Fprintln(stdout, version.Version)
 		return 0

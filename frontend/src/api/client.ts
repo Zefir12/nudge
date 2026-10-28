@@ -1205,6 +1205,36 @@ export const listUpdates = (env: string) => apiFetch<ImageUpdate[]>(envPath(env,
 export const checkUpdates = (env: string) =>
   apiFetch<ImageUpdate[]>(envPath(env, '/updates/check'), post({}));
 
+// SelfUpdate is the update state of nudge's own container: the server's, or an agent's
+// on its environment. can_update is false when nudge can't replace it itself (reason).
+export interface SelfUpdate {
+  version: string;
+  image?: string;
+  status: 'available' | 'current' | 'unknown';
+  local_digest?: string;
+  remote_digest?: string;
+  checked_at?: string;
+  // error says why the status is unknown.
+  error?: string;
+  can_update: boolean;
+  reason?: string;
+}
+
+// SelfUpdateStarted: started is false when the registry had nothing newer.
+export interface SelfUpdateStarted {
+  started: boolean;
+}
+
+export const getSystemUpdate = () => apiFetch<SelfUpdate>('/system/update');
+export const checkSystemUpdate = () => apiFetch<SelfUpdate>('/system/update/check', post({}));
+// startSystemUpdate pulls the server's image and, if newer, restarts nudge on it.
+export const startSystemUpdate = () => apiFetch<SelfUpdateStarted>('/system/update', post({}));
+export const getAgentUpdate = (env: string) => apiFetch<SelfUpdate>(envPath(env, '/agent/update'));
+export const checkAgentUpdate = (env: string) =>
+  apiFetch<SelfUpdate>(envPath(env, '/agent/update/check'), post({}));
+export const startAgentUpdate = (env: string) =>
+  apiFetch<SelfUpdateStarted>(envPath(env, '/agent/update'), post({}));
+
 // UpdateRecord is an update made through nudge: the image a container (or a stack's
 // service) ran before and after, for a rollback by hand. Digests are empty when unknown.
 export interface UpdateRecord {
