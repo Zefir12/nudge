@@ -229,6 +229,8 @@ func TestCreateTenantRefusals(t *testing.T) {
 		{"proxy label without a dot", `,"labels":{"caddy_0":"shop.example"}`, 400, `labels starting with caddy are not allowed`},
 		{"image sets a proxy label", `,"image":"routed:1"`, 400, "the image sets labels starting with traefik., which are not allowed"},
 		{"no name", `,"name":""`, 400, `"name":"required"`},
+		{"internal registry", `,"image":"10.0.0.5:5000/x:1"`, 403, "pulls from 10.0.0.5:5000 are not allowed"},
+		{"upper-case host", `,"image":"Intranet/x:1"`, 403, "pulls from intranet are not allowed"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

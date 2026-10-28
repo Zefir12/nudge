@@ -279,7 +279,9 @@ above stays admin-only.
   public images), and must fit the allowance (its image patterns and disk). An image that
   sets a label in the `net.zefirlabs.nudge.` namespace is refused, and so is one with a
   `VOLUME` no mount covers (`fields.mounts` names the paths): Docker would make an
-  anonymous volume nobody owns.
+  anonymous volume nobody owns. An image from a registry outside the server's
+  `NUDGE_USER_REGISTRIES` is `403` and never pulled (docs/config/server.md, "Registries
+  users can pull from"); this holds for every user's pull, also updates and deploy webhooks.
 - Someone else's volume or network is `400` on its field; going over the allowance or
   outside the port range is `409`.
 - `POST .../user-containers` with a spec plus `"start": true` answers `201` with

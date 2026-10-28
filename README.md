@@ -56,6 +56,7 @@ Flags with `NUDGE_*` environment variable fallbacks; the defaults work in the im
 | `NUDGE_TENANT_CGROUP_PARENT` | | cgroup parent of each user's containers, `{id}` for the user's ID (e.g. `nudge-u{id}.slice`) |
 | `NUDGE_TENANT_RUNTIME` | | OCI runtime of users' containers (e.g. `runsc`) |
 | `NUDGE_TENANT_STORAGE_SIZE` | | disk cap of a user's container's writable layer (e.g. `10G`) |
+| `NUDGE_USER_REGISTRIES` | Docker Hub and the big public registries | registry hosts users' pulls may reach, `*` for any |
 | `NUDGE_TENANT_DENIED_LABELS` | `traefik.,caddy,…` | label prefixes users may not set on their containers (reverse proxies, updaters), or `none` |
 
 Remote hosts run the agent image, `registrydedic.zefirlabs.net/nudge-agent`, with `NUDGE_SERVER_URL` and
