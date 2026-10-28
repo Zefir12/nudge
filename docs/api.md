@@ -28,6 +28,7 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | GET | `/api/v1/setup` | public | `{"needed":true}` while no user exists |
 | POST | `/api/v1/setup` | public | create the admin and log in; see below |
 | POST | `/api/v1/auth/login` | public | log in; see below |
+| POST | `/api/v1/auth/password` | user, session only | change your own password `{"current", "new"}`; `204`, other sessions end; see Setup and login |
 | POST | `/api/v1/auth/logout` | public | end the session and clear the cookie; `204` (a no-op for API tokens), or `200 {"logout_url": "..."}` for a single sign-on user: the provider's sign-out page to visit next |
 | GET | `/api/v1/auth/me` | user | the logged-in user |
 | GET | `/api/v1/auth/methods` | public | the login page's ways to sign in; see Single sign-on |
@@ -148,7 +149,7 @@ With an OpenID Connect provider configured (docs/config/server.md, Single sign-o
 ### Setup and login
 `POST /api/v1/setup` and `POST /api/v1/auth/login` take
 `{"username": "admin", "password": "..."}` and answer with the user
-`{"id": 1, "username": "admin", "created_at": "2026-10-24T12:00:00Z", "role": "admin", "admin": true}`
+`{"id": 1, "username": "admin", "created_at": "2026-10-24T12:00:00Z", "role": "admin", "admin": true, "sso": false}`
 (`201` for setup,
 `200` for login) plus the session cookie: `HttpOnly`, `SameSite=Strict`, `Path=/`,
 `Secure` when nudge serves TLS or `NUDGE_PUBLIC_URL` is `https://`, else when the request
@@ -156,7 +157,8 @@ came over HTTPS (or with `X-Forwarded-Proto: https` from a trusted proxy,
 `NUDGE_TRUSTED_PROXIES`),
 valid for 7 days. `GET /api/v1/auth/me` returns the same user object. `admin` says
 whether the user may use the admin routes (`role` is `admin`); the web UI hides
-admin-only pages and actions when it is false. Setup creates an admin.
+admin-only pages and actions when it is false. `sso` says the user signs in through
+single sign-on and has no password in nudge. Setup creates an admin.
 
 - Setup works only while no user exists, else `409`. The username is 1 to 64 bytes
   without control characters or surrounding spaces; the password at least 8 characters
@@ -172,6 +174,14 @@ admin-only pages and actions when it is false. Setup creates an admin.
   the proxy's IP.
 - When too many logins wait for a password check, login answers `503` with
   `Retry-After: 1`.
+
+`POST /api/v1/auth/password` with `{"current": "...", "new": "..."}` changes the
+signed-in user's own password and answers `204`. It ends the user's other sessions; the one
+that asked stays, and API tokens keep working. Session only: an API token gets `403`, so a
+leaked token can't take over the account. A wrong current password is
+`403 {"error":"the current password is wrong"}` and counts toward the failed-login limits
+above (`429` once they are reached); a new password that breaks the rules above, or an
+SSO user (no password in nudge), is `400`. Audited without the passwords.
 
 ### Tokens
 `POST /api/v1/tokens` with `{"name": "ci"}` answers `201` with

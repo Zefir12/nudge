@@ -285,6 +285,77 @@ func (s *Service) Login(ctx context.Context, ip, username, password string) (Ses
 	return s.newSession(ctx, u, s.ttl)
 }
 
+// ChangePassword sets user id's password to next if current is their password, and ends
+// their other sessions (keep is the session token that asked, which stays). A wrong
+// current password counts toward the login rate limits like a failed login, and is
+// ErrInvalidCredentials; an SSO user has no password to change (InputError).
+func (s *Service) ChangePassword(ctx context.Context, ip string, id int64, keep, current, next string) error {
+	if err := validPassword(next); err != nil {
+		return err
+	}
+	now := s.now()
+	if d, ok := s.ipLimit.reserve(ip, now); !ok {
+		return &RateLimitedError{RetryAfter: d}
+	}
+	var username, hash string
+	err := s.db.QueryRowContext(ctx, `SELECT username, password_hash FROM users WHERE id = ?`, id).Scan(&username, &hash)
+	if err != nil {
+		s.ipLimit.release(ip, now)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrUserNotFound
+		}
+		return fmt.Errorf("look up user: %w", err)
+	}
+	if hash == "" {
+		s.ipLimit.release(ip, now)
+		return &InputError{Msg: "an SSO user has no password in nudge"}
+	}
+	userKey := strings.ToLower(username)
+	if d, ok := s.userLimit.reserve(userKey, now); !ok {
+		return &RateLimitedError{RetryAfter: d}
+	}
+	ok := false
+	if len(current) <= maxPasswordLen {
+		if ok, err = s.verify(ctx, hash, current); err != nil {
+			s.ipLimit.release(ip, now)
+			s.userLimit.release(userKey, now)
+			return err
+		}
+	}
+	if !ok {
+		return ErrInvalidCredentials
+	}
+	s.ipLimit.release(ip, now)
+	s.userLimit.reset(userKey)
+	newHash, err := s.hash(ctx, next)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("change password: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	// The hash it was checked against: a change made meanwhile (an admin's reset) wins.
+	res, err := tx.ExecContext(ctx, `UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ? AND password_hash = ?`,
+		newHash, now.Unix(), id, hash)
+	if err != nil {
+		return fmt.Errorf("change password: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("change password: %w", err)
+	} else if n == 0 {
+		return ErrInvalidCredentials
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ? AND id_hash <> ?`, id, tokenHash(keep)); err != nil {
+		return fmt.Errorf("end other sessions: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("change password: %w", err)
+	}
+	return nil
+}
+
 func (s *Service) newSession(ctx context.Context, u User, ttl time.Duration) (Session, error) {
 	token := rand.Text()
 	now := s.now()

@@ -33,6 +33,7 @@ const sectionOf: Record<string, { label: string; list: string }> = {
   'registry-repository': { label: 'Registries', list: 'registries' },
   webhooks: { label: 'Notifications', list: 'webhooks' },
   tokens: { label: 'API tokens', list: 'tokens' },
+  account: { label: 'Account', list: 'account' },
   users: { label: 'Users', list: 'users' },
   audit: { label: 'Audit log', list: 'audit' },
 };

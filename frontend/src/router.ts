@@ -9,6 +9,7 @@ import {
 
 import { getSetupStatus, setUnauthorizedHandler } from './api/client';
 import { apiError, currentUser, loadUser } from './session';
+import AccountView from './views/AccountView.vue';
 import AuditView from './views/AuditView.vue';
 import ContainerFormView from './views/ContainerFormView.vue';
 import ContainersView from './views/ContainersView.vue';
@@ -94,6 +95,7 @@ export function createAppRouter(history: RouterHistory) {
       { path: '/registries/:id/repository', name: 'registry-repository', component: RegistryRepositoryView },
       { path: '/webhooks', name: 'webhooks', component: WebhooksView },
       { path: '/tokens', name: 'tokens', component: TokensView, meta: { users: true } },
+      { path: '/account', name: 'account', component: AccountView, meta: { users: true } },
       { path: '/users', name: 'users', component: UsersView },
       { path: '/audit', name: 'audit', component: AuditView },
       { path: '/setup', name: 'setup', component: SetupView, meta: { public: true } },
