@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { RouterLink, useRoute } from 'vue-router';
 
+import { getHealth } from '../api/client';
 import { environments } from '../environments';
 import { currentUser } from '../session';
 import EnvSwitcher from './EnvSwitcher.vue';
@@ -12,6 +13,16 @@ const props = defineProps<{ env: string | null }>();
 const emit = defineEmits<{ logout: [] }>();
 
 const route = useRoute();
+
+// The server's version, at the bottom; left out when health can't be read.
+const version = ref('');
+onMounted(async () => {
+  try {
+    version.value = (await getHealth()).version;
+  } catch {
+    version.value = '';
+  }
+});
 
 // Icons are 24×24 stroke paths.
 // users: open to users without the admin role; the others are hidden from them.
@@ -145,6 +156,8 @@ function globalActive(to: string, exact?: boolean) {
         {{ s.label }}
       </RouterLink>
     </nav>
+
+    <p v-if="version" class="version">nudge {{ version }}</p>
   </aside>
 </template>
 
@@ -261,6 +274,14 @@ nav.env {
 .group .lamp {
   width: 6px;
   height: 6px;
+}
+
+.version {
+  margin: auto 0 0;
+  padding: 0 0.6rem;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--faint);
 }
 
 nav a {

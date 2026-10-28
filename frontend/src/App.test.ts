@@ -28,8 +28,9 @@ describe('App', () => {
       const fetch = stubApi({ 'GET /environments': { body: [] } });
       const wrapper = await mountApp(path);
       expect(wrapper.find('main [role="alert"]').text()).toContain('Not allowed');
-      // Only the sidebar's environment switcher asks.
-      expect(fetch.mock.calls.every(([url]) => url === '/api/v1/environments')).toBe(true);
+      // Only the sidebar asks: the environment switcher and the version.
+      const sidebar = ['/api/v1/environments', '/api/v1/health'];
+      expect(fetch.mock.calls.every(([url]) => sidebar.includes(url))).toBe(true);
     },
   );
 

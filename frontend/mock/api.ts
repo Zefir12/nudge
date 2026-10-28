@@ -471,7 +471,7 @@ const found = <T>(v: T | undefined, what: string) => {
 };
 
 const routes: Route[] = [
-  ['GET', /^\/health$/, () => ({ status: 'ok', version: 'mock' })],
+  ['GET', /^\/health$/, () => ({ status: 'ok', version: 'v1.29.1' })],
   ['GET', /^\/setup$/, () => ({ needed: false })],
   ['GET', /^\/auth\/methods$/, () => ({ password: true, oidc: { name: 'Authentik' } })],
   ['GET', /^\/auth\/me$/, () => me],

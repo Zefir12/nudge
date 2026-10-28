@@ -51,7 +51,7 @@ lets patterns in `publicRoutes` through without either credential, refuses token
 | `internal/secretbox` | AES-256-GCM for secrets nudge must read back; key in `<data>/secret.key` | `LoadKey`, `New`, `Box.Seal`/`Open` |
 | `internal/store` | SQLite (`<data>/nudge.db`), embedded migrations | `Open`, `Store.DB`, `Store.Snapshot` (`VACUUM INTO`), `SchemaVersion`, `migrations/NNNN_name.sql` |
 | `internal/web` | embedded frontend, SPA fallback | `Dist`, `Handler` |
-| `internal/version` | build version via ldflags | `Version` |
+| `internal/version` | build version via ldflags, `vMAJOR.MINOR.PATCH` from `scripts/version.sh` (docs/versioning.md) | `Version` |
 
 ## Frontend (frontend/src)
 | Path | What |

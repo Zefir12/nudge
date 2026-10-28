@@ -11,7 +11,9 @@ LINT_IMAGE ?= golangci/golangci-lint:v2.15.0
 # The frontend's toolchain (Vite+, from frontend/package.json).
 NODE_IMAGE ?= node:24.22.1
 
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# vMAJOR.MINOR.PATCH counted from git history (scripts/version.sh: releases into main, PRs
+# into develop, commits since the last PR).
+VERSION ?= $(shell scripts/version.sh 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X git.zefirlabs.net/zefir/nudge/backend/internal/version.Version=$(VERSION)
 
 # Tooling runs in Docker by default (only Docker and make needed on the host).
@@ -22,6 +24,7 @@ GO := cd backend && go
 LINT := cd backend && golangci-lint
 NPM := cd frontend && npm
 NPX := cd frontend && npx
+SH := sh
 else
 DOCKER_RUN := docker run --rm -v "$(CURDIR)":/src \
 	-v nudge-gomod:/go/pkg/mod -v nudge-gocache:/root/.cache
@@ -30,6 +33,7 @@ LINT := $(DOCKER_RUN) -w /src/backend $(LINT_IMAGE) golangci-lint
 WEB_RUN := docker run --rm -v "$(CURDIR)/frontend":/web -w /web $(NODE_IMAGE)
 NPM := $(WEB_RUN) npm
 NPX := $(WEB_RUN) npx
+SH := $(DOCKER_RUN) -w /src $(GO_IMAGE) sh
 endif
 
 .PHONY: test lint format tidy run web-install web-test web-check web-format web-build web-dev web-mock \
@@ -37,9 +41,10 @@ endif
 
 # --- DEV ---
 
-# Go tests (race detector), then the frontend's.
+# Go tests (race detector), the version script's, then the frontend's.
 test: frontend/node_modules
 	$(GO) test -race ./...
+	$(SH) scripts/version_test.sh
 	$(NPX) vp test run
 
 # golangci-lint (vet, staticcheck, gosec, gofmt/goimports …; backend/.golangci.yml),
@@ -117,5 +122,5 @@ publish:
 
 publish-hash:
 	tag=$$(git rev-parse --short HEAD) && \
-	docker buildx build --build-arg VERSION=$$tag --target server -t $(IMAGE):$$tag --push . && \
-	docker buildx build --build-arg VERSION=$$tag --target agent -t $(AGENT_IMAGE):$$tag --push .
+	docker buildx build --build-arg VERSION=$(VERSION) --target server -t $(IMAGE):$$tag --push . && \
+	docker buildx build --build-arg VERSION=$(VERSION) --target agent -t $(AGENT_IMAGE):$$tag --push .
