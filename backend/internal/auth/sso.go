@@ -152,3 +152,53 @@ func clipProfile(s string) string {
 	}
 	return s
 }
+
+// Revoked is what RevokeSSO took from an SSO user.
+type Revoked struct {
+	// Username is the nudge user's name; "" when the provider's user never signed in.
+	Username string
+	Sessions int64
+	Tokens   int64
+}
+
+// RevokeSSO ends every session and deletes every API token of the SSO user with this
+// issuer and subject, as when the provider takes their role away. The user itself stays,
+// so a later login with a role signs them in again. A user that doesn't exist yet
+// revokes nothing.
+func (s *Service) RevokeSSO(ctx context.Context, issuer, subject string) (Revoked, error) {
+	if issuer == "" || subject == "" {
+		return Revoked{}, errors.New("revoke sso user: missing issuer or subject")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Revoked{}, fmt.Errorf("revoke sso user: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var r Revoked
+	var id int64
+	err = tx.QueryRowContext(ctx, `SELECT id, username FROM users WHERE oidc_issuer = ? AND oidc_subject = ?`,
+		issuer, subject).Scan(&id, &r.Username)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Revoked{}, nil
+	}
+	if err != nil {
+		return Revoked{}, fmt.Errorf("look up sso user: %w", err)
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, id)
+	if err != nil {
+		return Revoked{}, fmt.Errorf("revoke sso sessions: %w", err)
+	}
+	if r.Sessions, err = res.RowsAffected(); err != nil {
+		return Revoked{}, fmt.Errorf("revoke sso sessions: %w", err)
+	}
+	if res, err = tx.ExecContext(ctx, `DELETE FROM api_tokens WHERE user_id = ?`, id); err != nil {
+		return Revoked{}, fmt.Errorf("revoke sso tokens: %w", err)
+	}
+	if r.Tokens, err = res.RowsAffected(); err != nil {
+		return Revoked{}, fmt.Errorf("revoke sso tokens: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Revoked{}, fmt.Errorf("revoke sso user: %w", err)
+	}
+	return r, nil
+}

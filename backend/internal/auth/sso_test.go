@@ -190,3 +190,65 @@ func TestAdminPasswordOnly(t *testing.T) {
 		t.Errorf("break-glass admin err = %v", err)
 	}
 }
+
+// TestRevokeSSO ends the sessions and deletes the tokens of one SSO user only, and
+// leaves the user able to sign in again.
+func TestRevokeSSO(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, _ := newSSOService(t, Options{})
+	id := Identity{Issuer: "https://auth.example.net", Subject: "u-1", Username: "alice", Role: RoleAdmin}
+	other := Identity{Issuer: "https://auth.example.net", Subject: "u-2", Username: "bob", Role: RoleAdmin}
+	var sessions []Session
+	for _, i := range []Identity{id, id, other} {
+		sess, err := s.SSOLogin(ctx, i)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sessions = append(sessions, sess)
+	}
+	_, secret, err := s.CreateToken(ctx, sessions[0].User.ID, "ci")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, otherSecret, err := s.CreateToken(ctx, sessions[2].User.ID, "ci")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name, issuer, subject string
+		want                  Revoked
+		wantErr               bool
+	}{
+		{name: "unknown subject", issuer: id.Issuer, subject: "u-9"},
+		{name: "other issuer", issuer: "https://other.example.net", subject: "u-1"},
+		{name: "missing subject", issuer: id.Issuer, wantErr: true},
+		{name: "user", issuer: id.Issuer, subject: "u-1", want: Revoked{Username: "alice", Sessions: 2, Tokens: 1}},
+		{name: "again", issuer: id.Issuer, subject: "u-1", want: Revoked{Username: "alice"}},
+	}
+	for _, tt := range tests {
+		got, err := s.RevokeSSO(ctx, tt.issuer, tt.subject)
+		if (err != nil) != tt.wantErr || got != tt.want {
+			t.Errorf("%s: RevokeSSO = %+v, %v; want %+v", tt.name, got, err, tt.want)
+		}
+	}
+
+	for i, sess := range sessions[:2] {
+		if _, err := s.SessionUser(ctx, sess.Token); !errors.Is(err, ErrNoSession) {
+			t.Errorf("session %d after revoke: %v", i, err)
+		}
+	}
+	if _, err := s.TokenUser(ctx, secret); !errors.Is(err, ErrNoSession) {
+		t.Errorf("token after revoke: %v", err)
+	}
+	if _, err := s.SessionUser(ctx, sessions[2].Token); err != nil {
+		t.Errorf("other user's session: %v", err)
+	}
+	if _, err := s.TokenUser(ctx, otherSecret); err != nil {
+		t.Errorf("other user's token: %v", err)
+	}
+	if sess, err := s.SSOLogin(ctx, id); err != nil || sess.User.ID != sessions[0].User.ID {
+		t.Errorf("login after revoke = %+v, %v", sess.User, err)
+	}
+}

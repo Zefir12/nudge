@@ -204,9 +204,11 @@ redirect URI to register is `<public URL>/api/v1/auth/oidc/callback`; the scopes
   detail and count against the per-IP login limit (shared with password login).
 - **Revoking access.** Roles and MFA are checked at login only: a user whose admin role is
   taken away keeps their session (as an admin) until `NUDGE_OIDC_SESSION_TTL` ends it or
-  they log in again, and API tokens they created keep working until deleted in nudge.
-  Disabling the user in nudge (Users page) ends their sessions and stops their tokens
-  at once.
+  they log in again, and API tokens they created keep working until then. The next SSO
+  login without either role is refused and ends all of that user's sessions and deletes
+  their API tokens (audited); a login refused only for a missing second factor revokes
+  nothing. Deploy tokens and deploy webhooks they created are not touched. Disabling the
+  user in nudge (Users page) ends their sessions and stops their tokens at once.
 - **Break-glass.** SSO users count as users, so `NUDGE_ADMIN_PASSWORD` creates the local
   `admin` only on a fresh install: set it before the first SSO login if you want a way in
   without the provider (or after turning SSO off).
