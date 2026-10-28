@@ -39,6 +39,17 @@ Under the deployment's Settings → Health checks:
 - **Roll back when a check fails:** off by default. When on, a failed run deploys the
   values it replaced again (the update history records both). The run ends `rolled_back`,
   and CI still fails.
+- **Remove finished one-off containers:** off by default. When on, a run that succeeded
+  (after every check above) removes the stack's containers that exited with code 0 and
+  have restart policy `no`: a `migrate` or `seed` service that ran before the server.
+  Running containers, non-zero exits, restarting services and other stacks' containers
+  are never touched, and a failed or rolled-back run removes nothing, so a failed
+  migration stays to inspect. The next deploy creates them again, and `depends_on:
+  condition: service_completed_successfully` still waits for them. Their logs go with
+  them; the run's progress (and the server log) names the removed containers, and a
+  removal that fails is a warning on the run, not a failure. It's a setting rather than a
+  compose label because exit 0 with no restart already marks a one-off job, and it keeps
+  the compose file free of nudge-only labels.
 
 A failed run without rollback puts the `.env` back, so the next start of the stack uses
 the values that worked. The containers the failed run started keep running until then.
