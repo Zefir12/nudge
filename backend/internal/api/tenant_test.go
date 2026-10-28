@@ -409,3 +409,89 @@ func TestTenantSpecValidate(t *testing.T) {
 		})
 	}
 }
+
+// An image bob's pull brought that the builder then refuses (nudge's labels, an uncovered
+// VOLUME) is removed again and not counted; one already on the host stays.
+func TestTenantRefusedPullRemoved(t *testing.T) {
+	t.Parallel()
+	pg := image.InspectResponse{ID: "sha256:pg", Config: &dockerspec.DockerOCIImageConfig{ImageConfig: ocispec.ImageConfig{
+		Volumes: map[string]struct{}{"/var/lib/postgresql/data": {}},
+	}}}
+	tests := []struct {
+		name    string
+		present bool
+		// bring is the image the pull brings, under the reference pulled.
+		ref     string
+		bring   image.InspectResponse
+		req     func(ot ownTest) request
+		code    int
+		removed []string
+	}{
+		{name: "create with the owner label", ref: "evil:1", code: 400, removed: []string{"sha256:evil"},
+			req: func(ot ownTest) request {
+				return request{method: "POST", path: ot.path(ot.local, "/user-containers"), cookie: ot.bob, body: `{` + tenantBase + `,"image":"evil:1"}`}
+			}},
+		{name: "create with an uncovered VOLUME", ref: "postgres:17", bring: pg, code: 400, removed: []string{"sha256:pg"},
+			req: func(ot ownTest) request {
+				return request{method: "POST", path: ot.path(ot.local, "/user-containers"), cookie: ot.bob, body: `{` + tenantBase + `,"image":"postgres:17"}`}
+			}},
+		{name: "create with an image already present", ref: "postgres:17", bring: pg, present: true, code: 400,
+			req: func(ot ownTest) request {
+				return request{method: "POST", path: ot.path(ot.local, "/user-containers"), cookie: ot.bob, body: `{` + tenantBase + `,"image":"postgres:17"}`}
+			}},
+		{name: "recreate with an uncovered VOLUME", ref: "postgres:17", bring: pg, code: 400, removed: []string{"sha256:pg"},
+			req: func(ot ownTest) request {
+				return request{method: "POST", path: ot.path(ot.local, "/user-containers/mine/recreate"), cookie: ot.bob, body: `{` + tenantBase + `,"image":"postgres:17"}`}
+			}},
+		{name: "update to an image with a VOLUME", ref: "nginx:1", code: 400, removed: []string{"sha256:pgnginx"},
+			bring: image.InspectResponse{ID: "sha256:pgnginx", Config: pg.Config},
+			req: func(ot ownTest) request {
+				return request{method: "POST", path: ot.path(ot.local, "/containers/mine/update"), cookie: ot.bob}
+			}},
+		{name: "covered VOLUME", ref: "postgres:17", bring: pg, code: 201,
+			req: func(ot ownTest) request {
+				return request{method: "POST", path: ot.path(ot.local, "/user-containers"), cookie: ot.bob, body: `{` + tenantBase +
+					`,"image":"postgres:17","mounts":[{"volume":"pgdata","target":"/var/lib/postgresql/data"}]}`}
+			}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ot := newTenantTest(t)
+			bring := tt.bring
+			if bring.ID == "" {
+				bring = ot.fake.ImageDetails[tt.ref]
+			}
+			if tt.present {
+				ot.fake.Images = append(ot.fake.Images, image.Summary{ID: bring.ID})
+			}
+			ot.fake.FailAction = func(a dockertest.Action) error {
+				if a.Name == "image-pull" {
+					ot.fake.ImageDetails[tt.ref], ot.fake.ImageDetails[bring.ID] = bring, bring
+				}
+				return nil
+			}
+			before := len(ot.fake.Actions())
+			rec := do(t, ot.h, tt.req(ot))
+			if rec.Code != tt.code {
+				t.Fatalf("= %d %s, want %d", rec.Code, rec.Body, tt.code)
+			}
+			var removed []string
+			for _, a := range ot.fake.Actions()[before:] {
+				if a.Name == "image-remove" {
+					removed = append(removed, a.ID)
+				}
+			}
+			if !slices.Equal(removed, tt.removed) {
+				t.Errorf("removed = %v, want %v", removed, tt.removed)
+			}
+			pulls, err := ot.allowances.Pulls(t.Context(), ot.bobID, ot.local)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.code != 201 && len(pulls) > 0 {
+				t.Errorf("pulls = %v, want the refused image not counted", pulls)
+			}
+		})
+	}
+}
