@@ -259,7 +259,7 @@ func TestDeployRemoveOneOffs(t *testing.T) {
 		warnings []string
 	}{
 		{name: "off by default", health: `{}`, status: "succeeded"},
-		{name: "removes finished one-off containers", health: `{"remove_oneoffs":true}`, status: "succeeded", removed: []string{"m1"}},
+		{name: "removes finished one-off containers", health: `{"remove_oneoffs":true}`, status: "succeeded", removed: []string{"m1", "n1"}},
 		{
 			name: "kept when the check fails", health: `{"remove_oneoffs":true,"http":{"service":"app","port":8080}}`,
 			setup:  func(ht *healthTest) { ht.runner.probeErr = &probe.FailedError{Msg: "answered another status than 200"} },
@@ -280,7 +280,7 @@ func TestDeployRemoveOneOffs(t *testing.T) {
 					return nil
 				}
 			},
-			status: "succeeded", warnings: []string{"couldn't remove the finished one-off container web-migrate-1"},
+			status: "succeeded", warnings: []string{"couldn't remove the finished one-off container web-migrate-1", "couldn't remove the finished one-off container web-init-1"},
 		},
 	}
 	for _, tt := range tests {
@@ -304,7 +304,19 @@ func TestDeployRemoveOneOffs(t *testing.T) {
 					container.Summary{ID: "f1", Names: []string{"/web-seed-1"}, State: container.StateExited, Labels: labels("web", "seed")},
 					container.Summary{ID: "r1", Names: []string{"/web-cron-1"}, State: container.StateExited, Labels: labels("web", "cron")},
 					container.Summary{ID: "o1", Names: []string{"/shop-migrate-1"}, State: container.StateExited, Labels: labels("shop", "migrate")},
+					// Listed as exited, but running (or restarting) when inspected.
+					container.Summary{ID: "s1", Names: []string{"/web-worker-1"}, State: container.StateExited, Labels: labels("web", "worker")},
+					container.Summary{ID: "s2", Names: []string{"/web-queue-1"}, State: container.StateExited, Labels: labels("web", "queue")},
+					// Exited with 0, no restart policy known.
+					container.Summary{ID: "n1", Names: []string{"/web-init-1"}, State: container.StateExited, Labels: labels("web", "init")},
+					// Gone by the time it is inspected.
+					container.Summary{ID: "g1", Names: []string{"/web-gone-1"}, State: container.StateExited, Labels: labels("web", "gone")},
 				)
+				ht.fake.ContainerDetails["a2"] = container.InspectResponse{ID: "a2",
+					State: &container.State{Status: container.StateRunning, Running: true}, HostConfig: &container.HostConfig{}}
+				ht.fake.ContainerDetails["s1"] = container.InspectResponse{State: &container.State{Status: container.StateRunning, Running: true}}
+				ht.fake.ContainerDetails["s2"] = container.InspectResponse{State: &container.State{Status: container.StateRestarting, Restarting: true}}
+				ht.fake.ContainerDetails["n1"] = container.InspectResponse{State: &container.State{Status: container.StateExited}}
 				ht.fake.ContainerDetails["m1"] = exited(0, container.RestartPolicyDisabled)
 				ht.fake.ContainerDetails["f1"] = exited(1, container.RestartPolicyDisabled)
 				ht.fake.ContainerDetails["r1"] = exited(0, container.RestartPolicyUnlessStopped)

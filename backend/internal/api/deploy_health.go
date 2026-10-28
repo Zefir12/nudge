@@ -148,9 +148,9 @@ func (s *server) removeOneOffs(ctx context.Context, c docker.Client, d deploymen
 		s.log.Warn("deployment run: remove one-off containers", "deployment", d.Name, "run", run.ID, "err", err)
 		report(deployments.Progress{Message: msg, Warning: true})
 	}
-	ctx, cancel := context.WithTimeout(ctx, dockerTimeout)
-	defer cancel()
-	items, err := projectContainers(ctx, c, d.Stack)
+	listCtx, cancel := context.WithTimeout(ctx, dockerTimeout)
+	items, err := projectContainers(listCtx, c, d.Stack)
+	cancel()
 	if err != nil {
 		warn("couldn't list the stack's containers to remove the finished one-off ones", err)
 		return
@@ -164,27 +164,36 @@ func (s *server) removeOneOffs(ctx context.Context, c docker.Client, d deploymen
 		if len(it.Names) > 0 {
 			name = strings.TrimPrefix(it.Names[0], "/")
 		}
-		info, err := c.ContainerInspect(ctx, it.ID, client.ContainerInspectOptions{})
-		if docker.NotFound(err) {
-			continue
-		}
+		ok, err := s.removeOneOff(ctx, c, it.ID)
 		if err != nil {
-			warn("couldn't inspect the one-off container "+name+"; it was kept", err)
-			continue
-		}
-		if !finishedOneOff(info.Container) {
-			continue
-		}
-		if _, err := c.ContainerRemove(ctx, it.ID, client.ContainerRemoveOptions{}); err != nil && !docker.NotFound(err) {
 			warn("couldn't remove the finished one-off container "+name, err)
-			continue
 		}
-		removed = append(removed, name)
+		if ok {
+			removed = append(removed, name)
+		}
 	}
 	if len(removed) > 0 {
 		s.log.Info("deployment run: removed one-off containers", "deployment", d.Name, "run", run.ID, "containers", removed)
 		report(deployments.Progress{Message: "removed finished one-off containers: " + strings.Join(removed, ", ")})
 	}
+}
+
+// removeOneOff removes container id if it is a finished one-off; ok says it was removed.
+// Without Force, the daemon refuses one that started again in between.
+func (s *server) removeOneOff(ctx context.Context, c docker.Client, id string) (ok bool, err error) {
+	ctx, cancel := context.WithTimeout(ctx, dockerTimeout)
+	defer cancel()
+	info, err := c.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
+	if docker.NotFound(err) || err == nil && !finishedOneOff(info.Container) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if _, err := c.ContainerRemove(ctx, id, client.ContainerRemoveOptions{}); err != nil && !docker.NotFound(err) {
+		return false, err
+	}
+	return true, nil
 }
 
 // finishedOneOff is a container that exited with 0 and that Docker doesn't restart.
