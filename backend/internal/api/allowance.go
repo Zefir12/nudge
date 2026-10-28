@@ -393,8 +393,9 @@ func (s *server) fitAllowance(ctx context.Context, env int64, c docker.Client, k
 	}
 	if create {
 		// An image that sets the owner label makes its container the admins' (see
-		// ownsContainer): a user's would escape every later check.
-		if err := refuseOwnerImage(ctx, c, cfg.Image); err != nil {
+		// ownsContainer): a user's would escape every later check. Docker copies an
+		// image's labels onto its containers, so denied labels are refused there too.
+		if err := refuseImageLabels(ctx, c, cfg.Image, s.deniedLabels); err != nil {
 			return nil, err
 		}
 	}
@@ -418,9 +419,10 @@ func (s *server) fitAllowance(ctx context.Context, env int64, c docker.Client, k
 	return unlock, nil
 }
 
-// refuseOwnerImage refuses image if it sets nudge's owner label. A missing image is left
-// to the create to report.
-func refuseOwnerImage(ctx context.Context, c docker.Client, image string) error {
+// refuseImageLabels refuses image for a user's container if it sets a label in nudge's
+// namespace or one starting with a prefix of denied. A missing image is left to the
+// create to report.
+func refuseImageLabels(ctx context.Context, c docker.Client, image string, denied []string) error {
 	img, err := c.ImageInspect(ctx, image)
 	if docker.NotFound(err) {
 		return nil
@@ -429,9 +431,12 @@ func refuseOwnerImage(ctx context.Context, c docker.Client, image string) error 
 		return fmt.Errorf("inspect image: %w", err)
 	}
 	if img.Config != nil {
-		for k := range img.Config.Labels {
+		for _, k := range slices.Sorted(maps.Keys(img.Config.Labels)) {
 			if reservedKey(k) {
 				return &statusError{code: http.StatusBadRequest, msg: "the image sets labels starting with " + reservedLabels + ", which are reserved for nudge"}
+			}
+			if p := deniedLabel(k, denied); p != "" {
+				return &statusError{code: http.StatusBadRequest, msg: "the image sets labels starting with " + p + ", which are not allowed on this server"}
 			}
 		}
 	}

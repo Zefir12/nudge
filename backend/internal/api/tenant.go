@@ -52,6 +52,18 @@ const (
 	dockerLabels = "com.docker."
 )
 
+// deniedLabel returns the prefix of denied (Options.DeniedLabels) that label k starts
+// with, ignoring case, or "".
+func deniedLabel(k string, denied []string) string {
+	k = strings.ToLower(k)
+	for _, p := range denied {
+		if strings.HasPrefix(k, p) {
+			return p
+		}
+	}
+	return ""
+}
+
 // tenantSpec is everything a user may set on their container.
 type tenantSpec struct {
 	Image string `json:"image"`
@@ -130,8 +142,9 @@ func (s *server) decodeStrict(w http.ResponseWriter, r *http.Request, v any) boo
 
 // validate returns a message per invalid field, keyed like the JSON (ports.0.host_port).
 // Whether the volumes, networks and image are the user's to use is checked against the
-// daemon (tenantRefs, imageVolumes); the allowance by fitAllowance.
-func (sp *tenantSpec) validate() map[string]string {
+// daemon (tenantRefs, imageVolumes); the allowance by fitAllowance. Labels starting with
+// a prefix of denied are refused (Options.DeniedLabels).
+func (sp *tenantSpec) validate(denied []string) map[string]string {
 	errs := map[string]string{}
 	sp.Image = strings.TrimSpace(sp.Image)
 	sp.Name = strings.TrimSpace(sp.Name)
@@ -225,6 +238,13 @@ func (sp *tenantSpec) validate() map[string]string {
 		return strings.HasPrefix(strings.ToLower(k), dockerLabels)
 	}) {
 		errs["labels"] = "labels starting with " + dockerLabels + " are Docker's own"
+	} else {
+		for _, k := range slices.Sorted(maps.Keys(sp.Labels)) {
+			if p := deniedLabel(k, denied); p != "" {
+				errs["labels"] = "labels starting with " + p + " are not allowed on this server"
+				break
+			}
+		}
 	}
 	return errs
 }
@@ -248,7 +268,7 @@ func buildTenant(sp *tenantSpec, owner tenantOwner, host TenantHosting) (*contai
 	maps.DeleteFunc(labels, func(k, _ string) bool { return reservedKey(k) })
 	if owner.key != "" {
 		// Set last, so it wins over the spec; an image's own value can't override a
-		// container's label (and an image that sets one is refused, refuseOwnerImage).
+		// container's label (and an image that sets one is refused, refuseImageLabels).
 		labels[ownerLabel] = owner.key
 	}
 	cfg := &container.Config{
@@ -477,7 +497,7 @@ func (s *server) createTenantContainer(w http.ResponseWriter, r *http.Request) {
 	if !s.decodeStrict(w, r, &req) {
 		return
 	}
-	if errs := req.validate(); len(errs) > 0 {
+	if errs := req.validate(s.deniedLabels); len(errs) > 0 {
 		s.writeFields(w, errs)
 		return
 	}
@@ -590,7 +610,7 @@ func (s *server) recreateTenantContainer(w http.ResponseWriter, r *http.Request)
 	if !s.decodeStrict(w, r, &sp) {
 		return
 	}
-	if errs := sp.validate(); len(errs) > 0 {
+	if errs := sp.validate(s.deniedLabels); len(errs) > 0 {
 		s.writeFields(w, errs)
 		return
 	}
@@ -635,7 +655,7 @@ func (s *server) tenantSettings(ctx context.Context, rp *replacement) (*containe
 		}
 		read := toTenantSpec(rp.old, rp.oldImage.Config, owner.prefix)
 		sp = &read
-		if errs := sp.validate(); len(errs) > 0 {
+		if errs := sp.validate(s.deniedLabels); len(errs) > 0 {
 			return nil, nil, nil, "", &fieldsError{fields: errs}
 		}
 	}

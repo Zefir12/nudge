@@ -12,9 +12,11 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // hostPort is a host name or IP literal with an optional port. The public URL goes into
@@ -78,7 +80,16 @@ type Tenant struct {
 	Runtime string
 	// StorageSize caps a user's container's writable layer, in bytes.
 	StorageSize int64
+	// DeniedLabels are the label prefixes (lower case) users may not set on their
+	// containers, so a user can't steer label-driven tools on the host (reverse proxies,
+	// updaters). Empty denies none.
+	DeniedLabels []string
 }
+
+// DefaultDeniedLabels is the default of -tenant-denied-labels: the labels of common
+// reverse proxies (Traefik, caddy-docker-proxy), updaters (Watchtower, What's Up Docker,
+// Diun) and the Ofelia job scheduler.
+const DefaultDeniedLabels = "traefik.,caddy,com.centurylinklabs.watchtower.,ofelia.,wud.,diun."
 
 var (
 	// cgroupParent is a cgroup parent template: a systemd slice name or a cgroupfs path,
@@ -169,6 +180,7 @@ func LoadServer(args []string, getenv func(string) string, out io.Writer) (Serve
 	fs.StringVar(&c.Tenant.Runtime, "tenant-runtime", getenv("NUDGE_TENANT_RUNTIME"), "OCI runtime of users' containers, e.g. runsc (NUDGE_TENANT_RUNTIME)")
 	userRegistries := fs.String("user-registries", getenv("NUDGE_USER_REGISTRIES"), "comma-separated registry hosts users' pulls may reach, * for any (NUDGE_USER_REGISTRIES; default docker.io and the big public registries)")
 	storageSize := fs.String("tenant-storage-size", getenv("NUDGE_TENANT_STORAGE_SIZE"), "disk cap of a user's container's writable layer, e.g. 10G, where the storage driver supports it (NUDGE_TENANT_STORAGE_SIZE)")
+	deniedLabels := fs.String("tenant-denied-labels", envOr(getenv, "NUDGE_TENANT_DENIED_LABELS", DefaultDeniedLabels), "comma-separated label prefixes users may not set on their containers, or none (NUDGE_TENANT_DENIED_LABELS)")
 	level := fs.String("log-level", envOr(getenv, "NUDGE_LOG_LEVEL", "info"), "debug, info, warn or error (NUDGE_LOG_LEVEL)")
 	if err := fs.Parse(args); err != nil {
 		return Server{}, err
@@ -231,10 +243,32 @@ func LoadServer(args []string, getenv func(string) string, out io.Writer) (Serve
 	if c.Tenant.StorageSize, err = parseSize(*storageSize); err != nil {
 		return Server{}, fmt.Errorf("tenant storage size %w", err)
 	}
+	if c.Tenant.DeniedLabels, err = parseLabelPrefixes(*deniedLabels); err != nil {
+		return Server{}, err
+	}
 	if err := c.Tenant.check(); err != nil {
 		return Server{}, err
 	}
 	return c, nil
+}
+
+// parseLabelPrefixes reads -tenant-denied-labels: comma-separated label prefixes, in
+// lower case as labels are matched without case, or none for an empty list.
+func parseLabelPrefixes(s string) ([]string, error) {
+	if strings.TrimSpace(s) == "none" {
+		return []string{}, nil
+	}
+	var out []string
+	for entry := range strings.SplitSeq(s, ",") {
+		entry = strings.ToLower(strings.TrimSpace(entry))
+		if entry == "" || strings.ContainsFunc(entry, func(r rune) bool { return unicode.IsSpace(r) || r == '=' }) {
+			return nil, fmt.Errorf("tenant denied labels %q: want comma-separated label prefixes such as traefik.,caddy, or none", s)
+		}
+		if !slices.Contains(out, entry) {
+			out = append(out, entry)
+		}
+	}
+	return out, nil
 }
 
 // check refuses a cgroup parent or runtime the daemon would misread.

@@ -108,6 +108,9 @@ func newTenantTestOpts(t *testing.T, mod func(*Options)) ownTest {
 	ot.fake.ImageDetails["evil:1"] = image.InspectResponse{ID: "sha256:evil", Config: &dockerspec.DockerOCIImageConfig{ImageConfig: ocispec.ImageConfig{
 		Labels: map[string]string{ownerLabel: ot.alice},
 	}}}
+	ot.fake.ImageDetails["routed:1"] = image.InspectResponse{ID: "sha256:routed", Config: &dockerspec.DockerOCIImageConfig{ImageConfig: ocispec.ImageConfig{
+		Labels: map[string]string{"maintainer": "x", "Traefik.http.routers.shop.rule": "Host(`shop.example`)"},
+	}}}
 	ot.fake.Volumes = append(ot.fake.Volumes, volume.Volume{Name: "pgdata", Driver: "local", Labels: map[string]string{ownerLabel: ot.bobKey}})
 	return ot
 }
@@ -190,7 +193,7 @@ func TestCreateTenantContainer(t *testing.T) {
 
 func TestCreateTenantRefusals(t *testing.T) {
 	t.Parallel()
-	ot := newTenantTest(t)
+	ot := newTenantTestOpts(t, func(o *Options) { o.DeniedLabels = []string{"traefik.", "caddy"} })
 	path := ot.path(ot.local, "/user-containers")
 	tests := []struct {
 		name, body string
@@ -222,6 +225,9 @@ func TestCreateTenantRefusals(t *testing.T) {
 		{"image ID", `,"image":"sha256:` + strings.Repeat("a", 64) + `"`, 400, `"image"`},
 		{"anonymous volume", `,"image":"postgres:17"`, 400, `/var/lib/postgresql/data: mount one of your volumes there`},
 		{"image sets the owner label", `,"image":"evil:1"`, 400, "reserved for nudge"},
+		{"proxy label", `,"labels":{"app":"web","Traefik.http.routers.shop.rule":"Host(x)"}`, 400, `"labels":"labels starting with traefik. are not allowed on this server"`},
+		{"proxy label without a dot", `,"labels":{"caddy_0":"shop.example"}`, 400, `labels starting with caddy are not allowed`},
+		{"image sets a proxy label", `,"image":"routed:1"`, 400, "the image sets labels starting with traefik., which are not allowed"},
 		{"no name", `,"name":""`, 400, `"name":"required"`},
 		{"internal registry", `,"image":"10.0.0.5:5000/x:1"`, 403, "pulls from 10.0.0.5:5000 are not allowed"},
 		{"upper-case host", `,"image":"Intranet/x:1"`, 403, "pulls from intranet are not allowed"},
@@ -239,8 +245,14 @@ func TestCreateTenantRefusals(t *testing.T) {
 		})
 	}
 
+	// Labels outside the denied prefixes are fine.
+	rec := do(t, ot.h, request{method: "POST", path: path, cookie: ot.bob, body: `{` + tenantBase + `,"labels":{"app":"web","traefikish":"x"}}`})
+	if rec.Code != http.StatusCreated {
+		t.Errorf("allowed labels = %d %s", rec.Code, rec.Body)
+	}
+
 	// Covered by a volume of bob's, the image's VOLUME is fine.
-	rec := do(t, ot.h, request{method: "POST", path: path, cookie: ot.bob, body: `{` + tenantBase +
+	rec = do(t, ot.h, request{method: "POST", path: path, cookie: ot.bob, body: `{` + tenantBase +
 		`,"image":"postgres:17","mounts":[{"volume":"pgdata","target":"/var/lib/postgresql/data"}]}`})
 	if rec.Code != http.StatusCreated {
 		t.Errorf("covered VOLUME = %d %s", rec.Code, rec.Body)
@@ -383,13 +395,16 @@ func TestTenantSpecValidate(t *testing.T) {
 		}, "ports"},
 		{"docker label", func(sp *tenantSpec) { sp.Labels = map[string]string{"Com.Docker.Compose.Service": "db"} }, "labels"},
 		{"empty label", func(sp *tenantSpec) { sp.Labels = map[string]string{"": "x"} }, "labels"},
+		{"denied label", func(sp *tenantSpec) { sp.Labels = map[string]string{"com.centurylinklabs.watchtower.enable": "true"} }, "labels"},
+		{"denied label in upper case", func(sp *tenantSpec) { sp.Labels = map[string]string{"TRAEFIK.enable": "true"} }, "labels"},
+		{"label like a denied one", func(sp *tenantSpec) { sp.Labels = map[string]string{"traefik": "x", "my.traefik.enable": "x"} }, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			sp := valid()
 			tt.edit(&sp)
-			errs := sp.validate()
+			errs := sp.validate([]string{"traefik.", "com.centurylinklabs.watchtower."})
 			if tt.field == "" && len(errs) > 0 || tt.field != "" && errs[tt.field] == "" {
 				t.Errorf("errors = %v, want one for %q", errs, tt.field)
 			}

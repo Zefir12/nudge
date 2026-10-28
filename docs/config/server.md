@@ -32,6 +32,7 @@ image without setting anything. A flag wins over its variable.
 | `-tenant-runtime` | `NUDGE_TENANT_RUNTIME` | | OCI runtime of every user's container, e.g. `runsc` (gVisor); users' containers aren't created or started on a daemon that doesn't list it |
 | `-tenant-storage-size` | `NUDGE_TENANT_STORAGE_SIZE` | | disk cap of a user's container's writable layer (`10G`, `512M`; binary units, at least `64M`), where the storage driver supports it |
 | `-user-registries` | `NUDGE_USER_REGISTRIES` | see [Registries users can pull from](#registries-users-can-pull-from) | comma-separated registry hosts (with the port, if any) users' pulls may reach, `*` for any |
+| `-tenant-denied-labels` | `NUDGE_TENANT_DENIED_LABELS` | `traefik.,caddy,com.centurylinklabs.watchtower.,ofelia.,wud.,diun.` | comma-separated label prefixes users may not set on their containers, or `none`; see [Labels](#labels) |
 
 ## Data directory
 `nudge serve` creates the data directory (mode 0700) if it is missing and exits with an
@@ -322,6 +323,25 @@ on btrfs, zfs and devicemapper. nudge sets it where `docker info` reports such a
 On xfs without `pquota` the daemon refuses the create and the user sees why: mount the
 filesystem under `/var/lib/docker` with `pquota` (in `/etc/fstab`; for the root
 filesystem, `rootflags=pquota` on the kernel command line).
+
+### Labels
+Tools on the host that read containers' labels (reverse proxies, updaters, schedulers)
+would obey a user's container as they obey an admin's: a `traefik.http.routers.*` label
+could claim another site's hostname. `NUDGE_TENANT_DENIED_LABELS` lists the label
+prefixes users may not set, matched without case. The default covers Traefik (`traefik.`),
+caddy-docker-proxy (`caddy`, which also matches `caddy_0`), Watchtower
+(`com.centurylinklabs.watchtower.`), Ofelia (`ofelia.`, whose labels can start
+containers), What's Up Docker (`wud.`) and Diun (`diun.`). Setting it replaces the
+default, so repeat the default's prefixes you want to keep and add your own, for example
+`NUDGE_TENANT_DENIED_LABELS=traefik.,caddy,com.centurylinklabs.watchtower.,ofelia.,wud.,diun.,homepage.`;
+`none` lets users set any label.
+
+A user's create or edit with such a label is refused with a field error on `labels`, and
+so is a container whose image sets one (Docker copies an image's labels onto its
+containers). A container made before a prefix was added keeps running, but its next
+recreate or update is refused until the label is gone (edit it out in the user's form).
+nudge's own `net.zefirlabs.nudge.` and Docker's `com.docker.` labels are always refused.
+Admins' containers are not affected.
 
 ### The daemon
 - **`userns-remap`** (`"userns-remap": "default"` in daemon.json) maps root in every
