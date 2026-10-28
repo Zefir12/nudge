@@ -56,6 +56,22 @@ func TestCryptRoundTrip(t *testing.T) {
 	}
 }
 
+func TestDefaultKDFWithinBounds(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	w, err := encrypt(&buf, "correct horse", defaultKDF)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// decrypt checks the header's bounds before deriving the key.
+	if _, err := decrypt(bytes.NewReader(buf.Bytes()), "correct horse"); err != nil {
+		t.Fatalf("a default backup's header is refused: %v", err)
+	}
+}
+
 func TestCryptRefuses(t *testing.T) {
 	t.Parallel()
 	plain := make([]byte, 2*chunkSize+100)

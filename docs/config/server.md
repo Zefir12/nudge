@@ -82,8 +82,10 @@ docker compose start nudge
 `serve`, and `-passphrase-file` (or `NUDGE_BACKUP_PASSPHRASE_FILE`). It decrypts and checks
 the whole archive before it changes anything, so a wrong passphrase or a damaged or cut
 file leaves the data alone. It refuses a data directory that already has a database, key
-or stacks; with `-force` it moves them to `<data>/pre-restore-<time>/` and the stacks
-directory to `<stacks>.pre-restore-<time>` first. A backup from a newer nudge is refused;
+or stacks; with `-force` it moves them to `<data>/pre-restore-<time>/` and the stacks'
+`compose.yaml` and `.env` files to `<stacks>/.pre-restore-<time>/` first. Only those files
+move: data that stacks bind-mount from their directories stays in place, and the stacks
+directory may be a mount point. If putting the files in place fails, the moves are undone. A backup from a newer nudge is refused;
 one from an older nudge is migrated when the server starts. Run it with the server stopped:
 a running server keeps writing to the database file restore moved aside.
 

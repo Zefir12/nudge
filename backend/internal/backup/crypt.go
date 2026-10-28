@@ -36,8 +36,8 @@ const (
 // The bounds a header's key derivation may ask for, so a crafted archive can't make a
 // restore allocate gigabytes or spin for minutes.
 const (
-	maxKDFTime   = 10
-	maxKDFMemory = 1 << 20 // KiB: 1 GiB
+	maxKDFTime   = 6
+	maxKDFMemory = 1 << 18 // KiB: 256 MiB
 )
 
 // ErrDecrypt means a wrong passphrase or a damaged or truncated archive: GCM can't tell

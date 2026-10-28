@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/backup"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/config"
@@ -52,7 +53,8 @@ func restore(ctx context.Context, cfg config.Restore, stdout io.Writer) error {
 	_, _ = fmt.Fprintf(stdout, "Restored the backup of %s (nudge %s, %d stacks) into %s.\n",
 		m.Created.Format("2006-01-02 15:04:05 MST"), m.Version, m.Stacks, cfg.DataDir)
 	if aside != "" {
-		_, _ = fmt.Fprintf(stdout, "The data that was there is in %s, its stacks next to %s.\n", aside, cfg.StacksDir)
+		_, _ = fmt.Fprintf(stdout, "The data that was there is in %s, its stacks' files in %s.\n",
+			aside, filepath.Join(cfg.StacksDir, "."+filepath.Base(aside)))
 	}
 	return nil
 }

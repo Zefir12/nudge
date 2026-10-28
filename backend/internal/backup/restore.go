@@ -25,6 +25,13 @@ var ErrNotEmpty = errors.New("the data directory already has nudge data")
 // maxManifest bounds the manifest a restore reads into memory.
 const maxManifest = 64 << 10
 
+// maxKey and maxStackFile bound those entries; the database has no bound but its size
+// in the tar header.
+const (
+	maxKey       = 1 << 10
+	maxStackFile = 4 << 20
+)
+
 // maxTrailer bounds what may follow the tar's end inside the gzip stream (tar pads its
 // end to a block of 10 KiB).
 const maxTrailer = 64 << 10
@@ -34,42 +41,62 @@ type RestoreOptions struct {
 	DataDir    string
 	StacksDir  string
 	Passphrase string
-	// Force moves existing data aside (<data>/pre-restore-<time>/, and the stacks
-	// directory to <stacks>.pre-restore-<time>) instead of refusing.
+	// Force moves existing data aside (<data>/pre-restore-<time>/, and the stacks'
+	// compose files to <stacks>/.pre-restore-<time>/) instead of refusing.
 	Force bool
 	// Now is time.Now outside tests: the moved-aside directories' names.
 	Now func() time.Time
+	// rename is os.Rename outside tests.
+	rename func(oldpath, newpath string) error
 }
 
 // Restore unpacks the backup read from r into the data and stacks directories. The
 // server must be stopped. Everything is unpacked next to its destination before anything
 // is replaced, so a damaged archive, a wrong passphrase or one from a newer nudge changes
-// nothing. It returns the archive's manifest and, with Force, where the old data went.
-func Restore(ctx context.Context, r io.Reader, o RestoreOptions) (Manifest, string, error) {
+// nothing; if putting the files in place fails, the moves made are undone. Only files
+// move: the stacks directory may be a mount point, and what stacks bind-mount from their
+// directories stays where it is. It returns the archive's manifest and, with Force,
+// where the old data went.
+func Restore(ctx context.Context, r io.Reader, o RestoreOptions) (_ Manifest, _ string, err error) {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	existing, err := hasData(o.DataDir, o.StacksDir)
+	if o.rename == nil {
+		o.rename = os.Rename
+	}
+	var oldStacks []string
+	oldStacks, err = stackFiles(o.StacksDir)
 	if err != nil {
 		return Manifest{}, "", err
 	}
+	existing, err := hasData(o.DataDir)
+	if err != nil {
+		return Manifest{}, "", err
+	}
+	existing = existing || len(oldStacks) > 0
 	if existing && !o.Force {
 		return Manifest{}, "", ErrNotEmpty
 	}
-	if err := os.MkdirAll(o.DataDir, 0o700); err != nil {
-		return Manifest{}, "", fmt.Errorf("create data directory: %w", err)
+	for _, dir := range []string{o.DataDir, o.StacksDir} {
+		if _, statErr := os.Stat(dir); errors.Is(statErr, fs.ErrNotExist) {
+			// A failed restore leaves no new directories behind.
+			defer func() {
+				if err != nil {
+					_ = os.Remove(dir)
+				}
+			}()
+		}
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return Manifest{}, "", fmt.Errorf("restore: %w", err)
+		}
 	}
 	stage, err := os.MkdirTemp(o.DataDir, ".restore-*")
 	if err != nil {
 		return Manifest{}, "", fmt.Errorf("restore: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(stage) }()
-	// The stacks are staged next to the stacks directory, which may be on another volume.
-	stacksParent := filepath.Dir(o.StacksDir)
-	if err := os.MkdirAll(stacksParent, 0o700); err != nil {
-		return Manifest{}, "", fmt.Errorf("create stacks directory: %w", err)
-	}
-	stageStacks, err := os.MkdirTemp(stacksParent, ".restore-stacks-*")
+	// Staged inside the stacks directory, which may be another volume than the data.
+	stageStacks, err := os.MkdirTemp(o.StacksDir, ".restore-*")
 	if err != nil {
 		return Manifest{}, "", fmt.Errorf("restore: %w", err)
 	}
@@ -79,20 +106,36 @@ func Restore(ctx context.Context, r io.Reader, o RestoreOptions) (Manifest, stri
 	if err != nil {
 		return Manifest{}, "", err
 	}
+	newStacks, err := stackFiles(stageStacks)
+	if err != nil {
+		return Manifest{}, "", err
+	}
 
-	var aside string
+	mv := &mover{rename: o.rename}
+	var aside, stacksAside string
 	if existing {
-		if aside, err = moveAside(o.DataDir, o.StacksDir, o.Now()); err != nil {
-			return Manifest{}, "", err
+		suffix := "pre-restore-" + o.Now().UTC().Format("20060102-150405")
+		aside, stacksAside = filepath.Join(o.DataDir, suffix), filepath.Join(o.StacksDir, "."+suffix)
+		for _, name := range dataFiles {
+			if err := mv.move(filepath.Join(o.DataDir, name), filepath.Join(aside, name)); err != nil {
+				return Manifest{}, "", mv.fail("move old data aside", err, aside, stacksAside)
+			}
+		}
+		for _, rel := range oldStacks {
+			if err := mv.move(filepath.Join(o.StacksDir, rel), filepath.Join(stacksAside, rel)); err != nil {
+				return Manifest{}, "", mv.fail("move old stacks aside", err, aside, stacksAside)
+			}
 		}
 	}
-	for _, name := range []string{databaseName, secretbox.KeyFile} {
-		if err := os.Rename(filepath.Join(stage, name), filepath.Join(o.DataDir, name)); err != nil {
-			return Manifest{}, aside, fmt.Errorf("restore %s: %w", name, err)
+	for _, name := range []string{secretbox.KeyFile, store.FileName} {
+		if err := mv.move(filepath.Join(stage, name), filepath.Join(o.DataDir, name)); err != nil {
+			return Manifest{}, "", mv.fail("restore "+name, err, aside, stacksAside)
 		}
 	}
-	if err := os.Rename(stageStacks, o.StacksDir); err != nil {
-		return Manifest{}, aside, fmt.Errorf("restore stacks: %w", err)
+	for _, rel := range newStacks {
+		if err := mv.move(filepath.Join(stageStacks, rel), filepath.Join(o.StacksDir, rel)); err != nil {
+			return Manifest{}, "", mv.fail("restore stacks", err, aside, stacksAside)
+		}
 	}
 	return m, aside, nil
 }
@@ -101,7 +144,7 @@ func Restore(ctx context.Context, r io.Reader, o RestoreOptions) (Manifest, stri
 // files, and the key.
 var dataFiles = []string{store.FileName, store.FileName + "-wal", store.FileName + "-shm", secretbox.KeyFile}
 
-func hasData(dataDir, stacksDir string) (bool, error) {
+func hasData(dataDir string) (bool, error) {
 	for _, name := range dataFiles {
 		if _, err := os.Lstat(filepath.Join(dataDir, name)); err == nil {
 			return true, nil
@@ -109,35 +152,60 @@ func hasData(dataDir, stacksDir string) (bool, error) {
 			return false, fmt.Errorf("restore: %w", err)
 		}
 	}
-	entries, err := os.ReadDir(stacksDir)
-	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("restore: %w", err)
-	}
-	return len(entries) > 0, nil
+	return false, nil
 }
 
-// moveAside moves the existing data files into <data>/pre-restore-<time>/ and the stacks
-// directory to <stacks>.pre-restore-<time>, and returns the first.
-func moveAside(dataDir, stacksDir string, now time.Time) (string, error) {
-	suffix := "pre-restore-" + now.UTC().Format("20060102-150405")
-	aside := filepath.Join(dataDir, suffix)
-	if err := os.Mkdir(aside, 0o700); err != nil {
-		return "", fmt.Errorf("move old data aside: %w", err)
+// mover renames files, creating the directories they go to, and remembers the renames
+// so a failure can undo them.
+type mover struct {
+	rename func(oldpath, newpath string) error
+	done   [][2]string
+	// made are the directories move created, outermost first.
+	made []string
+}
+
+// move renames from to to; a from that doesn't exist is skipped.
+func (m *mover) move(from, to string) error {
+	if _, err := os.Lstat(from); errors.Is(err, fs.ErrNotExist) {
+		return nil
 	}
-	for _, name := range dataFiles {
-		err := os.Rename(filepath.Join(dataDir, name), filepath.Join(aside, name))
-		if err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return aside, fmt.Errorf("move old data aside: %w", err)
+	var missing []string
+	for dir := filepath.Dir(to); ; dir = filepath.Dir(dir) {
+		if _, err := os.Lstat(dir); err == nil || dir == filepath.Dir(dir) {
+			break
+		}
+		missing = append(missing, dir)
+	}
+	if err := os.MkdirAll(filepath.Dir(to), 0o700); err != nil {
+		return err
+	}
+	for i := len(missing) - 1; i >= 0; i-- {
+		m.made = append(m.made, missing[i])
+	}
+	if err := m.rename(from, to); err != nil {
+		return err
+	}
+	m.done = append(m.done, [2]string{from, to})
+	return nil
+}
+
+// fail undoes the renames, newest first, removes the directories they made, and words
+// err. If undoing fails too, the error says where the old data is.
+func (m *mover) fail(what string, err error, asideDirs ...string) error {
+	var undoErr error
+	for i := len(m.done) - 1; i >= 0; i-- {
+		if e := m.rename(m.done[i][1], m.done[i][0]); e != nil && undoErr == nil {
+			undoErr = e
 		}
 	}
-	err := os.Rename(stacksDir, stacksDir+"."+suffix)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return aside, fmt.Errorf("move old stacks aside: %w", err)
+	if undoErr != nil {
+		return fmt.Errorf("%s: %w; undoing the restore failed too (%w): the old data is in %s", what, err, undoErr, strings.Join(asideDirs, " and "))
 	}
-	return aside, nil
+	// Innermost first; os.Remove leaves a directory that isn't empty.
+	for i := len(m.made) - 1; i >= 0; i-- {
+		_ = os.Remove(m.made[i])
+	}
+	return fmt.Errorf("%s: %w; nothing was changed", what, err)
 }
 
 // unpack decrypts and checks the archive, writing the database and key into stage and
@@ -192,19 +260,23 @@ func unpack(ctx context.Context, r io.Reader, passphrase, stage, stageStacks str
 		}
 		seen[hdr.Name] = true
 		var dst string
+		limit := int64(-1)
 		switch {
 		case hdr.Name == databaseName:
 			dst = filepath.Join(stage, store.FileName)
 		case hdr.Name == keyName:
-			dst = filepath.Join(stage, secretbox.KeyFile)
+			dst, limit = filepath.Join(stage, secretbox.KeyFile), maxKey
 		case strings.HasPrefix(hdr.Name, stacksPrefix) && validStackFile(strings.TrimPrefix(hdr.Name, stacksPrefix)):
 			rel := filepath.FromSlash(strings.TrimPrefix(hdr.Name, stacksPrefix))
-			dst = filepath.Join(stageStacks, rel)
+			dst, limit = filepath.Join(stageStacks, rel), maxStackFile
 			if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 				return Manifest{}, fmt.Errorf("restore: %w", err)
 			}
 		default:
 			return Manifest{}, fmt.Errorf("unexpected entry %q in the backup", hdr.Name)
+		}
+		if limit >= 0 && hdr.Size > limit {
+			return Manifest{}, fmt.Errorf("entry %q in the backup is too large", hdr.Name)
 		}
 		if err := writeEntry(dst, tr); err != nil {
 			return Manifest{}, err

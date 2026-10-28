@@ -5,9 +5,11 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -176,13 +178,21 @@ func TestBackupRestore(t *testing.T) {
 	}
 }
 
+// oldData is a data directory a restore with Force replaces: a database, its WAL, a key,
+// a stack the backup doesn't have, and data stacks bind-mount from their directories.
+var oldData = map[string]string{
+	"nudge.db": "old db", "nudge.db-wal": "old wal", "secret.key": "old key",
+	"stacks/9/old/compose.yaml": "old", "stacks/9/old/data/keep": "bind-mounted",
+	"stacks/1/web/compose.yaml": "old web", "stacks/1/web/data/keep": "bind-mounted",
+}
+
 func TestRestoreExistingData(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	archive, _ := backupBytes(t, newSource(t))
 	dst := t.TempDir()
 	stacksDir := filepath.Join(dst, "stacks")
-	writeFiles(t, dst, map[string]string{"nudge.db": "old db", "nudge.db-wal": "old wal", "secret.key": "old key", "stacks/9/old/compose.yaml": "old"})
+	writeFiles(t, dst, oldData)
 	o := RestoreOptions{DataDir: dst, StacksDir: stacksDir, Passphrase: pass, Now: func() time.Time { return created }}
 
 	if _, _, err := Restore(ctx, bytes.NewReader(archive), o); !errors.Is(err, ErrNotEmpty) {
@@ -200,14 +210,52 @@ func TestRestoreExistingData(t *testing.T) {
 	if want := filepath.Join(dst, "pre-restore-20261028-120000"); aside != want {
 		t.Fatalf("aside = %q, want %q", aside, want)
 	}
+	// Only files move: bind-mounted data stays, and the stacks directory itself (a mount
+	// point in the shipped compose file) is never renamed.
 	want := []string{
 		"nudge.db", "pre-restore-20261028-120000/nudge.db", "pre-restore-20261028-120000/nudge.db-wal",
 		"pre-restore-20261028-120000/secret.key", "secret.key",
-		"stacks.pre-restore-20261028-120000/9/old/compose.yaml",
-		"stacks/1/web/.env", "stacks/1/web/compose.yaml", "stacks/2/api/compose.yaml",
+		"stacks/.pre-restore-20261028-120000/1/web/compose.yaml",
+		"stacks/.pre-restore-20261028-120000/9/old/compose.yaml",
+		"stacks/1/web/.env", "stacks/1/web/compose.yaml", "stacks/1/web/data/keep",
+		"stacks/2/api/compose.yaml", "stacks/9/old/data/keep",
 	}
 	if files := listFiles(t, dst); !slices.Equal(files, want) {
 		t.Fatalf("files = %v\nwant %v", files, want)
+	}
+}
+
+func TestRestoreUndoesOnFailure(t *testing.T) {
+	t.Parallel()
+	archive, _ := backupBytes(t, newSource(t))
+	for _, failOn := range []string{"pre-restore-20261028-120000/secret.key", "/stacks/1/web/.env", "/stacks/2/api/compose.yaml"} {
+		t.Run(failOn, func(t *testing.T) {
+			t.Parallel()
+			dst := t.TempDir()
+			writeFiles(t, dst, oldData)
+			before := listFiles(t, dst)
+			_, _, err := Restore(context.Background(), bytes.NewReader(archive), RestoreOptions{
+				DataDir: dst, StacksDir: filepath.Join(dst, "stacks"), Passphrase: pass, Force: true,
+				Now: func() time.Time { return created },
+				rename: func(from, to string) error {
+					if strings.HasSuffix(to, failOn) {
+						return errors.New("disk on fire")
+					}
+					return os.Rename(from, to)
+				},
+			})
+			if err == nil || !strings.Contains(err.Error(), "disk on fire") || !strings.Contains(err.Error(), "nothing was changed") {
+				t.Fatalf("err = %v", err)
+			}
+			if files := listFiles(t, dst); !slices.Equal(files, before) {
+				t.Fatalf("files = %v\nwant %v", files, before)
+			}
+			for _, dir := range []string{"pre-restore-20261028-120000", "stacks/.pre-restore-20261028-120000", "stacks/2"} {
+				if _, err := os.Stat(filepath.Join(dst, dir)); !errors.Is(err, fs.ErrNotExist) {
+					t.Errorf("%s left behind: %v", dir, err)
+				}
+			}
+		})
 	}
 }
 
