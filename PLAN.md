@@ -12,7 +12,7 @@ dependency order. Every task includes tests, docs (docs/api.md, docs/config/, RE
   (single static image), CI and image workflows, Claude Code setup.
 - `nudge serve` with `/api/v1/health` and the embedded SPA; Vue shell with a dashboard.
 
-## Phase 1: core server, local environment
+## Phase 1: core server, local environment ✅
 1. **Store**: `internal/store` on `modernc.org/sqlite`, embedded numbered migrations,
    WAL, one writer; opened from `NUDGE_DATA`. Tables: users, sessions, api_tokens,
    environments.
@@ -30,7 +30,7 @@ dependency order. Every task includes tests, docs (docs/api.md, docs/config/, RE
 7. **Frontend resources**: environment switcher, dashboard with host info and counts,
    list and detail views for the four resource kinds.
 
-## Phase 2: remote agents
+## Phase 2: remote agents ✅
 1. **Tunnel**: `internal/tunnel`, WebSocket (`coder/websocket`) as `net.Conn`, yamux
    session, hello message with versions; tests over `net.Pipe`/`httptest`.
 2. **Enrollment**: agent environments, join tokens (hashed, single use, 24 h expiry),
@@ -47,30 +47,40 @@ dependency order. Every task includes tests, docs (docs/api.md, docs/config/, RE
 7. **End-to-end test**: server and agent in one test process over `httptest`, with a fake
    Docker API behind the agent's "socket".
 
-## Phase 3: actions
+## Phase 3: actions ✅
 1. Container start/stop/restart/kill/remove, with confirmation in the UI.
 2. Image pull with streamed progress, remove, prune; registry credentials (stored encrypted).
 3. Volume and network create/remove/prune.
 4. Container create (image, name, ports, env, volumes, restart policy) and recreate.
 5. Audit log of every write (user, environment, action, target), viewable in the UI.
 
-## Phase 4: live
+## Phase 4: live ✅
 1. Container logs over WebSocket (follow, tail, timestamps), log viewer.
 2. Stats (CPU, memory, network) per container and environment.
 3. Exec terminal (xterm.js: needs zefir's approval as a dependency).
 4. Docker events stream → live-updating lists.
 
-## Phase 5: stacks
+## Phase 5: stacks ✅
 1. Decide compose execution for agent environments (docs/architecture.md, Stacks).
 2. Stacks: create/edit compose YAML + env, deploy, update (pull + up), down; files in
    `/data/stacks`.
 3. Stack view: services, containers, logs.
 
-## Phase 6: nudges (updates)
+## Phase 6: nudges (updates) ✅
 1. Image update check (registry digest vs. local) per container, scheduled.
 2. One-click update (pull + recreate) for containers and stacks.
 3. Notifications (webhook) for available updates and failed containers.
 
 ## Later / ideas
-- Users and roles (read-only, per-environment access), OIDC login.
-- Backup/restore of `/data`.
+- Users and roles (admin and user, per-environment access, allowances), OIDC login. ✅ (#110–#118, #119,
+  #125–#127, #132)
+- Deployments for CI with health checks and rollback (#98, #99, #107, #143). ✅
+
+## Next (gap review, 2026-10-28)
+- Backup/restore of `/data` (#145).
+- Users change their own password (#146); TOTP second factor for local accounts (#147).
+- Stacks from a git repository (#148).
+- Integration tests against a real Docker daemon in CI (#149).
+- Docs in sync with the code (#150).
+- Detect missing host firewall isolation for users' bridges (#151).
+- One-click rollback after an update (#65).

@@ -228,14 +228,19 @@ object or setting is the admins' until something explicitly opens it to users.
   network and checks every volume and network carries the user's owner label;
   `imageVolumes` refuses an image whose `VOLUME` paths the spec doesn't cover (Docker would
   create an anonymous volume nobody owns or counts). Labels in nudge's or Docker's
-  (`com.docker.`, e.g. compose project) namespaces are refused.
+  (`com.docker.`, e.g. compose project) namespaces are refused, and so are the prefixes
+  in `NUDGE_TENANT_DENIED_LABELS` (`Options.DeniedLabels`: reverse proxies, updaters and
+  schedulers by default, #125), on the spec and on the image's own labels
+  (`refuseImageLabels`).
 - `buildTenant` is a pure function that adds fixed hardening: Docker's default
   capabilities minus `NET_RAW`, `no-new-privileges`, default seccomp and AppArmor, an init
   process, private IPC, a pids limit of 512, no swap beyond the memory limit, capped
   json-file logs, then the host hardening of layer 8 and, last, the owner label.
 - The image is always pulled for the user, with their allowance and without the admins'
   stored registry credentials (`pullOwned`), so a user can't run a private image an admin
-  pulled.
+  pulled. The reference's registry must be in `NUDGE_USER_REGISTRIES` (`userRegistries`,
+  #126), so a pull can't make the daemon probe internal hosts; an image the pull brought
+  that the builder then refuses (labels, volumes) is removed again (#127).
 - Every path that replaces a user's container (recreate, image update, deploy webhooks)
   goes through `replace` → `tenantSettings`, which rebuilds it through the builder from
   the requested spec or from its own settings read back as a spec (`toTenantSpec`), so a
@@ -293,9 +298,10 @@ backstops that need host setup, applied by `buildTenant` to users' containers on
   bridges `nudge…` (#132) so two host rules (`DOCKER-USER` and `INPUT` on `-i nudge+`)
   close this; docs/config/server.md, "Network", has them and a manual check. Without
   them it stays open.
-- Labels outside nudge's and Docker's namespaces are free, so tools on the host that act
-  on container labels (a reverse proxy's Docker provider, for example) act on users'
-  containers too.
+- Labels outside nudge's and Docker's namespaces and the denied prefixes (#125) are free,
+  so a tool on the host that acts on container labels and isn't in
+  `NUDGE_TENANT_DENIED_LABELS` acts on users' containers too; docs/config/server.md,
+  "Labels", has the default list and how to extend it.
 - The host's size: a user's environment detail shows its CPUs, memory and kernel.
 
 ### Alternative: one VM per user
