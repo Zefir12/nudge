@@ -6,6 +6,7 @@ export interface Reply {
   body?: unknown;
   // raw is sent as the body as is, instead of body as JSON.
   raw?: string;
+  headers?: Record<string, string>;
 }
 
 export type Routes = Record<string, Reply | ((init?: RequestInit) => Reply)>;
@@ -18,7 +19,7 @@ export function stubApi(routes: Routes) {
     const reply = typeof route === 'function' ? route(init) : route;
     const status = reply.status ?? 200;
     if (status === 204) return new Response(null, { status });
-    return new Response(reply.raw ?? JSON.stringify(reply.body ?? {}), { status });
+    return new Response(reply.raw ?? JSON.stringify(reply.body ?? {}), { status, headers: reply.headers });
   });
   vi.stubGlobal('fetch', fn);
   return fn;

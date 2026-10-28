@@ -129,6 +129,15 @@ export const listTokens = () => apiFetch<Token[]>('/tokens');
 export const createToken = (name: string) => apiFetch<CreatedToken>('/tokens', post({ name }));
 export const deleteToken = (id: number) => apiFetch<void>(`/tokens/${id}`, { method: 'DELETE' });
 
+// createBackup asks for a backup of the server's data, encrypted with passphrase, and
+// returns it with the file name the server gives it.
+export async function createBackup(passphrase: string): Promise<{ blob: Blob; name: string }> {
+  const res = await send('/backup', post({ passphrase }));
+  const disposition = res.headers.get('Content-Disposition') ?? '';
+  const name = /filename="([^"]+)"/.exec(disposition)?.[1] ?? 'nudge.nudgebak';
+  return { blob: await res.blob(), name };
+}
+
 // AuditEntry is one write through the API; environment is an environment ID.
 export interface AuditEntry {
   id: number;

@@ -25,6 +25,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/api"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/audit"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/backup"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/certs"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/cli"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/config"
@@ -52,6 +53,7 @@ commands:
   agent    connect this host's Docker to a nudge server
   deploy   start a deployment run and follow it (for CI; token in NUDGE_DEPLOY_TOKEN)
   probe    one HTTP check (what a deployment's HTTP check runs in a helper container)
+  restore  restore a backup into the data directory (with the server stopped)
   version  print the version
 
 Run "nudge <command> -h" for a command's flags.
@@ -91,6 +93,8 @@ func realMain(ctx context.Context, args []string, getenv func(string) string, st
 		return runDeploy(ctx, args, getenv, stdout, stderr)
 	case "probe":
 		return cli.Probe(ctx, args, stdout, stderr)
+	case "restore":
+		return runRestore(ctx, args, getenv, stdout, stderr)
 	case "version":
 		_, _ = fmt.Fprintln(stdout, version.Version)
 		return 0
@@ -145,6 +149,13 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 	box, err := secretbox.LoadKey(cfg.DataDir)
 	if err != nil {
 		return err
+	}
+	backups := backup.New(backup.Options{Store: st, DataDir: cfg.DataDir, StacksDir: cfg.StacksDir, Version: version.Version, Log: log})
+	var backupPassphrase string
+	if cfg.Backup.Interval > 0 {
+		if backupPassphrase, err = backup.ReadPassphrase(cfg.Backup.PassphraseFile); err != nil {
+			return err
+		}
 	}
 	regs := registries.New(registries.Options{DB: st.DB(), Box: box})
 
@@ -229,6 +240,10 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 		// Like the update check, the first measurement waits for agents to reconnect.
 		wg.Go(func() { usageSvc.Run(cleanupCtx, 2*time.Minute, cfg.UsageInterval) })
 	}
+	if cfg.Backup.Interval > 0 {
+		wg.Go(func() { backups.Run(cleanupCtx, cfg.Backup.Interval, backupPassphrase, cfg.Backup.Keep) })
+		log.Info("scheduled backups on", "interval", cfg.Backup.Interval, "keep", cfg.Backup.Keep, "dir", filepath.Join(cfg.DataDir, backup.Dir))
+	}
 	if certLoader != nil {
 		// SIGHUP would otherwise kill the process.
 		hup := make(chan os.Signal, 1)
@@ -255,6 +270,7 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 			DeployHooks:  deployHooks,
 			Deployments:  deps,
 			Usage:        usageSvc,
+			Backups:      backups,
 			Allowances:   allowances.New(allowances.Options{DB: st.DB()}),
 			Tenant:       api.TenantHosting{CgroupParent: cfg.Tenant.CgroupParent, Runtime: cfg.Tenant.Runtime, StorageSize: cfg.Tenant.StorageSize},
 			DeniedLabels: cfg.Tenant.DeniedLabels,
