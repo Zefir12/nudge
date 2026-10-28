@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/api/types/network"
@@ -430,14 +431,20 @@ func refuseImageLabels(ctx context.Context, c docker.Client, image string, denie
 	if err != nil {
 		return fmt.Errorf("inspect image: %w", err)
 	}
-	if img.Config != nil {
-		for _, k := range slices.Sorted(maps.Keys(img.Config.Labels)) {
-			if reservedKey(k) {
-				return &statusError{code: http.StatusBadRequest, msg: "the image sets labels starting with " + reservedLabels + ", which are reserved for nudge"}
-			}
-			if p := deniedLabel(k, denied); p != "" {
-				return &statusError{code: http.StatusBadRequest, msg: "the image sets labels starting with " + p + ", which are not allowed on this server"}
-			}
+	return imageLabelsRefusal(img.Config, denied)
+}
+
+// imageLabelsRefusal is refuseImageLabels for an image's config.
+func imageLabelsRefusal(cfg *dockerspec.DockerOCIImageConfig, denied []string) error {
+	if cfg == nil {
+		return nil
+	}
+	for _, k := range slices.Sorted(maps.Keys(cfg.Labels)) {
+		if reservedKey(k) {
+			return &statusError{code: http.StatusBadRequest, msg: "the image sets labels starting with " + reservedLabels + ", which are reserved for nudge"}
+		}
+		if p := deniedLabel(k, denied); p != "" {
+			return &statusError{code: http.StatusBadRequest, msg: "the image sets labels starting with " + p + ", which are not allowed on this server"}
 		}
 	}
 	return nil
@@ -503,9 +510,11 @@ func inspectOwner(ctx context.Context, c docker.Client, id string) (container.In
 // pullOwned pulls ref for the user with owner key ("" pulls for an admin, unchecked, with
 // the registry's stored credentials; a user's pull goes without any).
 // A user's pull is refused when their disk allowance is used up; an image it brings counts
-// toward it, and one that takes them over is removed again and the pull refused. The
-// user's lock is held throughout, so their parallel pulls can't overshoot together.
-func (s *server) pullOwned(ctx context.Context, env int64, c docker.Client, ref, key string) error {
+// toward it, and one that takes them over is removed again and the pull refused. So is
+// one the tenant builder would refuse for a container with mounts (tenantImageRefusal):
+// it would stay on the host and count toward their disk. The user's lock is held
+// throughout, so their parallel pulls can't overshoot together.
+func (s *server) pullOwned(ctx context.Context, env int64, c docker.Client, ref, key string, mounts []tenantMount) error {
 	if key == "" {
 		return s.pullWithAuth(ctx, c, ref)
 	}
@@ -548,6 +557,16 @@ func (s *server) pullOwned(ctx context.Context, env int64, c docker.Client, ref,
 	}
 	if present[img.ID] {
 		return nil
+	}
+	if err := tenantImageRefusal(img.Config, mounts, s.deniedLabels); err != nil {
+		if _, rerr := c.ImageRemove(ctx, img.ID, client.ImageRemoveOptions{}); rerr != nil {
+			// Kept on the host, it counts toward the user's disk.
+			s.log.Warn("remove refused image", "env", env, "image", img.ID, "err", rerr)
+			if ferr := s.allowances.RecordPull(ctx, user, env, img.ID); ferr != nil {
+				s.log.Warn("record refused image", "env", env, "image", img.ID, "err", ferr)
+			}
+		}
+		return err
 	}
 	if err := s.allowances.RecordPull(ctx, user, env, img.ID); err != nil {
 		return &internalFailure{msg: "record pull", err: err}

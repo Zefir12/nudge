@@ -362,11 +362,7 @@ func toTenantSpec(ct container.InspectResponse, img *dockerspec.DockerOCIImageCo
 			sp.Ports = append(sp.Ports, tenantPort{HostPort: p.HostPort, ContainerPort: p.ContainerPort, Protocol: p.Protocol})
 		}
 	}
-	for _, m := range ct.Mounts {
-		if m.Type == mount.TypeVolume {
-			sp.Mounts = append(sp.Mounts, tenantMount{Volume: m.Name, Target: m.Destination, ReadOnly: !m.RW})
-		}
-	}
+	sp.Mounts = append(sp.Mounts, volumeMounts(ct)...)
 	if ns := ct.NetworkSettings; ns != nil {
 		sp.Networks = sortedKeys(ns.Networks)
 		// The network mode is the first: a recreate keeps it.
@@ -457,12 +453,39 @@ func imageVolumes(ctx context.Context, c docker.Client, sp *tenantSpec) error {
 	if err != nil {
 		return fmt.Errorf("inspect image: %w", err)
 	}
-	if img.Config != nil {
-		if msg := uncoveredVolumes(img.Config.Volumes, sp.Mounts); msg != "" {
-			return &fieldsError{fields: map[string]string{"mounts": msg}}
-		}
+	return volumesRefusal(img.Config, sp.Mounts)
+}
+
+// volumesRefusal refuses an image whose config keeps data in a VOLUME none of mounts covers.
+func volumesRefusal(cfg *dockerspec.DockerOCIImageConfig, mounts []tenantMount) error {
+	if cfg == nil {
+		return nil
+	}
+	if msg := uncoveredVolumes(cfg.Volumes, mounts); msg != "" {
+		return &fieldsError{fields: map[string]string{"mounts": msg}}
 	}
 	return nil
+}
+
+// tenantImageRefusal is what the tenant builder refuses in an image for a user's container
+// with mounts: nudge's own or denied labels (refuseImageLabels) or an uncovered VOLUME
+// (imageVolumes).
+func tenantImageRefusal(cfg *dockerspec.DockerOCIImageConfig, mounts []tenantMount, denied []string) error {
+	if err := imageLabelsRefusal(cfg, denied); err != nil {
+		return err
+	}
+	return volumesRefusal(cfg, mounts)
+}
+
+// volumeMounts are the named volumes ct mounts, as a tenantSpec reads them back.
+func volumeMounts(ct container.InspectResponse) []tenantMount {
+	var out []tenantMount
+	for _, m := range ct.Mounts {
+		if m.Type == mount.TypeVolume {
+			out = append(out, tenantMount{Volume: m.Name, Target: m.Destination, ReadOnly: !m.RW})
+		}
+	}
+	return out
 }
 
 // uncoveredVolumes names the image's VOLUME paths no mount covers, or "". Docker would
@@ -527,7 +550,7 @@ func (s *server) createTenant(ctx context.Context, env int64, c docker.Client, r
 	if err != nil {
 		return createContainerResponse{}, err
 	}
-	if err := s.pullOwned(ctx, env, c, req.Image, owner.key); err != nil {
+	if err := s.pullOwned(ctx, env, c, req.Image, owner.key, req.Mounts); err != nil {
 		return createContainerResponse{}, err
 	}
 	ctx, cancel = context.WithTimeout(ctx, createTimeout)

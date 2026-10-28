@@ -149,7 +149,7 @@ func (s *server) updateContainerImage(ctx context.Context, env environments.Envi
 	if digest.MatchString(ref) || strings.Contains(ref, "@") || !validPullRef(ref) {
 		return containerUpdate{}, errPinnedImage
 	}
-	if err := s.pullOwned(ctx, rp.env.ID, rp.c, ref, rp.owner); err != nil {
+	if err := s.pullOwned(ctx, rp.env.ID, rp.c, ref, rp.owner, rp.mounts()); err != nil {
 		return containerUpdate{}, err
 	}
 	ictx, cancel := context.WithTimeout(ctx, dockerTimeout)

@@ -456,6 +456,11 @@ func (s *server) recreateContainer(w http.ResponseWriter, r *http.Request) {
 	if req.Spec != nil {
 		ref = req.Spec.Image
 	}
+	if rp.owner != "" && req.Spec != nil {
+		// Refused before the pull, which would leave its image on the user's disk.
+		s.replaceError(w, r, rp.env, errAdminSpec)
+		return
+	}
 	if req.Pull && (digest.MatchString(ref) || !validPullRef(ref)) {
 		s.writeError(w, http.StatusBadRequest, "the image is an ID, not a reference such as nginx:1.29, so it can't be pulled")
 		return
@@ -483,6 +488,15 @@ type replacement struct {
 	// tenant, if set, is the spec to rebuild the container from (tenant.go).
 	tenant *tenantSpec
 	done   func()
+}
+
+// mounts are the volume mounts of the user's container the replacement builds: the
+// spec's, or the old container's when it is rebuilt from its own settings.
+func (rp *replacement) mounts() []tenantMount {
+	if rp.tenant != nil {
+		return rp.tenant.Mounts
+	}
+	return volumeMounts(rp.old)
 }
 
 // errRecreating refuses a second recreate or update of a container while one runs.
@@ -573,7 +587,7 @@ func (s *server) startReplace(ctx context.Context, env environments.Environment,
 
 // pullForReplace pulls ref with its registry's credentials; on false it has answered.
 func (s *server) pullForReplace(w http.ResponseWriter, r *http.Request, rp *replacement, ref string) bool {
-	if err := s.pullOwned(r.Context(), rp.env.ID, rp.c, ref, rp.owner); err != nil {
+	if err := s.pullOwned(r.Context(), rp.env.ID, rp.c, ref, rp.owner, rp.mounts()); err != nil {
 		s.replaceError(w, r, rp.env, err)
 		return false
 	}
