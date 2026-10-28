@@ -78,6 +78,12 @@ lets patterns in `publicRoutes` through without either credential, refuses token
 - **New view:** `frontend/src/views/FooView.vue`, route in `router.ts` (environment pages
   under `/env/:env/...`, loading with `useLoad` + `LoadState`), nav link in `AppSidebar.vue` (per-environment `sections` or `globalItems`) and a crumb in `AppBreadcrumbs.vue`, `FooView.test.ts` stubbing the API with `stubApi`; views that use the
   router mount with `createAppRouter(createMemoryHistory())` as a plugin.
+- **Preview the UI (looks, layout):** `make web-mock MOCK_ADDR=<address>` (run it in the
+  background) serves the dev server with hot reload on `<address>:5173` and answers the API
+  from fake data in `frontend/mock/api.ts` (no nudge server, no Docker). Logged in as admin;
+  writes succeed and change nothing, except container start/stop/restart/kill;
+  WebSocket streams (logs, exec, stats, events) stay empty. A new endpoint or field the
+  UI needs gets a route or field in the mock too.
 - **New config option:** field + flag in `internal/config`, test row in
   `config_test.go`, README table, docs/config/<topic>.md.
 - **Schema change:** new `internal/store/migrations/NNNN_name.sql` with the next number

@@ -51,6 +51,8 @@ with its own image. Read PLAN.md for the roadmap and docs/ for decisions.
 - `make lint`: golangci-lint, `vp check`, `vue-tsc --noEmit`
 - `make format`: gofmt/goimports and `vp check --fix`
 - `make tidy`: `go mod tidy` (after adding or removing imports)
+- `make web-mock MOCK_ADDR=<ip>`: UI preview with hot reload on <ip>:5173 and a mock API
+  (frontend/mock/); docs/codemap.md "Preview the UI"
 - `make web-build`: builds the frontend and copies it into backend/internal/web/dist
 - `make build`: builds both Docker images (nudge, nudge-agent) locally
 Always run `make test lint` before committing. Fix failures yourself.

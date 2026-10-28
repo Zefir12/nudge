@@ -32,7 +32,7 @@ NPM := $(WEB_RUN) npm
 NPX := $(WEB_RUN) npx
 endif
 
-.PHONY: test lint format tidy run web-install web-test web-check web-format web-build web-dev \
+.PHONY: test lint format tidy run web-install web-test web-check web-format web-build web-dev web-mock \
 	build push publish publish-hash
 
 # --- DEV ---
@@ -91,6 +91,14 @@ web-build: frontend/node_modules
 # Uses the host's Vite+ (`vp`), since it serves on the host.
 web-dev:
 	cd frontend && vp install && vp dev
+
+# The same dev server in the Node image with a mock API (frontend/mock/), so the UI can be
+# previewed without a nudge server or Docker access. MOCK_ADDR picks the host address it
+# listens on (e.g. a VPN address); the default keeps it on this machine.
+MOCK_ADDR ?= 127.0.0.1
+web-mock:
+	docker run --rm --init -p $(MOCK_ADDR):5173:5173 -e NUDGE_DEV_MOCK=1 \
+		-v "$(CURDIR)/frontend":/web -w /web $(NODE_IMAGE) npx vp dev --host 0.0.0.0
 
 # --- IMAGE (publishing is done by zefir, not by Claude) ---
 

@@ -1,17 +1,19 @@
 import vue from '@vitejs/plugin-vue';
 import { defineConfig } from 'vite-plus';
 
+import { mockApi } from './mock/api';
+
 // nudge's web UI. `vp dev` proxies the API to a nudge server on localhost:8080
 // (NUDGE_DEV_API to change it); `vp build` writes dist/, which `make web-build` and the
-// Dockerfile copy into backend/internal/web/dist for embedding.
+// Dockerfile copy into backend/internal/web/dist for embedding. NUDGE_DEV_MOCK=1 answers
+// the API from fake data in mock/ instead (`make web-mock`).
 const api = process.env.NUDGE_DEV_API ?? 'http://localhost:8080';
+const mock = process.env.NUDGE_DEV_MOCK === '1';
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [vue(), ...(mock ? [mockApi()] : [])],
   server: {
-    proxy: {
-      '/api': { target: api, changeOrigin: false, ws: true },
-    },
+    proxy: mock ? {} : { '/api': { target: api, changeOrigin: false, ws: true } },
   },
   build: {
     outDir: 'dist',
