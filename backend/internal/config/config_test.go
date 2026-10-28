@@ -15,6 +15,8 @@ import (
 
 func TestLoadServer(t *testing.T) {
 	t.Parallel()
+	// Rows without denied labels want the default list.
+	defaultDenied := []string{"traefik.", "caddy", "com.centurylinklabs.watchtower.", "ofelia.", "wud.", "diun."}
 	tests := []struct {
 		name    string
 		args    []string
@@ -172,6 +174,12 @@ func TestLoadServer(t *testing.T) {
 		{name: "tenant cgroup parent space", args: []string{"-tenant-cgroup-parent", "u{id} .slice"}, wantErr: true},
 		{name: "tenant runtime with space", args: []string{"-tenant-runtime", "runsc --debug"}, wantErr: true},
 		{name: "tenant runtime with slash", args: []string{"-tenant-runtime", "/usr/bin/runsc"}, wantErr: true},
+		{name: "tenant denied labels", env: map[string]string{"NUDGE_TENANT_DENIED_LABELS": " Traefik. , homepage.,traefik."}, want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute, Tenant: Tenant{DeniedLabels: []string{"traefik.", "homepage."}}}},
+		{name: "tenant denied labels none", args: []string{"-tenant-denied-labels", "none"}, want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute, Tenant: Tenant{DeniedLabels: []string{}}}},
+		{name: "tenant denied labels empty", args: []string{"-tenant-denied-labels", ""}, wantErr: true},
+		{name: "tenant denied labels empty entry", args: []string{"-tenant-denied-labels", "traefik.,,caddy"}, wantErr: true},
+		{name: "tenant denied labels space", args: []string{"-tenant-denied-labels", "traefik http"}, wantErr: true},
+		{name: "tenant denied labels equals", args: []string{"-tenant-denied-labels", "traefik.enable=true"}, wantErr: true},
 		{name: "tenant storage size bad", args: []string{"-tenant-storage-size", "lots"}, wantErr: true},
 		{name: "tenant storage size too small", args: []string{"-tenant-storage-size", "1M"}, wantErr: true},
 		{name: "tenant storage size too large", args: []string{"-tenant-storage-size", "99999999999T"}, wantErr: true},
@@ -191,6 +199,9 @@ func TestLoadServer(t *testing.T) {
 			got, err := LoadServer(tt.args, getenv, io.Discard)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.want.Tenant.DeniedLabels == nil {
+				tt.want.Tenant.DeniedLabels = defaultDenied
 			}
 			if err == nil && !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("got %+v, want %+v", got, tt.want)

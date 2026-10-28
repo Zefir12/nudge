@@ -68,6 +68,10 @@ type Options struct {
 	// Tenant is the host-side hardening of users' containers (cgroup slice, runtime,
 	// disk limit); the zero value adds none.
 	Tenant TenantHosting
+	// DeniedLabels are label prefixes (lower case) a user's container may not carry, from
+	// its spec or its image: labels that steer tools on the host such as reverse proxies
+	// (traefik.) or updaters. Empty denies none.
+	DeniedLabels []string
 	// Events is the Docker events hub, shared with the notification watcher; nil means
 	// the API makes its own.
 	Events *events.Hub
@@ -327,7 +331,7 @@ var routes = []route{
 func New(opts Options) http.Handler {
 	s := &server{
 		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries, audit: opts.Audit, updates: opts.Updates,
-		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, deployments: opts.Deployments, usage: opts.Usage, allowances: opts.Allowances, tenant: opts.Tenant, registryClient: opts.RegistryClient,
+		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, deployments: opts.Deployments, usage: opts.Usage, allowances: opts.Allowances, tenant: opts.Tenant, deniedLabels: opts.DeniedLabels, registryClient: opts.RegistryClient,
 		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, oidc: opts.OIDC, oidcName: opts.OIDCName, noPasswordLogin: opts.NoPasswordLogin, recreating: map[string]bool{},
 		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{}, summaries: map[summaryKey]*summaryEntry{},
 		checks: make(chan struct{}, maxStackChecks),
@@ -401,6 +405,8 @@ type server struct {
 	allowances   *allowances.Service
 	// tenant is the host-side hardening of users' containers (tenant_host.go).
 	tenant TenantHosting
+	// deniedLabels is Options.DeniedLabels.
+	deniedLabels []string
 	// done ends at shutdown (Options.Context).
 	done context.Context
 	// events fans each environment's Docker events out to the clients watching it.
