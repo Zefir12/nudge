@@ -343,6 +343,65 @@ recreate or update is refused until the label is gone (edit it out in the user's
 nudge's own `net.zefirlabs.nudge.` and Docker's `com.docker.` labels are always refused.
 Admins' containers are not affected.
 
+### Network
+Users' bridge networks are isolated from each other, but Docker lets a container connect
+to the host's own addresses: the services listening on the host, and every port published
+on them (other users' and admins' included, since Docker publishes on all addresses by
+default). nudge can't change the host's firewall, so it makes users' traffic easy to
+match instead: every network it creates for a user, their default one included, gets a
+Linux bridge named `nudge` and ten hex digits (`nudge3f9a01c2de`; the driver option
+`com.docker.network.bridge.name`). Admins' networks keep Docker's `br-…` names, so one
+rule on `nudge+` covers users only. Add on each host, as root:
+
+```sh
+# Ports published on the host's addresses: the connection is NATed to a container and
+# forwarded, through DOCKER-USER (replies to outside clients go in the other direction).
+iptables -I DOCKER-USER -i nudge+ -m conntrack --ctdir ORIGINAL --ctstate DNAT -j DROP
+# Services on the host itself (the bridge's gateway and every other host address).
+iptables -I INPUT -i nudge+ -m conntrack --ctstate NEW -j DROP
+```
+
+Users' containers still reach the internet and their own network's containers, and the
+host can still connect to them. A user's own published ports are blocked too when they
+are reached through the host's address; containers on one network reach each other by
+name. To allow something, insert an `ACCEPT` above the rule (`-I` puts a rule first), for
+example DNS from a resolver on the host, if containers stop resolving names:
+`iptables -I INPUT -i nudge+ -p udp --dport 53 -j ACCEPT` (and the same for `tcp`).
+
+Docker creates `DOCKER-USER` when it starts and leaves its rules alone, but the rules
+don't survive a reboot: add them from a oneshot systemd unit with
+`After=docker.service` and `Requires=docker.service`, or your distribution's firewall
+tooling. With Docker's nftables backend (`"firewall-backend": "nftables"`, no
+`DOCKER-USER`) use a table of your own, in `/etc/nftables.conf`:
+
+```
+table inet nudge_users {
+  chain forward {
+    type filter hook forward priority filter - 1;
+    iifname "nudge*" ct direction original ct status dnat drop
+  }
+  chain input {
+    type filter hook input priority filter - 1;
+    iifname "nudge*" ct state new drop
+  }
+}
+```
+
+Networks made before nudge named users' bridges keep their `br-` and the first 12
+characters of the network's ID: add rules for those bridges too, or recreate the networks
+(a user's default network is created again when they are given the environment again).
+`ip link show type bridge` lists the bridges.
+
+To check, as a user, run `busybox` with `sleep 600` on the user's default network and in
+its console try a port an admin publishes and a service of the host (SSH, say), then the
+internet:
+
+```sh
+nc -z -w 3 <host address> <published port>   # fails
+nc -z -w 3 <host address> 22                  # fails
+wget -q -T 5 -O /dev/null http://example.com && echo ok   # ok
+```
+
 ### The daemon
 - **`userns-remap`** (`"userns-remap": "default"` in daemon.json) maps root in every
   container to an unprivileged range on the host, so an escape lands as nobody. It

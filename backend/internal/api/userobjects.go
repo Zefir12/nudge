@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -26,6 +28,26 @@ func userPrefix(id int64) string { return "u" + strconv.FormatInt(id, 10) + "-" 
 // defaultNetwork is the name of user id's default bridge network, created when they are
 // given an environment.
 func defaultNetwork(id int64) string { return "nudge-u-" + strconv.FormatInt(id, 10) }
+
+// userBridgePrefix starts the Linux name of every user's network's bridge, so one host
+// firewall rule (`-i nudge+`) matches all of them (docs/config/server.md, "Network").
+const userBridgePrefix = "nudge"
+
+// bridgeNameOption is the bridge driver option naming the network's Linux interface.
+const bridgeNameOption = "com.docker.network.bridge.name"
+
+// userBridgeName is the Linux interface name of the user's network named name (the full
+// name, prefix included): userBridgePrefix and 10 hex digits of a hash of the name, 15
+// characters, the most Linux allows. Names are unique on a daemon, so are their bridges'.
+func userBridgeName(name string) string {
+	sum := sha256.Sum256([]byte(name))
+	return userBridgePrefix + hex.EncodeToString(sum[:])[:10]
+}
+
+// userNetworkOptions are the driver options of the user's new network named name.
+func userNetworkOptions(name string) map[string]string {
+	return map[string]string{bridgeNameOption: userBridgeName(name)}
+}
 
 // maxUserNetworks bounds a user's networks in an environment, their default one included:
 // each bridge takes a subnet from the daemon's address pools, which a few dozen exhaust for
@@ -149,7 +171,9 @@ func ensureDefaultNetwork(ctx context.Context, c docker.Client, id int64, key st
 	if ok || err != nil && !docker.NotFound(err) {
 		return err
 	}
-	_, err = c.NetworkCreate(ctx, name, client.NetworkCreateOptions{Driver: "bridge", Labels: map[string]string{ownerLabel: key}})
+	_, err = c.NetworkCreate(ctx, name, client.NetworkCreateOptions{
+		Driver: "bridge", Options: userNetworkOptions(name), Labels: map[string]string{ownerLabel: key},
+	})
 	if docker.Conflict(err) {
 		// Created meanwhile, by another grant or someone else.
 		_, err = owned()
