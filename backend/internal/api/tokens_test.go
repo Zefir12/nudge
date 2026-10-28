@@ -185,6 +185,26 @@ func TestTokensNeedSession(t *testing.T) {
 	}
 }
 
+// TestCredentialRoutesAreSessionOnly pins the routes that mint a credential which outlives
+// an API token's revocation (#33, #77): taking one off the list needs a decision.
+func TestCredentialRoutesAreSessionOnly(t *testing.T) {
+	t.Parallel()
+	for _, pattern := range []string{
+		"POST /api/v1/tokens",
+		"POST /api/v1/deployments/{name}/tokens",
+		"POST /api/v1/users",
+		"PATCH /api/v1/users/{id}",
+		"POST /api/v1/environments",
+		"POST /api/v1/environments/{env}/join-tokens",
+		"POST /api/v1/environments/{env}/webhooks",
+		"POST /api/v1/environments/{env}/webhooks/{id}/secret",
+	} {
+		if !sessionOnlyRoutes[pattern] {
+			t.Errorf("%s isn't session-only", pattern)
+		}
+	}
+}
+
 // TestSessionOnlyRoutesRefuseTokens catches a pattern that is public too, or that names
 // no route (a typo would leave the real route open to tokens).
 func TestSessionOnlyRoutesRefuseTokens(t *testing.T) {
