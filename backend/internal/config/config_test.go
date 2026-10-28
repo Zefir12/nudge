@@ -176,6 +176,21 @@ func TestLoadServer(t *testing.T) {
 		{name: "tenant storage size too small", args: []string{"-tenant-storage-size", "1M"}, wantErr: true},
 		{name: "tenant storage size too large", args: []string{"-tenant-storage-size", "99999999999T"}, wantErr: true},
 		{name: "tenant storage size negative", args: []string{"-tenant-storage-size", "-1G"}, wantErr: true},
+		{
+			name: "user registries",
+			env:  map[string]string{"NUDGE_USER_REGISTRIES": " docker.io, GHCR.io ,registry.example.net:5000"},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute,
+				UserRegistries: []string{"docker.io", "ghcr.io", "registry.example.net:5000"}},
+		},
+		{
+			name: "user registries any",
+			args: []string{"-user-registries", "*"},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute,
+				UserRegistries: []string{"*"}},
+		},
+		{name: "user registries with scheme", args: []string{"-user-registries", "https://ghcr.io"}, wantErr: true},
+		{name: "user registries with path", args: []string{"-user-registries", "ghcr.io/me"}, wantErr: true},
+		{name: "user registries empty entry", args: []string{"-user-registries", "docker.io,,ghcr.io"}, wantErr: true},
 		{name: "trusted proxies IPv4-mapped prefix shorter than /96", args: []string{"-trusted-proxies", "::ffff:0.0.0.0/80"}, wantErr: true},
 		{
 			name: "trusted proxies IPv4-mapped /96 is all of IPv4",

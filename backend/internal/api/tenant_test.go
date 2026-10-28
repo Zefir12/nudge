@@ -223,6 +223,8 @@ func TestCreateTenantRefusals(t *testing.T) {
 		{"anonymous volume", `,"image":"postgres:17"`, 400, `/var/lib/postgresql/data: mount one of your volumes there`},
 		{"image sets the owner label", `,"image":"evil:1"`, 400, "reserved for nudge"},
 		{"no name", `,"name":""`, 400, `"name":"required"`},
+		{"internal registry", `,"image":"10.0.0.5:5000/x:1"`, 403, "pulls from 10.0.0.5:5000 are not allowed"},
+		{"upper-case host", `,"image":"Intranet/x:1"`, 403, "pulls from intranet are not allowed"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -63,6 +63,9 @@ type Server struct {
 	NoPasswordLogin bool
 	// Tenant hardens users' containers with the host's setup; zero adds nothing.
 	Tenant Tenant
+	// UserRegistries are the registry hosts users' pulls may reach, "*" for any; nil
+	// means the API's default (Docker Hub and the big public registries).
+	UserRegistries []string
 }
 
 // Tenant is the hardening of users' containers that needs the host set up for it
@@ -164,6 +167,7 @@ func LoadServer(args []string, getenv func(string) string, out io.Writer) (Serve
 	fs.BoolVar(&passwordLogin, "password-login", passwordLogin, "allow password login; false leaves it only to the local admin user (NUDGE_PASSWORD_LOGIN)")
 	fs.StringVar(&c.Tenant.CgroupParent, "tenant-cgroup-parent", getenv("NUDGE_TENANT_CGROUP_PARENT"), "cgroup parent of each user's containers, {id} for the user's ID, e.g. nudge-u{id}.slice (NUDGE_TENANT_CGROUP_PARENT)")
 	fs.StringVar(&c.Tenant.Runtime, "tenant-runtime", getenv("NUDGE_TENANT_RUNTIME"), "OCI runtime of users' containers, e.g. runsc (NUDGE_TENANT_RUNTIME)")
+	userRegistries := fs.String("user-registries", getenv("NUDGE_USER_REGISTRIES"), "comma-separated registry hosts users' pulls may reach, * for any (NUDGE_USER_REGISTRIES; default docker.io and the big public registries)")
 	storageSize := fs.String("tenant-storage-size", getenv("NUDGE_TENANT_STORAGE_SIZE"), "disk cap of a user's container's writable layer, e.g. 10G, where the storage driver supports it (NUDGE_TENANT_STORAGE_SIZE)")
 	level := fs.String("log-level", envOr(getenv, "NUDGE_LOG_LEVEL", "info"), "debug, info, warn or error (NUDGE_LOG_LEVEL)")
 	if err := fs.Parse(args); err != nil {
@@ -219,6 +223,9 @@ func LoadServer(args []string, getenv func(string) string, out io.Writer) (Serve
 		return Server{}, err
 	}
 	if err := c.checkOIDC(); err != nil {
+		return Server{}, err
+	}
+	if c.UserRegistries, err = parseRegistries(*userRegistries); err != nil {
 		return Server{}, err
 	}
 	if c.Tenant.StorageSize, err = parseSize(*storageSize); err != nil {
@@ -340,6 +347,27 @@ func parseProxies(s string) ([]netip.Prefix, error) {
 			p = netip.PrefixFrom(a, a.BitLen())
 		}
 		out = append(out, p.Masked())
+	}
+	return out, nil
+}
+
+// registryHost is a registry host name or IPv4 address with an optional port, as the
+// first component of an image reference names it.
+var registryHost = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]{0,252}[a-z0-9])?(:[0-9]{1,5})?$`)
+
+// parseRegistries parses a comma-separated list of registry hosts (or "*"); empty is
+// nil (the default).
+func parseRegistries(s string) ([]string, error) {
+	if strings.TrimSpace(s) == "" {
+		return nil, nil
+	}
+	var out []string
+	for entry := range strings.SplitSeq(s, ",") {
+		entry = strings.ToLower(strings.TrimSpace(entry))
+		if entry != "*" && !registryHost.MatchString(entry) {
+			return nil, fmt.Errorf("user registry %q: want a registry host such as ghcr.io or registry.example.com:5000, or *", entry)
+		}
+		out = append(out, entry)
 	}
 	return out, nil
 }

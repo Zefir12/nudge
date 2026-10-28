@@ -68,6 +68,9 @@ type Options struct {
 	// Tenant is the host-side hardening of users' containers (cgroup slice, runtime,
 	// disk limit); the zero value adds none.
 	Tenant TenantHosting
+	// UserRegistries are the registry hosts users' pulls may reach, "*" for any; nil
+	// means DefaultUserRegistries (pull_registry.go).
+	UserRegistries []string
 	// Events is the Docker events hub, shared with the notification watcher; nil means
 	// the API makes its own.
 	Events *events.Hub
@@ -330,8 +333,9 @@ func New(opts Options) http.Handler {
 		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, deployments: opts.Deployments, usage: opts.Usage, allowances: opts.Allowances, tenant: opts.Tenant, registryClient: opts.RegistryClient,
 		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, oidc: opts.OIDC, oidcName: opts.OIDCName, noPasswordLogin: opts.NoPasswordLogin, recreating: map[string]bool{},
 		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{}, summaries: map[summaryKey]*summaryEntry{},
-		checks: make(chan struct{}, maxStackChecks),
-		done:   context.Background(),
+		checks:         make(chan struct{}, maxStackChecks),
+		done:           context.Background(),
+		userRegistries: newRegistrySet(opts.UserRegistries),
 	}
 	if s.events == nil {
 		s.events = events.New(events.Options{Context: opts.Context, Log: opts.Log})
@@ -401,6 +405,8 @@ type server struct {
 	allowances   *allowances.Service
 	// tenant is the host-side hardening of users' containers (tenant_host.go).
 	tenant TenantHosting
+	// userRegistries are the registries users' pulls may reach (pull_registry.go).
+	userRegistries registrySet
 	// done ends at shutdown (Options.Context).
 	done context.Context
 	// events fans each environment's Docker events out to the clients watching it.

@@ -31,6 +31,7 @@ image without setting anything. A flag wins over its variable.
 | `-tenant-cgroup-parent` | `NUDGE_TENANT_CGROUP_PARENT` | | cgroup parent of every user's containers, `{id}` standing for the user's ID: a systemd slice name (`nudge-u{id}.slice`) or a cgroupfs path (`/nudge/u{id}`); see [Hosting other users](#hosting-other-users) |
 | `-tenant-runtime` | `NUDGE_TENANT_RUNTIME` | | OCI runtime of every user's container, e.g. `runsc` (gVisor); users' containers aren't created or started on a daemon that doesn't list it |
 | `-tenant-storage-size` | `NUDGE_TENANT_STORAGE_SIZE` | | disk cap of a user's container's writable layer (`10G`, `512M`; binary units, at least `64M`), where the storage driver supports it |
+| `-user-registries` | `NUDGE_USER_REGISTRIES` | see [Registries users can pull from](#registries-users-can-pull-from) | comma-separated registry hosts (with the port, if any) users' pulls may reach, `*` for any |
 
 ## Data directory
 `nudge serve` creates the data directory (mode 0700) if it is missing and exits with an
@@ -255,6 +256,24 @@ nudge refuses (409) to start or restart a user's container made with other setti
 the current ones, for example one made before a setting was added or changed: its
 runtime, cgroup parent and disk cap (where the storage driver can set one) must match.
 Recreating it (the edit form, or an update) builds it with the current settings.
+
+### Registries users can pull from
+A user's pull is anonymous (never with the stored registry credentials), but the image
+reference names the registry, and the daemon connects to whatever host it names:
+`10.0.0.5:5000/x` would probe the internal network from the Docker host. So users' pulls
+(create, recreate, image update, deploy webhooks) may only reach the registries in
+`NUDGE_USER_REGISTRIES`; any other is refused with `403` before the daemon is asked.
+Admins' pulls aren't limited.
+
+The default is Docker Hub (`docker.io`), `ghcr.io`, `quay.io`, `gcr.io`,
+`registry.k8s.io`, `mcr.microsoft.com`, `public.ecr.aws`, `registry.gitlab.com` and
+`lscr.io`. Setting the variable replaces the list, e.g.
+`NUDGE_USER_REGISTRIES=docker.io,registry.example.net:5000`; a port is part of the host,
+and Docker Hub's aliases (`index.docker.io`) count as `docker.io`. `*` allows any
+registry: only for hosts with nothing to probe. The registry is read as Docker reads it:
+the reference's first component when it has a dot or a port, is `localhost` or has an
+upper-case letter, otherwise Docker Hub. An allowance's image patterns narrow a user's
+images further.
 
 ### A cgroup slice per user
 With `NUDGE_TENANT_CGROUP_PARENT=nudge-u{id}.slice` every container of user 7 goes into
