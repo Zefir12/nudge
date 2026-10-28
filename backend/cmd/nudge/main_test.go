@@ -182,8 +182,8 @@ func TestAgentWithoutCredentials(t *testing.T) {
 	if !strings.Contains(stderr.String(), "no join token") {
 		t.Errorf("stderr = %q, want the missing join token explained", stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "nudge-agent") {
-		t.Errorf("stderr = %q, want a pointer to the nudge-agent image", stderr.String())
+	if strings.Contains(stderr.String(), "nudge-agent") {
+		t.Errorf("stderr = %q, want no warning to switch to the nudge-agent image", stderr.String())
 	}
 }
 

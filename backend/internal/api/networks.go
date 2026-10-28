@@ -172,7 +172,8 @@ type pruneNetworksResponse struct {
 }
 
 // createNetwork creates a network and answers 201 with its ID. A user's network is a
-// bridge named with their prefix (userNetworkRefusal, userName).
+// bridge named with their prefix (userNetworkRefusal, userName), its Linux interface
+// named by nudge (userBridgeName).
 func (s *server) createNetwork(w http.ResponseWriter, r *http.Request) {
 	var req createNetworkRequest
 	if !s.decodeJSON(w, r, &req) {
@@ -217,6 +218,9 @@ func (s *server) createNetwork(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.IPv6 {
 		opts.EnableIPv6 = &req.IPv6
+	}
+	if !admin {
+		opts.Options = userNetworkOptions(name)
 	}
 	resp, ok := s.runDocker(context.WithoutCancel(r.Context()), w, r, "network create", "a network with this name already exists", networkTimeout, func(ctx context.Context, c docker.Client) (any, error) {
 		if !admin {

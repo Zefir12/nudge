@@ -279,7 +279,9 @@ above stays admin-only.
   public images), and must fit the allowance (its image patterns and disk). An image that
   sets a label in the `net.zefirlabs.nudge.` namespace is refused, and so is one with a
   `VOLUME` no mount covers (`fields.mounts` names the paths): Docker would make an
-  anonymous volume nobody owns.
+  anonymous volume nobody owns. An image from a registry outside the server's
+  `NUDGE_USER_REGISTRIES` is `403` and never pulled (docs/config/server.md, "Registries
+  users can pull from"); this holds for every user's pull, also updates and deploy webhooks.
 - Someone else's volume or network is `400` on its field; going over the allowance or
   outside the port range is `409`.
 - `POST .../user-containers` with a spec plus `"start": true` answers `201` with
@@ -323,7 +325,9 @@ Users (role `user`) reach only what is theirs; admins reach everything.
   the usual create routes, with limits: networks are `bridge` only, without `options`,
   `subnet`/`gateway`/`ip_range` (Docker picks the subnet), `ipv6` or `attachable`, and
   at most 8 per environment, the default one included (each takes a subnet from the
-  daemon's pools; `409` past it);
+  daemon's pools; `409` past it). The server names the Linux bridge of every user's
+  network `nudge` and ten hex digits (driver option `com.docker.network.bridge.name`) so
+  the host's firewall can match users' traffic (docs/config/server.md, "Network");
   volumes are `local` only, without `options` (`o=bind` with `device=` would mount a host
   path). `name` is required, and the server prefixes it with `u<user id>-`, so `{"name":
   "data"}` from user 7 creates `u7-data` (the prefixed name is what the lists, details and

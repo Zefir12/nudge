@@ -518,6 +518,9 @@ func (s *server) pullOwned(ctx context.Context, env int64, c docker.Client, ref,
 	if key == "" {
 		return s.pullWithAuth(ctx, c, ref)
 	}
+	if err := s.userRegistries.check(ref); err != nil {
+		return err
+	}
 	user, a, unlock, err := s.lockAllowance(ctx, env, key)
 	if err != nil {
 		return err

@@ -86,7 +86,7 @@ func realMain(ctx context.Context, args []string, getenv func(string) string, st
 		}
 		return 0
 	case "agent":
-		return cli.Agent(ctx, args, getenv, stderr, "agents have their own image now: switch this host to registrydedic.zefirlabs.net/nudge-agent (deploy/agent.compose.yml)")
+		return cli.Agent(ctx, args, getenv, stderr, "")
 	case "deploy":
 		return runDeploy(ctx, args, getenv, stdout, stderr)
 	case "probe":
@@ -258,8 +258,11 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 			Allowances:   allowances.New(allowances.Options{DB: st.DB()}),
 			Tenant:       api.TenantHosting{CgroupParent: cfg.Tenant.CgroupParent, Runtime: cfg.Tenant.Runtime, StorageSize: cfg.Tenant.StorageSize},
 			DeniedLabels: cfg.Tenant.DeniedLabels,
-			Events:       hub,
-			Web:          web.Handler(web.Dist()),
+			// Users' pulls are anonymous, but a reference names any host the daemon can
+			// reach: only these registries.
+			UserRegistries: cfg.UserRegistries,
+			Events:         hub,
+			Web:            web.Handler(web.Dist()),
 
 			StacksDir:   cfg.StacksDir,
 			StackRunner: stackRunner(cfg, envs, regs, log),

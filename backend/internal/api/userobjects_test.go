@@ -83,6 +83,14 @@ func TestUserCreates(t *testing.T) {
 		switch o := actions[0].Options.(type) {
 		case client.NetworkCreateOptions:
 			labels = o.Labels
+			// Users' bridges are named for the host firewall; admins' are Docker's.
+			var want map[string]string
+			if tt.cookie == ot.bob {
+				want = map[string]string{bridgeNameOption: userBridgeName(tt.want)}
+			}
+			if !reflect.DeepEqual(o.Options, want) {
+				t.Errorf("%s: driver options %v, want %v", tt.name, o.Options, want)
+			}
 		case client.VolumeCreateOptions:
 			labels = o.Labels
 		}
@@ -91,6 +99,23 @@ func TestUserCreates(t *testing.T) {
 				t.Errorf("%s: labels %v, want %v", tt.name, labels, tt.labels)
 			}
 		}
+	}
+}
+
+// A user's bridge name fits Linux's 15 characters, starts with the prefix the host
+// firewall matches, and differs between networks.
+func TestUserBridgeName(t *testing.T) {
+	t.Parallel()
+	seen := map[string]string{}
+	for _, name := range []string{defaultNetwork(1), defaultNetwork(12), userPrefix(1) + "web", userPrefix(1) + strings.Repeat("a", 200)} {
+		b := userBridgeName(name)
+		if len(b) != 15 || !strings.HasPrefix(b, userBridgePrefix) || b != userBridgeName(name) {
+			t.Errorf("userBridgeName(%q) = %q, want 15 stable characters starting %q", name, b, userBridgePrefix)
+		}
+		if other, ok := seen[b]; ok {
+			t.Errorf("%q and %q share bridge %q", name, other, b)
+		}
+		seen[b] = name
 	}
 }
 
@@ -146,8 +171,9 @@ func TestDefaultNetworkOnAccess(t *testing.T) {
 		t.Fatalf("actions = %+v, want the default network created", actions)
 	}
 	opts := actions[0].Options.(client.NetworkCreateOptions)
-	if opts.Driver != "bridge" || !reflect.DeepEqual(opts.Labels, map[string]string{ownerLabel: ot.alice}) {
-		t.Errorf("options = %+v, want a bridge labelled as alice's", opts)
+	if opts.Driver != "bridge" || !reflect.DeepEqual(opts.Labels, map[string]string{ownerLabel: ot.alice}) ||
+		opts.Options[bridgeNameOption] != userBridgeName(defaultNetwork(aliceID)) {
+		t.Errorf("options = %+v, want a bridge labelled as alice's, its interface named for the firewall", opts)
 	}
 	// Only environments newly given create one.
 	set(fmt.Sprint(ot.local))

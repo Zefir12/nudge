@@ -31,6 +31,7 @@ image without setting anything. A flag wins over its variable.
 | `-tenant-cgroup-parent` | `NUDGE_TENANT_CGROUP_PARENT` | | cgroup parent of every user's containers, `{id}` standing for the user's ID: a systemd slice name (`nudge-u{id}.slice`) or a cgroupfs path (`/nudge/u{id}`); see [Hosting other users](#hosting-other-users) |
 | `-tenant-runtime` | `NUDGE_TENANT_RUNTIME` | | OCI runtime of every user's container, e.g. `runsc` (gVisor); users' containers aren't created or started on a daemon that doesn't list it |
 | `-tenant-storage-size` | `NUDGE_TENANT_STORAGE_SIZE` | | disk cap of a user's container's writable layer (`10G`, `512M`; binary units, at least `64M`), where the storage driver supports it |
+| `-user-registries` | `NUDGE_USER_REGISTRIES` | see [Registries users can pull from](#registries-users-can-pull-from) | comma-separated registry hosts (with the port, if any) users' pulls may reach, `*` for any |
 | `-tenant-denied-labels` | `NUDGE_TENANT_DENIED_LABELS` | `traefik.,caddy,com.centurylinklabs.watchtower.,ofelia.,wud.,diun.` | comma-separated label prefixes users may not set on their containers, or `none`; see [Labels](#labels) |
 
 ## Data directory
@@ -257,6 +258,24 @@ the current ones, for example one made before a setting was added or changed: it
 runtime, cgroup parent and disk cap (where the storage driver can set one) must match.
 Recreating it (the edit form, or an update) builds it with the current settings.
 
+### Registries users can pull from
+A user's pull is anonymous (never with the stored registry credentials), but the image
+reference names the registry, and the daemon connects to whatever host it names:
+`10.0.0.5:5000/x` would probe the internal network from the Docker host. So users' pulls
+(create, recreate, image update, deploy webhooks) may only reach the registries in
+`NUDGE_USER_REGISTRIES`; any other is refused with `403` before the daemon is asked.
+Admins' pulls aren't limited.
+
+The default is Docker Hub (`docker.io`), `ghcr.io`, `quay.io`, `gcr.io`,
+`registry.k8s.io`, `mcr.microsoft.com`, `public.ecr.aws`, `registry.gitlab.com` and
+`lscr.io`. Setting the variable replaces the list, e.g.
+`NUDGE_USER_REGISTRIES=docker.io,registry.example.net:5000`; a port is part of the host,
+and Docker Hub's aliases (`index.docker.io`) count as `docker.io`. `*` allows any
+registry: only for hosts with nothing to probe. The registry is read as Docker reads it:
+the reference's first component when it has a dot or a port, is `localhost` or has an
+upper-case letter, otherwise Docker Hub. An allowance's image patterns narrow a user's
+images further.
+
 ### A cgroup slice per user
 With `NUDGE_TENANT_CGROUP_PARENT=nudge-u{id}.slice` every container of user 7 goes into
 `nudge-u7.slice`, so the kernel caps the user's total even if nudge's own allowance check
@@ -323,6 +342,65 @@ containers). A container made before a prefix was added keeps running, but its n
 recreate or update is refused until the label is gone (edit it out in the user's form).
 nudge's own `net.zefirlabs.nudge.` and Docker's `com.docker.` labels are always refused.
 Admins' containers are not affected.
+
+### Network
+Users' bridge networks are isolated from each other, but Docker lets a container connect
+to the host's own addresses: the services listening on the host, and every port published
+on them (other users' and admins' included, since Docker publishes on all addresses by
+default). nudge can't change the host's firewall, so it makes users' traffic easy to
+match instead: every network it creates for a user, their default one included, gets a
+Linux bridge named `nudge` and ten hex digits (`nudge3f9a01c2de`; the driver option
+`com.docker.network.bridge.name`). Admins' networks keep Docker's `br-…` names, so one
+rule on `nudge+` covers users only. Add on each host, as root:
+
+```sh
+# Ports published on the host's addresses: the connection is NATed to a container and
+# forwarded, through DOCKER-USER (replies to outside clients go in the other direction).
+iptables -I DOCKER-USER -i nudge+ -m conntrack --ctdir ORIGINAL --ctstate DNAT -j DROP
+# Services on the host itself (the bridge's gateway and every other host address).
+iptables -I INPUT -i nudge+ -m conntrack --ctstate NEW -j DROP
+```
+
+Users' containers still reach the internet and their own network's containers, and the
+host can still connect to them. A user's own published ports are blocked too when they
+are reached through the host's address; containers on one network reach each other by
+name. To allow something, insert an `ACCEPT` above the rule (`-I` puts a rule first), for
+example DNS from a resolver on the host, if containers stop resolving names:
+`iptables -I INPUT -i nudge+ -p udp --dport 53 -j ACCEPT` (and the same for `tcp`).
+
+Docker creates `DOCKER-USER` when it starts and leaves its rules alone, but the rules
+don't survive a reboot: add them from a oneshot systemd unit with
+`After=docker.service` and `Requires=docker.service`, or your distribution's firewall
+tooling. With Docker's nftables backend (`"firewall-backend": "nftables"`, no
+`DOCKER-USER`) use a table of your own, in `/etc/nftables.conf`:
+
+```
+table inet nudge_users {
+  chain forward {
+    type filter hook forward priority filter - 1;
+    iifname "nudge*" ct direction original ct status dnat drop
+  }
+  chain input {
+    type filter hook input priority filter - 1;
+    iifname "nudge*" ct state new drop
+  }
+}
+```
+
+Networks made before nudge named users' bridges keep their `br-` and the first 12
+characters of the network's ID: add rules for those bridges too, or recreate the networks
+(a user's default network is created again when they are given the environment again).
+`ip link show type bridge` lists the bridges.
+
+To check, as a user, run `busybox` with `sleep 600` on the user's default network and in
+its console try a port an admin publishes and a service of the host (SSH, say), then the
+internet:
+
+```sh
+nc -z -w 3 <host address> <published port>   # fails
+nc -z -w 3 <host address> 22                  # fails
+wget -q -T 5 -O /dev/null http://example.com && echo ok   # ok
+```
 
 ### The daemon
 - **`userns-remap`** (`"userns-remap": "default"` in daemon.json) maps root in every
