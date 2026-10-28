@@ -817,7 +817,7 @@ grammar (`team/app`, lowercase; tags such as `v1.2`); anything else is `400`.
   other tags on the same digest (at most 100 tags are checked; `shared_tags_complete` is
   false when not all were).
 - `DELETE /api/v1/registries/{id}/tags?repository=…&tag=…&digest=sha256:…` deletes the
-  tag; admins only (`403` otherwise; with no roles yet, that is every logged-in user).
+  tag; admins only (`403` for a user).
   `digest` must be the tag's current digest (from the manifest call), else `409
   {"error": "the tag points to another digest now"}`, so a re-push in between is never
   deleted. Audited with target `<address>/<repository>:<tag>`.
@@ -970,11 +970,10 @@ request, like the agent join command).
   stack must exist in nudge (`404`).
 - Names are 1 to 64 bytes, unique per user (`409`); at most 100 webhooks per user (`409`).
   `tag_filter` is optional, a pattern with `*`, `?` and `[...]` (Go's `path.Match`).
-- Every user manages their own webhooks; others' answer `404`. Admins see and manage
-  all. nudge has no roles yet, so today every user is an admin: any user can list,
-  rotate and delete any user's webhooks (and, with the new secret, trigger them), and the
-  runs still go as the creator, so the audit log and update history name the creator,
-  not the user who rotated the secret. Deleting a user deletes their webhooks. Creating a
+- Deploy webhooks are admin-only: a user gets `403`. Every admin sees and manages all
+  of them: any admin can list, rotate and delete another admin's webhooks (and, with the
+  new secret, trigger them), and the runs still go as the creator, so the audit log and
+  update history name the creator, not the admin who rotated the secret. Deleting a user deletes their webhooks. Creating a
   webhook and rotating its secret are session-only (an API token gets `403`), as the
   secret outlives the token's revocation; API tokens can list, delete and read the runs.
 - `last_status` is the newest run's `status` (below), `""` before the first run.
