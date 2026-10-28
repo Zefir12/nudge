@@ -67,6 +67,20 @@ describe('AppSidebar', () => {
     expect(wrapper.find('.switcher').exists()).toBe(true);
   });
 
+  it('shows the server version at the bottom', async () => {
+    stubApi({
+      'GET /environments': { body: envs },
+      'GET /health': { body: { status: 'ok', version: 'v1.4.2' } },
+    });
+    const wrapper = await mountSidebar('/', null);
+    expect(wrapper.find('.version').text()).toBe('nudge v1.4.2');
+  });
+
+  it('leaves out the version when health fails', async () => {
+    const wrapper = await mountSidebar('/', null);
+    expect(wrapper.find('.version').exists()).toBe(false);
+  });
+
   it('leaves out the environment part when there is no environment', async () => {
     const wrapper = await mountSidebar('/', null);
     expect(wrapper.find('nav.env').exists()).toBe(false);

@@ -51,12 +51,17 @@ jobs:
       PUSH: ${{ forgejo.event_name != 'pull_request' }}
 
     steps:
+      # Full history: scripts/version.sh counts commits and merges (main included).
       - name: Checkout
         uses: https://data.forgejo.org/actions/checkout@v6
+        with:
+          fetch-depth: 0
 
-      # TAG is pushed on every push; MOVING (`develop`) only from develop.
+      # TAG is pushed on every push; MOVING (`develop`) only from develop. VERSION is the
+      # binaries' version (vMAJOR.MINOR.PATCH), shown in the web UI.
       - name: Tag
         run: |
+          echo "VERSION=$(scripts/version.sh)" >> "$FORGEJO_ENV"
           branch=$(echo "${{ forgejo.ref_name }}" | tr -c 'A-Za-z0-9_.\n-' '-')
           echo "TAG=$branch-$(git rev-parse --short=12 HEAD)" >> "$FORGEJO_ENV"
           if [ "$branch" = develop ]; then echo "MOVING=develop" >> "$FORGEJO_ENV"; fi
@@ -81,5 +86,5 @@ jobs:
               set -- --no-push;
             fi;
             /kaniko/executor --context "dir://$PWD" --dockerfile "$PWD/Dockerfile" --target "$TARGET" \
-              --build-arg "VERSION=$TAG" --single-snapshot "$@"
+              --build-arg "VERSION=$VERSION" --single-snapshot "$@"
             '
