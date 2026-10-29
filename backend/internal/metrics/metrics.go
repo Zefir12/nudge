@@ -6,7 +6,9 @@
 //
 // Run keeps one collector goroutine per environment, started and stopped as
 // environments come and go; each samples its environment every interval and stores the
-// tick in one transaction. A cleanup on a timer rolls finished hours up and drops what
+// tick in one transaction. While an environment has a live subscriber (SubscribeLive)
+// it is sampled every live interval instead; those extra ticks only go to the
+// subscribers, so the stored samples stay at the background interval. A cleanup on a timer rolls finished hours up and drops what
 // is past retention and the rows of removed environments.
 package metrics
 
@@ -90,6 +92,9 @@ type Options struct {
 	Interval time.Duration
 	// Retention is how long hourly rollups are kept, DefaultRetention if zero.
 	Retention time.Duration
+	// LiveInterval is how often a watched environment is sampled, DefaultLiveInterval
+	// if zero.
+	LiveInterval time.Duration
 }
 
 // Service collects samples and answers them.
@@ -101,13 +106,20 @@ type Service struct {
 	clock     Clock
 	interval  time.Duration
 	retention time.Duration
+	// liveInterval is how often a watched environment is sampled.
+	liveInterval time.Duration
+	live         *liveHub
 }
 
 // New returns a Service.
 func New(opts Options) *Service {
 	s := &Service{
 		db: opts.DB, log: opts.Log, envs: opts.Envs, owners: opts.Owners, clock: opts.Clock,
-		interval: opts.Interval, retention: opts.Retention,
+		interval: opts.Interval, retention: opts.Retention, liveInterval: opts.LiveInterval,
+		live: newLiveHub(),
+	}
+	if s.liveInterval <= 0 {
+		s.liveInterval = DefaultLiveInterval
 	}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
@@ -126,7 +138,8 @@ func (s *Service) Interval() time.Duration { return s.interval }
 
 // Run collects until ctx ends: every interval it starts a collector for each new
 // environment, stops those of removed ones, and every cleanupEvery runs Cleanup. It
-// returns at once when collection is off, and waits for its collectors.
+// returns at once when collection is off, and waits for its collectors; live
+// subscriptions end with it.
 func (s *Service) Run(ctx context.Context) {
 	if s.interval <= 0 {
 		return
@@ -138,6 +151,7 @@ func (s *Service) Run(ctx context.Context) {
 			cancel()
 		}
 		wg.Wait()
+		s.live.close()
 	}()
 	var nextCleanup time.Time
 	for {
@@ -178,22 +192,45 @@ func (s *Service) Run(ctx context.Context) {
 	}
 }
 
-// collectLoop samples env now and then every interval until ctx ends.
+// collectLoop samples env until ctx ends: now and then every interval, the ticks it
+// stores, and while env is watched also every live interval, ticks that only go to
+// the live subscribers. The first subscriber wakes it, so watching starts at once.
 func (s *Service) collectLoop(ctx context.Context, env environments.Environment) {
+	wake, unregister := s.live.register(env.ID)
+	defer unregister()
+	// nextSave is when the next stored tick is due; last is when the last tick started.
+	var nextSave, last time.Time
 	for {
-		err := s.Collect(ctx, env)
-		switch {
-		case err == nil, ctx.Err() != nil:
-		case docker.Unreachable(err):
-			s.log.Debug("metrics skipped: environment offline", "env", env.ID)
-		default:
-			s.log.Warn("metrics", "env", env.ID, "err", err)
+		now := s.clock.Now()
+		save := !now.Before(nextSave)
+		watched := s.live.watched(env.ID)
+		if save || watched && !now.Before(last.Add(s.liveInterval)) {
+			s.logCollect(ctx, env, s.collect(ctx, env, save))
+			last = now
+			if save {
+				nextSave = now.Add(s.interval)
+			}
+		}
+		wait := nextSave.Sub(now)
+		if s.live.watched(env.ID) {
+			wait = min(wait, last.Add(s.liveInterval).Sub(now))
 		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-s.clock.After(s.interval):
+		case <-s.clock.After(max(wait, 0)):
+		case <-wake:
 		}
+	}
+}
+
+func (s *Service) logCollect(ctx context.Context, env environments.Environment, err error) {
+	switch {
+	case err == nil, ctx.Err() != nil:
+	case docker.Unreachable(err):
+		s.log.Debug("metrics skipped: environment offline", "env", env.ID)
+	default:
+		s.log.Warn("metrics", "env", env.ID, "err", err)
 	}
 }
 
@@ -201,6 +238,12 @@ func (s *Service) collectLoop(ctx context.Context, env environments.Environment)
 // tick. A tick cut short, or one where no listed container could be sampled, is not
 // stored: its totals would look whole.
 func (s *Service) Collect(ctx context.Context, env environments.Environment) error {
+	return s.collect(ctx, env, true)
+}
+
+// collect takes one tick of env, hands it to env's live subscribers, and stores it if
+// save is set.
+func (s *Service) collect(ctx context.Context, env environments.Environment, save bool) error {
 	c, err := s.envs.Client(env)
 	if err != nil {
 		return fmt.Errorf("collect environment %d: %w", env.ID, err)
@@ -224,6 +267,10 @@ func (s *Service) Collect(ctx context.Context, env environments.Environment) err
 	}
 	if len(sampled) == 0 && skipped > 0 {
 		return fmt.Errorf("collect environment %d: %w", env.ID, errNoneSampled)
+	}
+	s.live.publish(env.ID, newTick(now, list.Items, sampled, owners))
+	if !save {
+		return nil
 	}
 	if err := s.save(ctx, env.ID, now, sampled, owners); err != nil {
 		return fmt.Errorf("save metrics of environment %d: %w", env.ID, err)

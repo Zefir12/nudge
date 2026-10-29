@@ -953,6 +953,29 @@ export interface EnvironmentStats {
 export const getEnvironmentStats = (env: string, signal?: AbortSignal) =>
   apiFetch<EnvironmentStats>(envPath(env, '/stats'), { signal });
 
+// LiveUsage is one sample of an environment from its live usage stream: the overview's
+// shape (a user's: of their containers) with the sample's time.
+export interface LiveUsage extends EnvironmentStats {
+  time: string;
+}
+
+export interface LiveUsageHandlers {
+  onUsage: (u: LiveUsage) => void;
+  // onEnd runs once when the stream ends, always with an error: it has no natural end.
+  onEnd: (error?: string) => void;
+}
+
+// streamLiveUsage opens the environment's live usage WebSocket: a frame per sample, the
+// environment sampled faster while it is open. It returns a function that closes it.
+export const streamLiveUsage = (env: string, h: LiveUsageHandlers) =>
+  openStream<LiveUsage>(
+    envPath(env, '/metrics/live'),
+    'usage',
+    (m) => m.time !== undefined,
+    h.onUsage,
+    h.onEnd,
+  );
+
 // UsageSummary is an environment's usage totals from the server's latest collection (a
 // user's: of their containers): CPU as a percentage of one CPU, memory without the page
 // cache, over `containers` sampled.
