@@ -45,6 +45,29 @@ const docker = {
 };
 
 describe('EnvironmentTile', () => {
+  it.each([
+    {
+      name: 'address and ping',
+      agent: { address: '203.0.113.9', rtt_ms: 48.3 },
+      text: 'agent 0.9.0 · 203.0.113.9 · 48.3 ms',
+      tone: 'good',
+    },
+    { name: 'ping only (a user)', agent: { rtt_ms: 160 }, text: 'agent 0.9.0 · 160 ms', tone: 'bad' },
+    {
+      name: 'address before the first ping',
+      agent: { address: '203.0.113.9' },
+      text: 'agent 0.9.0 · 203.0.113.9',
+    },
+    { name: 'nothing known', agent: {}, text: 'agent 0.9.0' },
+  ])("shows the agent's link: $name", async ({ agent, text, tone }) => {
+    const env = { ...base, agent: { enrolled: true, version: '0.9.0', ...agent } };
+    stubApi({ 'GET /environments/3': { body: { ...env, docker } } });
+    const wrapper = await mountTile(env);
+    expect(wrapper.find('.address').text().replace(/\s+/g, ' ')).toBe(text);
+    if (tone) expect(wrapper.find('.ping').classes()).toContain(tone);
+    else expect(wrapper.find('.ping').exists()).toBe(false);
+  });
+
   it('shows the Docker host of an online environment', async () => {
     const env = { ...base, agent: { enrolled: true, version: '0.9.0' } };
     stubApi({ 'GET /environments/3': { body: { ...env, docker } } });

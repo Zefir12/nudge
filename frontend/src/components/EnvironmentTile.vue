@@ -17,7 +17,7 @@ import DiskUsage from './DiskUsage.vue';
 import EnvironmentSettings from './EnvironmentSettings.vue';
 import GearButton from './GearButton.vue';
 import SettingsDialog from './SettingsDialog.vue';
-import { mockActivity, mockAgentLink, mockCpuHistory, mockDisk, mockMemHistory } from './tileMock';
+import { mockActivity, mockCpuHistory, mockDisk, mockMemHistory } from './tileMock';
 import UsageGauges, { type Gauge } from './UsageGauges.vue';
 import UsageHistory from './UsageHistory.vue';
 import { formatBytes, formatDate } from '../format';
@@ -99,12 +99,13 @@ const address = computed(() =>
       ? 'agent not enrolled'
       : `agent ${props.env.agent?.version ?? ''}`,
 );
-// TODO: mock until the server reports the agent's address and round trip (tileMock.ts).
-const link = computed(() =>
-  props.env.kind === 'agent' && props.env.online ? mockAgentLink(props.env.id) : null,
-);
+// The agent's address (admins only) and last ping, while its tunnel is up.
+const link = computed(() => {
+  const a = props.env.agent;
+  return props.env.online && a && (a.address || a.rtt_ms !== undefined) ? a : null;
+});
 const pingTone = computed(() => {
-  const ms = link.value?.pingMs ?? 0;
+  const ms = link.value?.rtt_ms ?? 0;
   return ms < 50 ? 'good' : ms < 150 ? 'warn' : 'bad';
 });
 
@@ -137,13 +138,11 @@ function open(e: MouseEvent) {
         </h2>
         <span class="address">
           {{ address }}
-          <span
-            v-if="link"
-            class="link"
-            title="TODO: mock data until the server reports the agent's address and ping"
-          >
-            · {{ link.ip }} · <span class="ping" :class="pingTone">{{ link.pingMs }} ms</span>
-            <span class="mock-tag">mock</span>
+          <span v-if="link" class="link">
+            <template v-if="link.address">· {{ link.address }}</template>
+            <template v-if="link.rtt_ms !== undefined">
+              · <span class="ping" :class="pingTone" title="last ping">{{ link.rtt_ms }} ms</span>
+            </template>
           </span>
         </span>
       </div>
@@ -374,7 +373,6 @@ dd {
   position: relative;
 }
 
-.mock-tag,
 .mock::after {
   padding: 0 0.35rem;
   font-family: var(--font);
@@ -385,11 +383,6 @@ dd {
   letter-spacing: 0.08em;
   background: var(--warn-soft);
   border-radius: var(--radius-sm);
-}
-
-.mock-tag {
-  margin-left: 0.3rem;
-  vertical-align: 1px;
 }
 
 .mock::after {

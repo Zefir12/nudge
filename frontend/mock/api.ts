@@ -28,7 +28,7 @@ type MockEnv = {
   online: boolean;
   created_at: string;
   last_seen_at: string | null;
-  agent?: { enrolled: boolean; version: string };
+  agent?: { enrolled: boolean; version: string; address?: string; rtt_ms?: number };
 };
 
 const environments: MockEnv[] = [
@@ -40,7 +40,7 @@ const environments: MockEnv[] = [
     online: true,
     created_at: ago(60 * 24 * 20),
     last_seen_at: ago(0),
-    agent: { enrolled: true, version: 'v0.9.0' },
+    agent: { enrolled: true, version: 'v0.9.0', address: '192.168.1.22', rtt_ms: 48.3 },
   },
   {
     id: 3,
