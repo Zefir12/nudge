@@ -12,6 +12,9 @@ services:
       # Stacks at the same path on the host and in the container, so their relative
       # bind mounts (./data) work.
       - /opt/nudge/stacks:/opt/nudge/stacks
+      # Docker's root dir, read-only: only the disk's size and free space are read
+      # (NUDGE_DOCKER_ROOT; with another data-root, mount that one here).
+      - /var/lib/docker:/host/docker:ro
     environment:
       NUDGE_STACKS_DIR: /opt/nudge/stacks
 

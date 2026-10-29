@@ -1,7 +1,8 @@
 // Package usage measures disk usage in the background and keeps the last measurement:
-// for now the size of every volume. Docker computes it by walking each volume, which is
-// too slow for a list request, so the sizes are measured on a schedule (or on demand)
-// and stored in volume_usage.
+// the size of every volume (in volume_usage) and Docker's usage by kind (volumes,
+// images, build cache, containers; in metrics.db through Options.Disk). Docker computes
+// it by walking each volume, which is too slow for a request, so one `system df` call
+// measures everything on a schedule (or on demand).
 package usage
 
 import (
@@ -17,6 +18,7 @@ import (
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/metrics"
 )
 
 const (
@@ -25,6 +27,9 @@ const (
 	measureTimeout = 5 * time.Minute
 	// maxMeasures is how many environments are measured at once.
 	maxMeasures = 2
+	// MinGap is how long after a measurement of an environment MeasureNow refuses
+	// another one.
+	MinGap = time.Minute
 )
 
 var (
@@ -32,7 +37,14 @@ var (
 	ErrRunning = errors.New("a measurement of this environment is running")
 	// ErrSave wraps a failure to store a measurement (not the Docker host's fault).
 	ErrSave = errors.New("save volume usage")
+	// ErrTooSoon means MeasureNow came within MinGap of the last measurement.
+	ErrTooSoon = errors.New("this environment was measured less than a minute ago")
 )
+
+// DiskStore keeps each environment's last Docker disk usage (metrics.Service).
+type DiskStore interface {
+	SaveDisk(ctx context.Context, env int64, d metrics.Disk) error
+}
 
 // Envs is what Service needs of the environments.
 type Envs interface {
@@ -57,6 +69,8 @@ type Options struct {
 	Log   *slog.Logger
 	Envs  Envs
 	Clock Clock
+	// Disk stores the usage by kind; nil keeps only the volume sizes.
+	Disk DiskStore
 }
 
 // Service measures environments' disk usage and keeps the last results.
@@ -65,15 +79,20 @@ type Service struct {
 	log   *slog.Logger
 	envs  Envs
 	clock Clock
+	disk  DiskStore
 
 	mu sync.Mutex
 	// busy holds the environments being measured, so bounded by the environments table.
 	busy map[int64]bool
+	// last is when each environment's last measurement ended, for MeasureNow; entries
+	// older than MinGap are dropped as it looks.
+	last map[int64]time.Time
 }
 
 // New returns a Service.
 func New(opts Options) *Service {
-	s := &Service{db: opts.DB, log: opts.Log, envs: opts.Envs, clock: opts.Clock, busy: map[int64]bool{}}
+	s := &Service{db: opts.DB, log: opts.Log, envs: opts.Envs, clock: opts.Clock, disk: opts.Disk,
+		busy: map[int64]bool{}, last: map[int64]time.Time{}}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
 	}
@@ -123,28 +142,70 @@ func (s *Service) Volumes(ctx context.Context, env int64) (map[string]Volume, er
 	return vols, nil
 }
 
-// Measure measures env's volumes and replaces its last measurement; ErrRunning if a
+// Measure measures env's disk usage and replaces its last measurement; ErrRunning if a
 // measurement of env is running.
 func (s *Service) Measure(ctx context.Context, env environments.Environment) error {
 	if !s.lock(env.ID) {
 		return ErrRunning
 	}
 	defer s.unlock(env.ID)
+	return s.measure(ctx, env)
+}
+
+// MeasureNow is Measure on demand: ErrTooSoon within MinGap of env's last measurement,
+// so a client can't keep the daemon walking every volume.
+func (s *Service) MeasureNow(ctx context.Context, env environments.Environment) error {
+	s.mu.Lock()
+	now := s.clock.Now()
+	for id, at := range s.last {
+		if now.Sub(at) >= MinGap {
+			delete(s.last, id)
+		}
+	}
+	_, recent := s.last[env.ID]
+	s.mu.Unlock()
+	if recent {
+		return ErrTooSoon
+	}
+	return s.Measure(ctx, env)
+}
+
+func (s *Service) measure(ctx context.Context, env environments.Environment) error {
 	c, err := s.envs.Client(env)
 	if err != nil {
 		return fmt.Errorf("measure environment %d: %w", env.ID, err)
 	}
 	// The timeout is the walk's alone, so a slow one still leaves time to save.
 	dctx, cancel := context.WithTimeout(ctx, measureTimeout)
-	res, err := c.DiskUsage(dctx, client.DiskUsageOptions{Volumes: true, Verbose: true})
+	res, err := c.DiskUsage(dctx, client.DiskUsageOptions{Containers: true, Images: true, BuildCache: true, Volumes: true, Verbose: true})
 	cancel()
 	if err != nil {
 		return fmt.Errorf("measure environment %d: %w", env.ID, err)
 	}
-	if err := s.save(ctx, env.ID, res.Volumes, s.clock.Now()); err != nil {
+	now := s.clock.Now()
+	s.mu.Lock()
+	s.last[env.ID] = now
+	s.mu.Unlock()
+	if err := s.save(ctx, env.ID, res.Volumes, now); err != nil {
 		return fmt.Errorf("%w: %w", ErrSave, err)
 	}
+	if s.disk != nil {
+		if err := s.disk.SaveDisk(ctx, env.ID, toDisk(res, now)); err != nil {
+			return fmt.Errorf("%w: %w", ErrSave, err)
+		}
+	}
 	return nil
+}
+
+// toDisk is the usage by kind of a `system df` answer.
+func toDisk(res client.DiskUsageResult, at time.Time) metrics.Disk {
+	return metrics.Disk{
+		MeasuredAt: at,
+		Volumes:    metrics.DiskPart{Size: res.Volumes.TotalSize, Reclaimable: res.Volumes.Reclaimable, Count: res.Volumes.TotalCount, Active: res.Volumes.ActiveCount},
+		Images:     metrics.DiskPart{Size: res.Images.TotalSize, Reclaimable: res.Images.Reclaimable, Count: res.Images.TotalCount, Active: res.Images.ActiveCount},
+		BuildCache: metrics.DiskPart{Size: res.BuildCache.TotalSize, Reclaimable: res.BuildCache.Reclaimable, Count: res.BuildCache.TotalCount, Active: res.BuildCache.ActiveCount},
+		Containers: metrics.DiskPart{Size: res.Containers.TotalSize, Reclaimable: res.Containers.Reclaimable, Count: res.Containers.TotalCount, Active: res.Containers.ActiveCount},
+	}
 }
 
 func (s *Service) save(ctx context.Context, env int64, du client.VolumesDiskUsage, now time.Time) error {

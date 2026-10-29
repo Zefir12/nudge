@@ -21,6 +21,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/deployments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/events"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/hostdisk"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/metrics"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/notify"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/oidc"
@@ -112,6 +113,9 @@ type Options struct {
 	// AgentSelf asks an agent environment's agent for its own container and Docker host
 	// (selfupdate.RemoteSelf); nil means agents can't be updated from the server.
 	AgentSelf func(ctx context.Context, env environments.Environment) (stacks.Self, string, error)
+	// DiskSpace is the size of the disk under an environment's Docker root dir
+	// (hostdisk.Stat locally, hostdisk.Remote for an agent); nil means unknown.
+	DiskSpace func(ctx context.Context, env environments.Environment) (hostdisk.Space, error)
 	// TrustedProxies are the reverse proxies whose X-Forwarded-For (client IP for the
 	// login limiter and logs) and X-Forwarded-Proto are believed; empty means none.
 	TrustedProxies []netip.Prefix
@@ -316,6 +320,8 @@ var routes = []route{
 	{"POST /api/v1/environments/{env}/volumes", (*server).createVolume},
 	{"POST /api/v1/environments/{env}/volumes/prune", (*server).pruneVolumes},
 	{"POST /api/v1/environments/{env}/volumes/usage", (*server).measureVolumes},
+	{"GET /api/v1/environments/{env}/disk", (*server).environmentDisk},
+	{"POST /api/v1/environments/{env}/disk", (*server).measureDisk},
 	{"GET /api/v1/environments/{env}/volumes/{id}", (*server).getVolume},
 	{"DELETE /api/v1/environments/{env}/volumes/{id}", (*server).removeVolume},
 	{"GET /api/v1/environments/{env}/networks", (*server).listNetworks},
@@ -371,7 +377,7 @@ func New(opts Options) http.Handler {
 		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, deployments: opts.Deployments, usage: opts.Usage, metrics: opts.Metrics, backups: opts.Backups, allowances: opts.Allowances, tenant: opts.Tenant, deniedLabels: opts.DeniedLabels, registryClient: opts.RegistryClient,
 		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, oidc: opts.OIDC, oidcName: opts.OIDCName, noPasswordLogin: opts.NoPasswordLogin, recreating: map[string]bool{},
 		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{},
-		self: opts.Self, dockerHost: opts.DockerHost, agentSelf: opts.AgentSelf,
+		self: opts.Self, dockerHost: opts.DockerHost, agentSelf: opts.AgentSelf, diskSpace: opts.DiskSpace,
 		checks:         make(chan struct{}, maxStackChecks),
 		done:           context.Background(),
 		userRegistries: newRegistrySet(opts.UserRegistries),
@@ -434,6 +440,8 @@ type server struct {
 	self       stacks.Self
 	dockerHost string
 	agentSelf  func(ctx context.Context, env environments.Environment) (stacks.Self, string, error)
+	// diskSpace is Options.DiskSpace.
+	diskSpace func(ctx context.Context, env environments.Environment) (hostdisk.Space, error)
 
 	registries     *registries.Service
 	registryClient RegistryBrowser

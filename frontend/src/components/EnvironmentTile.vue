@@ -4,11 +4,13 @@ import { RouterLink, useRouter } from 'vue-router';
 
 import {
   getEnvironment,
+  getEnvironmentDisk,
   getEnvironmentMetrics,
   getEnvironmentSummary,
   listStacks,
   listVolumes,
   type Environment,
+  type EnvironmentDisk,
 } from '../api/client';
 import { useLiveUsage } from '../composables/useLiveUsage';
 import { useLoad } from '../composables/useLoad';
@@ -19,7 +21,7 @@ import DiskUsage from './DiskUsage.vue';
 import EnvironmentSettings from './EnvironmentSettings.vue';
 import GearButton from './GearButton.vue';
 import SettingsDialog from './SettingsDialog.vue';
-import { mockActivity, mockDisk } from './tileMock';
+import { mockActivity } from './tileMock';
 import UsageGauges, { type Gauge } from './UsageGauges.vue';
 import UsageHistory from './UsageHistory.vue';
 import { formatBytes, formatDate } from '../format';
@@ -27,8 +29,8 @@ import { formatBytes, formatDate } from '../format';
 // EnvironmentTile is one environment on the global dashboard; it opens that environment.
 // An online environment's Docker info fills in the counts once it arrives, its usage
 // summary the CPU and memory gauges, then its live usage stream keeps them current; its
-// stored usage history fills the 24h charts. Disk and
-// activity are mock data for now (tileMock.ts says what each needs). An admin's gear opens
+// stored usage history fills the 24h charts; an admin sees its disk usage. Activity is mock
+// data for now (tileMock.ts). An admin's gear opens
 // the environment's settings; changed fires after one of them ran, so the dashboard
 // reloads the list.
 const props = defineProps<{ env: Environment }>();
@@ -62,17 +64,17 @@ const { data: metrics, reload: reloadMetrics } = useLoad(id, (env) =>
   getEnvironmentMetrics(env, historyRange),
 );
 const { data: volumes } = useLoad(id, listVolumes);
-// Stacks are for admins; other users would only get a 403.
-const { data: stacks } = useLoad(
-  computed(() => (currentUser.value?.admin ? id.value : '')),
-  listStacks,
-);
+// Stacks and the disk are for admins; other users would only get a 403.
+const adminId = computed(() => (currentUser.value?.admin ? id.value : ''));
+const { data: stacks } = useLoad(adminId, listStacks);
+const { data: diskData, reload: reloadDisk } = useLoad(adminId, getEnvironmentDisk);
 
 let timer: ReturnType<typeof setInterval> | undefined;
 onMounted(() => {
   timer = setInterval(() => {
     if (!id.value || document.visibilityState === 'hidden') return;
     void reloadMetrics();
+    if (adminId.value) void reloadDisk();
   }, refreshMs);
 });
 onUnmounted(() => clearInterval(timer));
@@ -101,7 +103,55 @@ const history = computed(() => {
   };
 });
 
-const diskUsed = mockDisk.parts.reduce((s, p) => s + p.bytes, 0);
+// disk is the disk bar: Docker's usage by kind and, when the disk's size is known, what
+// else takes it; null before the first measurement (and for users, who can't see it).
+const disk = computed(() => {
+  const u = diskData.value?.usage;
+  if (!u) return null;
+  const size = diskData.value?.disk ?? null;
+  const parts = [
+    { label: 'Volumes', bytes: u.volumes.size },
+    { label: 'Images', bytes: u.images.size },
+    { label: 'Build cache', bytes: u.build_cache.size },
+    { label: 'Containers', bytes: u.containers.size },
+  ];
+  const docker = parts.reduce((s, p) => s + p.bytes, 0);
+  const other = size ? size.total - size.free - docker : 0;
+  if (other > 0) parts.push({ label: 'Other', bytes: other });
+  return { total: size?.total ?? null, parts, docker, reclaimable: reclaimable(u) };
+});
+
+// reclaimable says what a prune would free, if anything.
+function reclaimable(u: NonNullable<EnvironmentDisk['usage']>): string | undefined {
+  const bytes =
+    u.volumes.reclaimable + u.images.reclaimable + u.build_cache.reclaimable + u.containers.reclaimable;
+  if (bytes <= 0) return undefined;
+  const count = (n: number, what: string) => (n > 0 ? [`${n} ${what}${n === 1 ? '' : 's'}`] : []);
+  const what = [
+    ...count(u.images.count - u.images.active, 'unused image'),
+    ...count(u.volumes.count - u.volumes.active, 'unused volume'),
+    ...count(
+      u.containers.reclaimable > 0 ? u.containers.count - u.containers.active : 0,
+      'stopped container',
+    ),
+    ...(u.build_cache.reclaimable > 0 ? ['build cache'] : []),
+  ];
+  return `${formatBytes(bytes)} reclaimable${what.length ? `: ${what.join(', ')}` : ''}`;
+}
+
+// diskGauge is the disk's use as a whole when its size is known, else Docker's share.
+const diskGauge = computed(() => {
+  const size = diskData.value?.disk;
+  if (size && size.total > 0) {
+    const used = size.total - size.free;
+    return {
+      percent: (used / size.total) * 100,
+      detail: `${formatBytes(used)} / ${formatBytes(size.total)}`,
+    };
+  }
+  return { percent: null, detail: disk.value ? `${formatBytes(disk.value.docker)} Docker` : '' };
+});
+
 const gauges = computed<Gauge[]>(() => [
   {
     label: 'CPU',
@@ -110,14 +160,7 @@ const gauges = computed<Gauge[]>(() => [
     tone: 'cpu',
   },
   { label: 'Memory', percent: load.value?.mem ?? null, detail: load.value?.memLabel ?? '', tone: 'mem' },
-  // TODO: mock until the disk usage endpoint exists (see tileMock.ts).
-  {
-    label: 'Disk',
-    percent: (diskUsed / mockDisk.total) * 100,
-    detail: `${formatBytes(diskUsed)} / ${formatBytes(mockDisk.total)}`,
-    tone: 'disk',
-    mock: true,
-  },
+  { label: 'Disk', percent: diskGauge.value.percent, detail: diskGauge.value.detail, tone: 'disk' },
 ]);
 
 // The heatmap's rows end today.
@@ -222,9 +265,7 @@ function open(e: MouseEvent) {
             :cpu-now="load?.cpu ?? null"
             :mem-now="load?.mem ?? null"
           />
-          <div class="mock" title="TODO: mock data until there is a disk usage endpoint">
-            <DiskUsage :total="mockDisk.total" :parts="mockDisk.parts" :reclaimable="mockDisk.reclaimable" />
-          </div>
+          <DiskUsage v-if="disk" :total="disk.total" :parts="disk.parts" :reclaimable="disk.reclaimable" />
           <div class="mock" title="TODO: mock data until the server counts events per hour">
             <ActivityHeatmap :counts="mockActivity" :days="days" />
           </div>

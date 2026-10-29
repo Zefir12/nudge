@@ -276,7 +276,7 @@ func (s *server) serverURL(r *http.Request) string {
 
 func dockerRun(server, token string) string {
 	return fmt.Sprintf("docker run -d --name nudge-agent --restart unless-stopped "+
-		"-v /var/run/docker.sock:/var/run/docker.sock -v nudge-agent:/data "+
+		"-v /var/run/docker.sock:/var/run/docker.sock -v nudge-agent:/data -v /var/lib/docker:/host/docker:ro "+
 		"-e NUDGE_SERVER_URL=%s -e NUDGE_JOIN_TOKEN=%s %s agent", server, token, agentImage)
 }
 
@@ -292,6 +292,7 @@ func agentCompose(server, token string) string {
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - nudge-agent:/data
+      - /var/lib/docker:/host/docker:ro
     environment:
       NUDGE_SERVER_URL: %s
       NUDGE_JOIN_TOKEN: %s

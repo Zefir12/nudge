@@ -853,6 +853,29 @@ const routes: Route[] = [
       };
     }),
   ],
+  // The second environment's agent has no Docker root mounted: no disk size.
+  [
+    'GET',
+    new RegExp(`^${envRe}/disk$`),
+    withEnv((env) => {
+      const part = (gb: number, reclaimGb: number, count: number, active: number) => ({
+        size: gb * 1e9 * (1 + env / 10),
+        reclaimable: reclaimGb * 1e9,
+        count,
+        active,
+      });
+      return {
+        usage: {
+          measured_at: ago(9),
+          volumes: part(46.7, 1.2, 14, 10),
+          images: part(18.4, 6.7, 31, 20),
+          build_cache: part(3.3, 3.3, 120, 0),
+          containers: part(2.1, 0, 22, 22),
+        },
+        disk: env === 2 ? null : { total: 100e9 * env, free: 21e9 * env },
+      };
+    }),
+  ],
   [
     'GET',
     new RegExp(`^${envRe}/updates$`),

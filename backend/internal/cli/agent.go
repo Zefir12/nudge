@@ -12,6 +12,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/agent"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/config"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/hostdisk"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/probe"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/selfupdate"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/stacks"
@@ -76,11 +77,12 @@ func runAgent(ctx context.Context, cfg config.Agent, log *slog.Logger) error {
 		JoinToken: cfg.JoinToken,
 		DataDir:   cfg.DataDir,
 		Dial:      dial,
-		// The server asks the control service for the agent's container to update it.
-		Control: selfupdate.Control(self, cfg.DockerHost, stacks.NewControl(stacks.NewLocal(stacks.LocalOptions{
+		// The server asks the control service for the agent's container to update it,
+		// and for the size of the disk under Docker's root dir.
+		Control: hostdisk.Control(cfg.DockerRoot, selfupdate.Control(self, cfg.DockerHost, stacks.NewControl(stacks.NewLocal(stacks.LocalOptions{
 			Dir: stacks.NewDir(cfg.StacksDir), Compose: cfg.Compose, DockerHost: cfg.DockerHost,
 			ConfigDir: ComposeConfigDir(cfg.DataDir), Probe: prober.Run,
-		}), log)),
+		}), log))),
 		Version:  version.Version,
 		Hostname: hostname,
 		Log:      log,

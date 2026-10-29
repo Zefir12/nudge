@@ -83,6 +83,11 @@ type Resources struct {
 	VolumeUsage   map[string]volume.UsageData
 	DiskUsageErr  error
 	DiskUsageWait chan struct{}
+	// DiskUsageTotals are the totals DiskUsage reports for the kinds asked for (no
+	// items); a zero Volumes.TotalCount is reported as len(Volumes).
+	DiskUsageTotals client.DiskUsageResult
+	// DiskUsageOpts records the options of the last DiskUsage call.
+	DiskUsageOpts client.DiskUsageOptions
 }
 
 // Action is a recorded call that changes a container, image, volume or network: its name
@@ -415,8 +420,12 @@ func (f *Fake) VolumeList(ctx context.Context, _ client.VolumeListOptions) (clie
 	return client.VolumeListResult{Items: f.Volumes}, nil
 }
 
-// DiskUsage answers with Volumes and their VolumeUsage, when asked for volumes in detail.
+// DiskUsage answers with DiskUsageTotals for the kinds asked for, and Volumes and their
+// VolumeUsage when asked for volumes in detail.
 func (f *Fake) DiskUsage(ctx context.Context, opts client.DiskUsageOptions) (client.DiskUsageResult, error) {
+	f.mu.Lock()
+	f.DiskUsageOpts = opts
+	f.mu.Unlock()
 	if f.DiskUsageWait != nil {
 		select {
 		case <-f.DiskUsageWait:
@@ -431,10 +440,23 @@ func (f *Fake) DiskUsage(ctx context.Context, opts client.DiskUsageOptions) (cli
 		return client.DiskUsageResult{}, f.DiskUsageErr
 	}
 	var res client.DiskUsageResult
+	t := f.DiskUsageTotals
+	if opts.Images {
+		res.Images = client.ImagesDiskUsage{ActiveCount: t.Images.ActiveCount, TotalCount: t.Images.TotalCount, Reclaimable: t.Images.Reclaimable, TotalSize: t.Images.TotalSize}
+	}
+	if opts.Containers {
+		res.Containers = client.ContainersDiskUsage{ActiveCount: t.Containers.ActiveCount, TotalCount: t.Containers.TotalCount, Reclaimable: t.Containers.Reclaimable, TotalSize: t.Containers.TotalSize}
+	}
+	if opts.BuildCache {
+		res.BuildCache = client.BuildCacheDiskUsage{ActiveCount: t.BuildCache.ActiveCount, TotalCount: t.BuildCache.TotalCount, Reclaimable: t.BuildCache.Reclaimable, TotalSize: t.BuildCache.TotalSize}
+	}
 	if !opts.Volumes {
 		return res, nil
 	}
-	res.Volumes.TotalCount = int64(len(f.Volumes))
+	res.Volumes = client.VolumesDiskUsage{ActiveCount: t.Volumes.ActiveCount, TotalCount: t.Volumes.TotalCount, Reclaimable: t.Volumes.Reclaimable, TotalSize: t.Volumes.TotalSize}
+	if res.Volumes.TotalCount == 0 {
+		res.Volumes.TotalCount = int64(len(f.Volumes))
+	}
 	if !opts.Verbose {
 		return res, nil
 	}
