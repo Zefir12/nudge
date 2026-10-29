@@ -42,16 +42,12 @@ it. The helper stops the old container, sets it aside, starts the new one with t
 settings and waits until it has run (or been healthy) for 15 s. Then the old one is
 removed and the UI reloads.
 
-<video src="docs/img/self-update.webm" autoplay loop muted playsinline width="960">
-  <a href="docs/img/self-update.webm">Self-update (video)</a>
-</video>
+![Self-update: trigger, pull, helper, swap, health check, cleanup, reconnect](docs/img/self-update.webp)
 
 If the new container doesn't come up healthy, the helper removes it and starts the old
 one again, so nudge stays on the version it had:
 
-<video src="docs/img/self-update-rollback.webm" autoplay loop muted playsinline width="960">
-  <a href="docs/img/self-update-rollback.webm">Self-update rollback (video)</a>
-</video>
+![Self-update rollback: the health check fails and the old container is started again](docs/img/self-update-rollback.webp)
 
 Back up first ([backups](docs/config/server.md#backup-and-restore)): a database the new
 version migrated is refused by an older one. Agents from before self-update, and a server
