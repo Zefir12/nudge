@@ -68,12 +68,13 @@ Flags with `NUDGE_*` environment variable fallbacks; the defaults work in the im
 | `NUDGE_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `NUDGE_ADMIN_PASSWORD` | unset | create user `admin` at first start (env only) |
 | `DOCKER_HOST` | `unix:///var/run/docker.sock` | Docker API of the local environment |
+| `NUDGE_DOCKER_ROOT` | `/host/docker` | where the host's Docker root dir is mounted read-only, for the disk's size (server and agent) |
 | `NUDGE_TLS_CERT`, `NUDGE_TLS_KEY` | unset | serve HTTPS with these PEM files (reloaded on change or SIGHUP) |
 | `NUDGE_PUBLIC_URL` | unset | URL browsers and agents reach the server at; used in the agent command |
 | `NUDGE_TRUSTED_PROXIES` | unset | reverse proxies (CIDRs or IPs) whose `X-Forwarded-For`/`-Proto` are trusted |
 | `NUDGE_AUDIT_RETENTION_DAYS` | `90` | days the audit log keeps entries |
 | `NUDGE_UPDATE_CHECK_INTERVAL` | `6h` | how often images are checked for updates, `0` for never |
-| `NUDGE_USAGE_INTERVAL` | `15m` | how often volume sizes are measured, `0` for never |
+| `NUDGE_USAGE_INTERVAL` | `15m` | how often volume sizes and Docker's disk usage are measured, `0` for never |
 | `NUDGE_METRICS_INTERVAL` | `60s` | how often container and environment usage is collected into `metrics.db`, `0` for never |
 | `NUDGE_METRICS_RETENTION` | `720h` | how long the hourly usage history is kept (raw samples: 48h) |
 | `NUDGE_BACKUP_INTERVAL` | `0` (off) | how often an encrypted backup is saved to `<data>/backups` |

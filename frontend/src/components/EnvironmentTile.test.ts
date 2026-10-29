@@ -102,6 +102,75 @@ describe('EnvironmentTile', () => {
     expect(fetch.mock.calls.map(([url]) => url)).not.toContain('/api/v1/environments/3/stacks');
   });
 
+  const part = (size: number, reclaimable = 0, count = 0, active = 0) => ({
+    size,
+    reclaimable,
+    count,
+    active,
+  });
+  const usage = {
+    measured_at: '2026-10-27T12:00:00Z',
+    volumes: part(40e9, 2e9, 6, 4),
+    images: part(20e9, 5e9, 12, 1),
+    build_cache: part(3e9, 1e9, 9, 0),
+    containers: part(2e9, 0, 3, 3),
+  };
+
+  it.each([
+    {
+      name: 'with the disk size',
+      disk: { total: 100e9, free: 25e9 },
+      big: '75.0 GB of 100.0 GB used',
+      legend: [
+        'Volumes 40.0 GB',
+        'Images 20.0 GB',
+        'Build cache 3.0 GB',
+        'Containers 2.0 GB',
+        'Other 10.0 GB',
+      ],
+      gauge: ['Disk 75%', '75.0 GB / 100.0 GB'],
+    },
+    {
+      name: 'without it (no mount, an older agent)',
+      disk: null,
+      big: '65.0 GB used by Docker',
+      legend: ['Volumes 40.0 GB', 'Images 20.0 GB', 'Build cache 3.0 GB', 'Containers 2.0 GB'],
+      gauge: ['Disk unknown', '65.0 GB Docker'],
+    },
+  ])("shows an admin the disk's usage $name", async ({ disk, big, legend, gauge }) => {
+    currentUser.value = admin;
+    stubApi({
+      'GET /environments/3': { body: { ...base, docker } },
+      'GET /environments/3/disk': { body: { usage, disk } },
+    });
+    const wrapper = await mountTile(base);
+    expect(wrapper.find('.big').text()).toBe(big);
+    expect(wrapper.findAll('.legend li').map((l) => l.text())).toEqual(legend);
+    expect(wrapper.find('.reclaim').text()).toBe(
+      '8.0 GB reclaimable: 11 unused images, 2 unused volumes, build cache',
+    );
+    expect(gaugeLabels(wrapper)[2]).toBe(gauge[0]);
+    expect(wrapper.findAll('.gauge .detail').map((d) => d.text())[2]).toBe(gauge[1]);
+  });
+
+  it('shows no disk bar before the first measurement, nor to other users', async () => {
+    currentUser.value = admin;
+    stubApi({
+      'GET /environments/3': { body: { ...base, docker } },
+      'GET /environments/3/disk': { body: { usage: null, disk: { total: 100e9, free: 60e9 } } },
+    });
+    const wrapper = await mountTile(base);
+    expect(wrapper.find('.big').exists()).toBe(false);
+    expect(gaugeLabels(wrapper)[2]).toBe('Disk 40%');
+
+    currentUser.value = null;
+    const fetch = stubApi({ 'GET /environments/3': { body: { ...base, docker } } });
+    const other = await mountTile(base);
+    expect(fetch.mock.calls.map(([url]) => url)).not.toContain('/api/v1/environments/3/disk');
+    expect(other.find('.big').exists()).toBe(false);
+    expect(gaugeLabels(other)[2]).toBe('Disk unknown');
+  });
+
   it('opens the environment from anywhere on the tile but the settings', async () => {
     currentUser.value = admin;
     stubApi({ 'GET /environments/3': { body: { ...base, docker } } });

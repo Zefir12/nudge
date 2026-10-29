@@ -41,6 +41,9 @@ type Server struct {
 	AdminPassword string
 	// DockerHost is the local environment's Docker API, unix:// or tcp://.
 	DockerHost string
+	// DockerRoot is where Docker's root dir (/var/lib/docker) is mounted, read-only,
+	// to tell the local disk's size; empty or not mounted: unknown.
+	DockerRoot string
 	// TLSCert and TLSKey are PEM files; when set the server speaks HTTPS only.
 	TLSCert string
 	TLSKey  string
@@ -102,6 +105,9 @@ type Tenant struct {
 	DeniedLabels []string
 }
 
+// DefaultDockerRoot is where the compose files mount the host's /var/lib/docker.
+const DefaultDockerRoot = "/host/docker"
+
 // DefaultDeniedLabels is the default of -tenant-denied-labels: the labels of common
 // reverse proxies (Traefik, caddy-docker-proxy), updaters (Watchtower, What's Up Docker,
 // Diun) and the Ofelia job scheduler.
@@ -153,6 +159,7 @@ func LoadServer(args []string, getenv func(string) string, out io.Writer) (Serve
 	fs.StringVar(&c.StacksDir, "stacks-dir", getenv("NUDGE_STACKS_DIR"), "compose stacks directory, mounted at the same path on the host (NUDGE_STACKS_DIR; default <data>/stacks)")
 	fs.StringVar(&c.Compose, "compose", envOr(getenv, "NUDGE_COMPOSE", "/usr/local/bin/docker-compose"), "docker-compose binary that deploys stacks (NUDGE_COMPOSE)")
 	fs.StringVar(&c.DockerHost, "docker-host", envOr(getenv, "DOCKER_HOST", "unix:///var/run/docker.sock"), "Docker API of the local environment, unix:// or tcp:// (DOCKER_HOST)")
+	fs.StringVar(&c.DockerRoot, "docker-root", envOr(getenv, "NUDGE_DOCKER_ROOT", DefaultDockerRoot), "where Docker's root dir is mounted (read-only) to tell the disk's size (NUDGE_DOCKER_ROOT)")
 	fs.StringVar(&c.TLSCert, "tls-cert", getenv("NUDGE_TLS_CERT"), "PEM certificate (chain) file; serve HTTPS with -tls-key (NUDGE_TLS_CERT)")
 	fs.StringVar(&c.TLSKey, "tls-key", getenv("NUDGE_TLS_KEY"), "PEM private key file for -tls-cert (NUDGE_TLS_KEY)")
 	fs.StringVar(&c.PublicURL, "public-url", getenv("NUDGE_PUBLIC_URL"), "URL browsers and agents reach the server at, e.g. https://nudge.example.net (NUDGE_PUBLIC_URL)")
@@ -529,6 +536,9 @@ type Agent struct {
 	LogLevel slog.Level
 	// DockerHost is the Docker API streams are piped to, unix:// or tcp://.
 	DockerHost string
+	// DockerRoot is where the host's Docker root dir is mounted, read-only, so the
+	// agent can tell the server the disk's size; empty or not mounted: unknown.
+	DockerRoot string
 	// StacksDir holds the stacks the server deploys here; empty flag means <DataDir>/stacks.
 	// Absolute, mounted at the same path on the host.
 	StacksDir string
@@ -551,6 +561,7 @@ func LoadAgent(args []string, getenv func(string) string, out io.Writer) (Agent,
 	}
 	fs.BoolVar(&c.Insecure, "insecure", insecure, "allow an http:// server URL, for testing only (NUDGE_INSECURE)")
 	fs.StringVar(&c.DockerHost, "docker-host", envOr(getenv, "DOCKER_HOST", "unix:///var/run/docker.sock"), "Docker API to serve, unix:// or tcp:// (DOCKER_HOST)")
+	fs.StringVar(&c.DockerRoot, "docker-root", envOr(getenv, "NUDGE_DOCKER_ROOT", DefaultDockerRoot), "where Docker's root dir is mounted (read-only) to tell the server the disk's size (NUDGE_DOCKER_ROOT)")
 	fs.StringVar(&c.StacksDir, "stacks-dir", getenv("NUDGE_STACKS_DIR"), "directory of the stacks the server deploys here, mounted at the same path on the host (NUDGE_STACKS_DIR; default <data>/stacks)")
 	fs.StringVar(&c.Compose, "compose", envOr(getenv, "NUDGE_COMPOSE", "/usr/local/bin/docker-compose"), "docker-compose binary that deploys stacks (NUDGE_COMPOSE)")
 	level := fs.String("log-level", envOr(getenv, "NUDGE_LOG_LEVEL", "info"), "debug, info, warn or error (NUDGE_LOG_LEVEL)")

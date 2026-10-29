@@ -98,33 +98,10 @@ func withSize(v volumeResponse, sizes map[string]usage.Volume) volumeResponse {
 	return v
 }
 
-// measureVolumes measures the environment's volume sizes now and answers once they're
-// stored; 409 while a measurement of it runs. The measurement outlives the request (a
-// proxy may cut a long one) and ends only on its own timeout or at shutdown.
+// measureVolumes measures the environment's volume sizes (and the rest of its disk
+// usage) now; see measureNow.
 func (s *server) measureVolumes(w http.ResponseWriter, r *http.Request) {
-	if s.usage == nil {
-		s.writeError(w, http.StatusServiceUnavailable, "volume sizes aren't available")
-		return
-	}
-	env, _, ok := s.environment(w, r)
-	if !ok {
-		return
-	}
-	ctx, cancel := context.WithCancel(context.WithoutCancel(r.Context()))
-	defer cancel()
-	stop := context.AfterFunc(s.done, cancel)
-	defer stop()
-	err := s.usage.Measure(ctx, env)
-	switch {
-	case errors.Is(err, usage.ErrRunning):
-		s.writeError(w, http.StatusConflict, err.Error())
-	case errors.Is(err, usage.ErrSave):
-		s.internalError(w, "measure volumes", err)
-	case err != nil:
-		s.dockerError(w, r, env, "measure volumes", err)
-	default:
-		w.WriteHeader(http.StatusNoContent)
-	}
+	s.measureNow(w, r, "measure volumes", (*usage.Service).Measure)
 }
 
 func toVolume(v volume.Volume) volumeResponse {

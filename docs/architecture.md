@@ -397,6 +397,9 @@ to the UI as they are.
   - `GET /v1/self`: `{"id", "hostname", "docker_host"}`, the agent's own container
     (`stacks.SelfID`) and how it reaches Docker, so the server can update the agent
     (Self-update below). An agent from before it answers `404`.
+  - `GET /v1/disk`: `{"total", "free"}`, statfs on the agent's read-only mount of the
+    host's Docker root dir (`hostdisk`), for the dashboard's disk bar; `503` without the
+    mount, `404` from an agent before it. Either way the size is unknown.
   - `DELETE /v1/stacks/{name}`: removes the files after `down`.
   - Not built yet: `GET /v1/stacks` with names and a SHA-256 of each project's files, so
     the server can show a stack that differs from what it last sent.

@@ -4,37 +4,40 @@ import { computed } from 'vue';
 import { formatBytes } from '../format';
 
 // DiskUsage shows what takes the disk as one bar of the whole, with a legend and what a
-// prune would free.
+// prune would free. Without the disk's size (total null) the bar is the parts alone.
 const props = defineProps<{
-  total: number;
+  total: number | null;
   parts: { label: string; bytes: number }[];
   reclaimable?: string;
 }>();
 
 const used = computed(() => props.parts.reduce((s, p) => s + p.bytes, 0));
-// segments as percentages of the whole disk.
+// whole is what the bar stands for: the disk, or what the parts take.
+const whole = computed(() => props.total || used.value || 1);
+// segments as percentages of the whole, clipped to it.
 const segments = computed(() => {
   let x = 0;
   return props.parts.map((p, i) => {
-    const w = (p.bytes / props.total) * 100;
+    const w = Math.min((p.bytes / whole.value) * 100, 100 - x);
     const seg = { ...p, x, w, tone: `s${i + 1}` };
     x += w;
     return seg;
   });
 });
-const usedPct = computed(() => (used.value / props.total) * 100);
+const usedPct = computed(() => Math.min((used.value / whole.value) * 100, 100));
 </script>
 
 <template>
   <div class="disk">
     <div class="big">
-      {{ formatBytes(used) }}<span class="of"> of {{ formatBytes(total) }} used</span>
+      {{ formatBytes(used) }}<span v-if="total" class="of"> of {{ formatBytes(total) }} used</span
+      ><span v-else class="of"> used by Docker</span>
     </div>
     <svg
       viewBox="0 0 100 6"
       preserveAspectRatio="none"
       role="img"
-      :aria-label="`Disk ${Math.round(usedPct)}% used`"
+      :aria-label="total ? `Disk ${Math.round(usedPct)}% used` : 'Docker disk usage by kind'"
     >
       <rect
         v-for="s in segments"
@@ -46,7 +49,15 @@ const usedPct = computed(() => (used.value / props.total) * 100);
         height="6"
         rx="0.8"
       />
-      <rect class="free" :x="usedPct" y="0" :width="Math.max(100 - usedPct, 0)" height="6" rx="0.8" />
+      <rect
+        v-if="total"
+        class="free"
+        :x="usedPct"
+        y="0"
+        :width="Math.max(100 - usedPct, 0)"
+        height="6"
+        rx="0.8"
+      />
     </svg>
     <ul class="legend">
       <li v-for="s in segments" :key="s.label">
@@ -100,6 +111,11 @@ svg {
 .s4 {
   fill: #5d6577;
   background: #5d6577;
+}
+
+.s5 {
+  fill: rgb(255 255 255 / 22%);
+  background: rgb(255 255 255 / 22%);
 }
 
 .legend {

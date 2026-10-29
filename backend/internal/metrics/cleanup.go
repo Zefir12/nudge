@@ -34,6 +34,7 @@ func (s *Service) Cleanup(ctx context.Context, now time.Time, envs []int64) erro
 		{"drop removed environments", `DELETE FROM container_samples WHERE environment_id NOT IN (SELECT value FROM json_each(?))`, []any{string(ids)}},
 		{"drop removed environments", `DELETE FROM environment_hours WHERE environment_id NOT IN (SELECT value FROM json_each(?))`, []any{string(ids)}},
 		{"drop removed environments", `DELETE FROM container_hours WHERE environment_id NOT IN (SELECT value FROM json_each(?))`, []any{string(ids)}},
+		{"drop removed environments", `DELETE FROM disk_usage WHERE environment_id NOT IN (SELECT value FROM json_each(?))`, []any{string(ids)}},
 		{"roll up environments", `INSERT OR REPLACE INTO environment_hours
 			(environment_id, hour, cpu_avg, cpu_max, memory_avg, memory_max, network_rx, network_tx, block_read, block_write, containers, samples)
 			SELECT environment_id, time / 3600 * 3600 AS h, AVG(cpu), MAX(cpu), AVG(memory), MAX(memory),

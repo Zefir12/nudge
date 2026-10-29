@@ -4,14 +4,17 @@ import (
 	"context"
 	"errors"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/moby/moby/api/types/volume"
+	"github.com/moby/moby/client"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker/dockertest"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/metrics"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/store"
 )
 
@@ -191,5 +194,87 @@ func TestMeasureSaveError(t *testing.T) {
 	gone := environments.Environment{ID: 999, Name: "local"}
 	if err := ut.s.Measure(context.Background(), gone); !errors.Is(err, ErrSave) {
 		t.Errorf("Measure of a removed environment: err = %v, want ErrSave", err)
+	}
+}
+
+// fakeDisks keeps what SaveDisk got.
+type fakeDisks struct {
+	mu    sync.Mutex
+	saved map[int64]metrics.Disk
+	err   error
+}
+
+func (f *fakeDisks) SaveDisk(_ context.Context, env int64, d metrics.Disk) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	f.saved[env] = d
+	return nil
+}
+
+// One `system df` call asks for every kind and stores the usage by kind too.
+func TestMeasureDisk(t *testing.T) {
+	t.Parallel()
+	fake := &dockertest.Fake{Resources: dockertest.Resources{
+		Volumes: []volume.Volume{{Name: "db"}},
+		DiskUsageTotals: client.DiskUsageResult{
+			Volumes:    client.VolumesDiskUsage{TotalCount: 1, ActiveCount: 1, TotalSize: 4096},
+			Images:     client.ImagesDiskUsage{TotalCount: 3, ActiveCount: 1, TotalSize: 900, Reclaimable: 600},
+			BuildCache: client.BuildCacheDiskUsage{TotalCount: 7, TotalSize: 50, Reclaimable: 50},
+			Containers: client.ContainersDiskUsage{TotalCount: 2, ActiveCount: 1, TotalSize: 8, Reclaimable: 3},
+		},
+	}}
+	ut := newUsageTest(t, map[string]*dockertest.Fake{"local": fake})
+	disks := &fakeDisks{saved: map[int64]metrics.Disk{}}
+	ut.s.disk = disks
+	env := ut.env("local")
+	if err := ut.s.Measure(context.Background(), env); err != nil {
+		t.Fatal(err)
+	}
+	if o := fake.DiskUsageOpts; !o.Containers || !o.Images || !o.BuildCache || !o.Volumes || !o.Verbose {
+		t.Errorf("DiskUsage options = %+v, want every kind in detail", o)
+	}
+	want := metrics.Disk{
+		MeasuredAt: ut.clock.now,
+		Volumes:    metrics.DiskPart{Size: 4096, Count: 1, Active: 1},
+		Images:     metrics.DiskPart{Size: 900, Reclaimable: 600, Count: 3, Active: 1},
+		BuildCache: metrics.DiskPart{Size: 50, Reclaimable: 50, Count: 7},
+		Containers: metrics.DiskPart{Size: 8, Reclaimable: 3, Count: 2, Active: 1},
+	}
+	if got := disks.saved[env.ID]; got != want {
+		t.Errorf("saved disk = %+v, want %+v", got, want)
+	}
+
+	disks.err = errors.New("disk full")
+	if err := ut.s.Measure(context.Background(), env); !errors.Is(err, ErrSave) {
+		t.Errorf("Measure with a failing store: err = %v, want ErrSave", err)
+	}
+}
+
+// MeasureNow refuses within MinGap of the last measurement of the same environment.
+func TestMeasureNow(t *testing.T) {
+	t.Parallel()
+	ut := newUsageTest(t, map[string]*dockertest.Fake{"local": {}, "nas": {}})
+	ctx := context.Background()
+	if err := ut.s.MeasureNow(ctx, ut.env("local")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ut.s.MeasureNow(ctx, ut.env("local")); !errors.Is(err, ErrTooSoon) {
+		t.Errorf("MeasureNow again at once: err = %v, want ErrTooSoon", err)
+	}
+	if err := ut.s.MeasureNow(ctx, ut.env("nas")); err != nil {
+		t.Errorf("MeasureNow of another environment: err = %v", err)
+	}
+	ut.clock.now = ut.clock.now.Add(MinGap)
+	if err := ut.s.MeasureNow(ctx, ut.env("local")); err != nil {
+		t.Errorf("MeasureNow after MinGap: err = %v", err)
+	}
+	ut.s.mu.Lock()
+	n := len(ut.s.last)
+	ut.s.mu.Unlock()
+	if n != 1 {
+		t.Errorf("last has %d entries, want the old one dropped", n)
 	}
 }

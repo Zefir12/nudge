@@ -84,6 +84,8 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | POST | `/api/v1/environments/{env}/volumes` | user | create a volume; `201`; see Volume and network actions (users: Ownership) |
 | POST | `/api/v1/environments/{env}/volumes/prune` | session | remove unused anonymous volumes, or with `?all=true` named ones too |
 | POST | `/api/v1/environments/{env}/volumes/usage` | session | measure the volume sizes now; `204` once stored |
+| GET | `/api/v1/environments/{env}/disk` | session | Docker's disk usage by kind and the disk's size; see Disk usage |
+| POST | `/api/v1/environments/{env}/disk` | session | measure the disk usage now (at most once a minute); `204` once stored |
 | DELETE | `/api/v1/environments/{env}/volumes/{name}` | user | remove a volume (`?force=true`); `204` |
 | POST | `/api/v1/environments/{env}/networks` | user | create a network; `201` (users: Ownership) |
 | POST | `/api/v1/environments/{env}/networks/prune` | session | remove custom networks no container uses |
@@ -741,6 +743,38 @@ when the client falls more than 64 events behind; clients reconnect.
   uses; answers `{"deleted": ["name"]}`.
 - `DELETE /api/v1/environments/{env}/networks/{id}`: `409` while containers are attached
   and for Docker's predefined networks (`bridge`, `host`, `none`).
+
+### Disk usage
+The server measures every environment's disk usage on the volume size schedule
+(`-usage-interval`, 15 minutes): one `docker system df` call gives the volume sizes and
+Docker's usage by kind, which is kept (the last one per environment) in
+`<data>/metrics.db`. The disk's size is read live: statfs on Docker's root dir, mounted
+read-only into the server at `-docker-root` (docs/config/server.md), and for an agent
+environment the agent's own mount, asked over the tunnel.
+
+`GET /api/v1/environments/{env}/disk` answers:
+
+```json
+{"usage": {"measured_at": "2026-10-27T12:00:00Z",
+  "volumes": {"size": 46700000000, "reclaimable": 1200000000, "count": 14, "active": 10},
+  "images": {"size": 18400000000, "reclaimable": 6700000000, "count": 31, "active": 20},
+  "build_cache": {"size": 3300000000, "reclaimable": 3300000000, "count": 120, "active": 0},
+  "containers": {"size": 2100000000, "reclaimable": 0, "count": 22, "active": 22}},
+ "disk": {"total": 100000000000, "free": 21000000000}}
+```
+
+Sizes are bytes; `reclaimable` is what a prune of the unused ones would free, `count` how
+many there are and `active` how many are in use. `usage` is `null` before the first
+measurement; `disk` is `null` when the size is unknown: no mount (or `-docker-root` is
+empty), an agent older than this endpoint, an agent without the mount or an offline
+one. `free` is what unprivileged writers can still use, so `total - free` includes what
+the filesystem reserves and what isn't Docker's.
+
+Admins only: the usage covers every user's objects, so a user gets `403` (their own
+use is on the allowance page). `POST /api/v1/environments/{env}/disk` measures now and
+answers `204` once stored (also the volume sizes); `429` with `Retry-After` within a
+minute of the environment's last measurement, `409` while one runs, `503` when the
+environment is offline.
 
 ### Stacks
 A stack is a compose project: `compose.yaml` and an optional `.env` (the variables compose

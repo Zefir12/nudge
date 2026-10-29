@@ -11,13 +11,14 @@ image without setting anything. A flag wins over its variable.
 | `-compose` | `NUDGE_COMPOSE` | `/usr/local/bin/docker-compose` | docker-compose binary that deploys stacks (shipped in the image) |
 | `-log-level` | `NUDGE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`; logs are JSON on stderr |
 | `-docker-host` | `DOCKER_HOST` | `unix:///var/run/docker.sock` | Docker API of the local environment, `unix://` or `tcp://` |
+| `-docker-root` | `NUDGE_DOCKER_ROOT` | `/host/docker` | where the host's Docker root dir is mounted (read-only) so the dashboard can show the disk's size and free space; empty or not mounted: unknown. See [Disk usage](#disk-usage) |
 | `-tls-cert` | `NUDGE_TLS_CERT` | unset | PEM certificate (chain); with `-tls-key` the server speaks HTTPS only |
 | `-tls-key` | `NUDGE_TLS_KEY` | unset | PEM private key of `-tls-cert` |
 | `-public-url` | `NUDGE_PUBLIC_URL` | unset | URL browsers and agents reach the server at, `https://host[:port]` |
 | `-trusted-proxies` | `NUDGE_TRUSTED_PROXIES` | unset | comma-separated CIDRs or IPs of reverse proxies whose `X-Forwarded-For` and `X-Forwarded-Proto` are trusted (see Reverse proxy) |
 | `-audit-retention-days` | `NUDGE_AUDIT_RETENTION_DAYS` | `90` | days the audit log keeps entries (at least 1); older ones are deleted hourly |
 | `-update-check-interval` | `NUDGE_UPDATE_CHECK_INTERVAL` | `6h` | how often every environment's images are checked for updates (a Go duration, at least `5m`; `0` turns the scheduled check off, the UI's check still works); the first check runs two minutes after start |
-| `-usage-interval` | `NUDGE_USAGE_INTERVAL` | `15m` | how often every environment's volume sizes are measured (a Go duration, at least `1m`; `0` turns the scheduled measurement off, the UI's "Measure sizes" still works); the first measurement runs two minutes after start. Docker walks every volume to size it, so on hosts with large volumes a longer interval is kinder to the disks |
+| `-usage-interval` | `NUDGE_USAGE_INTERVAL` | `15m` | how often every environment's volume sizes and Docker disk usage (`docker system df`: volumes, images, build cache, containers, reclaimable) are measured (a Go duration, at least `1m`; `0` turns the scheduled measurement off, the UI's "Measure sizes" still works); the first measurement runs two minutes after start. Docker walks every volume to size it, so on hosts with large volumes a longer interval is kinder to the disks |
 | `-metrics-interval` | `NUDGE_METRICS_INTERVAL` | `60s` | how often every environment's and container's CPU, memory, network and block I/O is collected into `<data>/metrics.db` (a Go duration, at least `10s`; `0` turns collection off: the dashboard's gauges and charts go empty, stored history still answers). Each tick asks the daemon for one stats reading per running container, 8 at a time. See [Metrics database](#metrics-database) |
 | `-metrics-retention` | `NUDGE_METRICS_RETENTION` | `720h` | how long the hourly usage rollups are kept (at least `48h`); raw samples are kept for 48 hours |
 | `-backup-interval` | `NUDGE_BACKUP_INTERVAL` | `0` | how often an encrypted backup is saved to `<data>/backups/` (a Go duration, at least `5m`; `0` turns scheduled backups off); needs `-backup-passphrase-file`. See [Backup and restore](#backup-and-restore) |
@@ -299,6 +300,24 @@ At start nudge pings that host (3 s timeout). If it answers and no `local` envir
 exists, nudge creates one named `local`. If it doesn't answer, nudge logs a warning and
 starts anyway; restart it once the socket is available to get the environment. Each
 Docker call made by an API request has a 10 s timeout.
+
+### Disk usage
+The dashboard's disk bar shows Docker's usage by kind (`docker system df`, measured every
+`-usage-interval`) against the size of the disk under Docker's root dir. nudge reads that
+size with statfs on the root dir, which deploy/compose.yml (and deploy/agent.compose.yml
+for an agent) mount read-only:
+
+```yaml
+    volumes:
+      - /var/lib/docker:/host/docker:ro
+```
+
+Nothing under it is read, only the filesystem's size and free space. With a non-default
+Docker root (`data-root` in `/etc/docker/daemon.json`; `docker info -f '{{.DockerRootDir}}'`
+prints it) mount that directory instead, at the same `/host/docker`, or point
+`-docker-root` / `NUDGE_DOCKER_ROOT` at where you mounted it. Without the mount (or with
+`NUDGE_DOCKER_ROOT=""`), and for agents older than the disk size, the tile shows Docker's
+usage without a total.
 
 ## Hosting other users
 Users (non-admins) share the host's kernel with everyone else. nudge already builds their

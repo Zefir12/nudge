@@ -8,8 +8,6 @@ export interface Gauge {
   percent: number | null;
   detail: string;
   tone: 'cpu' | 'mem' | 'disk';
-  // TODO: remove with tileMock.ts; tags a gauge that shows mock data.
-  mock?: boolean;
 }
 
 defineProps<{ gauges: Gauge[] }>();
@@ -43,9 +41,6 @@ defineProps<{ gauges: Gauge[] }>();
           <path :d="icons[g.tone]" />
         </svg>
         {{ g.label }}
-        <span v-if="g.mock" class="mock-tag" title="TODO: mock data until there is a disk usage endpoint"
-          >mock</span
-        >
       </span>
       <span class="detail">{{ g.detail }}</span>
     </div>
@@ -99,17 +94,6 @@ svg {
   stroke-width: 1.8;
   stroke-linecap: round;
   stroke-linejoin: round;
-}
-
-.mock-tag {
-  padding: 0 0.3rem;
-  font-size: 9px;
-  font-weight: 600;
-  color: var(--warn);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  background: var(--warn-soft);
-  border-radius: var(--radius-sm);
 }
 
 .detail {

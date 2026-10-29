@@ -12,6 +12,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       # agent.json (agent ID and secret) after the first connect.
       - nudge-agent:/data
+      # Docker's root dir, read-only: only the disk's size and free space are read
+      # (NUDGE_DOCKER_ROOT; with another data-root, mount that one here).
+      - /var/lib/docker:/host/docker:ro
     environment:
       NUDGE_SERVER_URL: "https://nudge.example.net"
       # Needed only on the first connect.

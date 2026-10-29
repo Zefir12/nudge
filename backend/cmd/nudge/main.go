@@ -33,6 +33,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/deployments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/events"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/hostdisk"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/metrics"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/notify"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/oidc"
@@ -251,16 +252,17 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 		// The first check waits for agents to reconnect after a restart.
 		wg.Go(func() { upd.Run(cleanupCtx, 2*time.Minute, cfg.UpdateCheckInterval) })
 	}
-	usageSvc := diskusage.New(diskusage.Options{DB: st.DB(), Log: log, Envs: envs})
-	if cfg.UsageInterval > 0 {
-		// Like the update check, the first measurement waits for agents to reconnect.
-		wg.Go(func() { usageSvc.Run(cleanupCtx, 2*time.Minute, cfg.UsageInterval) })
-	}
 	metricsSvc := metrics.New(metrics.Options{
 		DB: metricsDB, Log: log, Envs: envs, Owners: api.ContainerOwners,
 		Interval: cfg.MetricsInterval, Retention: cfg.MetricsRetention,
 	})
 	wg.Go(func() { metricsSvc.Run(cleanupCtx) })
+	// Volume sizes go to nudge.db, the usage by kind to metrics.db.
+	usageSvc := diskusage.New(diskusage.Options{DB: st.DB(), Log: log, Envs: envs, Disk: metricsSvc})
+	if cfg.UsageInterval > 0 {
+		// Like the update check, the first measurement waits for agents to reconnect.
+		wg.Go(func() { usageSvc.Run(cleanupCtx, 2*time.Minute, cfg.UsageInterval) })
+	}
 	if cfg.Backup.Interval > 0 {
 		wg.Go(func() { backups.Run(cleanupCtx, cfg.Backup.Interval, backupPassphrase, cfg.Backup.Keep) })
 		log.Info("scheduled backups on", "interval", cfg.Backup.Interval, "keep", cfg.Backup.Keep, "dir", filepath.Join(cfg.DataDir, backup.Dir))
@@ -314,6 +316,12 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 			DockerHost:     cfg.DockerHost,
 			AgentSelf: func(ctx context.Context, env environments.Environment) (stacks.Self, string, error) {
 				return selfupdate.RemoteSelf(ctx, envs.ControlDialer(env.ID))
+			},
+			DiskSpace: func(ctx context.Context, env environments.Environment) (hostdisk.Space, error) {
+				if env.Kind == environments.KindLocal {
+					return hostdisk.Stat(cfg.DockerRoot)
+				}
+				return hostdisk.Remote(ctx, envs.ControlDialer(env.ID))
 			},
 
 			OIDC:            sso,

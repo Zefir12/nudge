@@ -246,6 +246,9 @@ func TestLoadServer(t *testing.T) {
 			if tt.want.Backup.Keep == 0 {
 				tt.want.Backup.Keep = 7
 			}
+			if tt.want.DockerRoot == "" {
+				tt.want.DockerRoot = DefaultDockerRoot
+			}
 			if err == nil && !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("got %+v, want %+v", got, tt.want)
 			}
@@ -382,5 +385,38 @@ func TestLoadAgentHelpHidesJoinToken(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "s3cret") {
 		t.Errorf("usage shows the join token:\n%s", out.String())
+	}
+}
+
+// NUDGE_DOCKER_ROOT and -docker-root for both binaries; empty turns the disk size off.
+func TestDockerRoot(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		args []string
+		env  map[string]string
+		want string
+	}{
+		{"default", nil, nil, DefaultDockerRoot},
+		{"env", nil, map[string]string{"NUDGE_DOCKER_ROOT": "/mnt/docker"}, "/mnt/docker"},
+		{"flag wins", []string{"-docker-root", "/srv/docker"}, map[string]string{"NUDGE_DOCKER_ROOT": "/mnt/docker"}, "/srv/docker"},
+		{"off", []string{"-docker-root", ""}, nil, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			getenv := func(k string) string { return tt.env[k] }
+			srv, err := LoadServer(tt.args, getenv, io.Discard)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ag, err := LoadAgent(append([]string{"-server", "https://nudge.example.net"}, tt.args...), getenv, io.Discard)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if srv.DockerRoot != tt.want || ag.DockerRoot != tt.want {
+				t.Errorf("DockerRoot = server %q, agent %q; want %q", srv.DockerRoot, ag.DockerRoot, tt.want)
+			}
+		})
 	}
 }

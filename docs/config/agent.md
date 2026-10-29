@@ -9,6 +9,7 @@ the command below with the server URL and a join token filled in.
 ```sh
 docker run -d --name nudge-agent --restart unless-stopped \
   -v /var/run/docker.sock:/var/run/docker.sock -v nudge-agent:/data \
+  -v /var/lib/docker:/host/docker:ro \
   -e NUDGE_SERVER_URL=https://nudge.example.net \
   -e NUDGE_JOIN_TOKEN=<from the UI> \
   registrydedic.zefirlabs.net/nudge-agent:latest agent
@@ -31,6 +32,7 @@ It also shows the same agent as a compose file:
 | `-insecure` | `NUDGE_INSECURE` | `false` | allow `http://` server URLs (testing only) |
 | `-log-level` | `NUDGE_LOG_LEVEL` | `info` | as for the server |
 | `-docker-host` | `DOCKER_HOST` | `unix:///var/run/docker.sock` | the Docker API the agent serves, `unix://` or `tcp://` |
+| `-docker-root` | `NUDGE_DOCKER_ROOT` | `/host/docker` | where the host's Docker root dir is mounted (read-only), so the server can show the disk's size; as for the server (docs/config/server.md, Disk usage) |
 | `-stacks-dir` | `NUDGE_STACKS_DIR` | `<data>/stacks` | the stacks the server deploys here, an absolute path; mount it at the same path on the host (see Stacks) |
 | `-compose` | `NUDGE_COMPOSE` | `/usr/local/bin/docker-compose` | docker-compose binary that deploys them (shipped in the image) |
 

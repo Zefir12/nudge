@@ -1051,6 +1051,31 @@ export interface VolumePruneResult {
 export const measureVolumes = (env: string) =>
   apiFetch<void>(envPath(env, '/volumes/usage'), { method: 'POST' });
 
+// DiskPart is what one kind of Docker object takes: bytes, what a prune of the unused
+// ones would free, how many there are and how many are in use.
+export interface DiskPart {
+  size: number;
+  reclaimable: number;
+  count: number;
+  active: number;
+}
+
+// EnvironmentDisk is Docker's disk usage by kind from the last measurement (null before
+// the first) and the size of the disk under Docker's root dir (null when unknown).
+export interface EnvironmentDisk {
+  usage: {
+    measured_at: string;
+    volumes: DiskPart;
+    images: DiskPart;
+    build_cache: DiskPart;
+    containers: DiskPart;
+  } | null;
+  disk: { total: number; free: number } | null;
+}
+
+// getEnvironmentDisk answers the environment's disk usage (admins only).
+export const getEnvironmentDisk = (env: string) => apiFetch<EnvironmentDisk>(envPath(env, '/disk'));
+
 export const pruneVolumes = (env: string, all = false) =>
   apiFetch<VolumePruneResult>(envPath(env, `/volumes/prune${all ? '?all=true' : ''}`), { method: 'POST' });
 
