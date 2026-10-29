@@ -73,9 +73,10 @@ function onRemove() {
           :class="{ icon: props.icons }"
           :disabled="busy"
           title="Stop"
+          :aria-label="props.icons ? 'Stop' : undefined"
           @click="onAction('stop')"
         >
-          <svg v-if="props.icons" viewBox="0 0 24 24" aria-label="Stop"><path :d="paths.stop" /></svg>
+          <svg v-if="props.icons" viewBox="0 0 24 24" aria-hidden="true"><path :d="paths.stop" /></svg>
           <template v-else>Stop</template>
         </button>
         <button
@@ -84,9 +85,10 @@ function onRemove() {
           :class="{ icon: props.icons }"
           :disabled="busy"
           title="Restart"
+          :aria-label="props.icons ? 'Restart' : undefined"
           @click="onAction('restart')"
         >
-          <svg v-if="props.icons" viewBox="0 0 24 24" aria-label="Restart"><path :d="paths.restart" /></svg>
+          <svg v-if="props.icons" viewBox="0 0 24 24" aria-hidden="true"><path :d="paths.restart" /></svg>
           <template v-else>Restart</template>
         </button>
         <button
@@ -95,9 +97,10 @@ function onRemove() {
           :class="{ icon: props.icons }"
           :disabled="busy"
           title="Kill"
+          :aria-label="props.icons ? 'Kill' : undefined"
           @click="onAction('kill')"
         >
-          <svg v-if="props.icons" viewBox="0 0 24 24" aria-label="Kill"><path :d="paths.kill" /></svg>
+          <svg v-if="props.icons" viewBox="0 0 24 24" aria-hidden="true"><path :d="paths.kill" /></svg>
           <template v-else>Kill</template>
         </button>
       </template>
@@ -108,9 +111,10 @@ function onRemove() {
         :class="{ icon: props.icons }"
         :disabled="busy"
         title="Start"
+        :aria-label="props.icons ? 'Start' : undefined"
         @click="onAction('start')"
       >
-        <svg v-if="props.icons" viewBox="0 0 24 24" aria-label="Start"><path :d="paths.start" /></svg>
+        <svg v-if="props.icons" viewBox="0 0 24 24" aria-hidden="true"><path :d="paths.start" /></svg>
         <template v-else>Start</template>
       </button>
       <button
@@ -119,9 +123,10 @@ function onRemove() {
         :class="{ icon: props.icons }"
         :disabled="busy"
         title="Remove"
+        :aria-label="props.icons ? 'Remove' : undefined"
         @click="onRemove"
       >
-        <svg v-if="props.icons" viewBox="0 0 24 24" aria-label="Remove"><path :d="paths.remove" /></svg>
+        <svg v-if="props.icons" viewBox="0 0 24 24" aria-hidden="true"><path :d="paths.remove" /></svg>
         <template v-else>Remove</template>
       </button>
       <label v-if="volumesOption" class="volumes">

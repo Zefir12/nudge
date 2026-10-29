@@ -46,7 +46,7 @@ describe('ContainerActions', () => {
   });
 
   // In a table row the actions are icons, named by their title for the pointer and
-  // their label for screen readers.
+  // their aria-label for screen readers.
   it.each([
     { state: 'running', want: ['Stop', 'Restart', 'Kill', 'Remove'] },
     { state: 'exited', want: ['Start', 'Remove'] },
@@ -56,7 +56,7 @@ describe('ContainerActions', () => {
     });
     const buttons = wrapper.findAll('button');
     expect(buttons.map((b) => b.attributes('title'))).toEqual(want);
-    expect(buttons.map((b) => b.find('svg').attributes('aria-label'))).toEqual(want);
+    expect(buttons.map((b) => b.attributes('aria-label'))).toEqual(want);
     expect(buttons.every((b) => b.classes('icon') && b.text() === '')).toBe(true);
   });
 

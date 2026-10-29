@@ -10,6 +10,7 @@ import {
   type Environment,
 } from '../api/client';
 import { useLoad } from '../composables/useLoad';
+import { currentUser } from '../session';
 import ActivityHeatmap from './ActivityHeatmap.vue';
 import ConnPlug from './ConnPlug.vue';
 import DiskUsage from './DiskUsage.vue';
@@ -35,7 +36,11 @@ const { data, error } = useLoad(id, getEnvironment);
 const docker = computed(() => data.value?.docker);
 const { data: usage, reload: reloadUsage } = useLoad(id, getEnvironmentSummary);
 const { data: volumes } = useLoad(id, listVolumes);
-const { data: stacks } = useLoad(id, listStacks);
+// Stacks are for admins; other users would only get a 403.
+const { data: stacks } = useLoad(
+  computed(() => (currentUser.value?.admin ? id.value : '')),
+  listStacks,
+);
 
 let timer: ReturnType<typeof setInterval> | undefined;
 onMounted(() => {
@@ -72,6 +77,7 @@ const gauges = computed<Gauge[]>(() => [
     percent: (diskUsed / mockDisk.total) * 100,
     detail: `${formatBytes(diskUsed)} / ${formatBytes(mockDisk.total)}`,
     tone: 'disk',
+    mock: true,
   },
 ]);
 
@@ -105,10 +111,13 @@ const status = computed(() => {
 
 const to = computed(() => ({ name: 'env', params: { env: String(props.env.id) } }));
 
-// The whole tile opens the environment; the name is its link for the keyboard, and the
-// tile's own buttons and links do their own thing.
+// The whole tile opens the environment; the name is its link for the keyboard and for
+// opening in a new tab. The tile's own buttons and links do their own thing, and a click
+// with a modifier or one that ends a text selection does nothing.
 function open(e: MouseEvent) {
   if ((e.target as Element).closest('a, button')) return;
+  if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+  if (window.getSelection()?.toString()) return;
   void router.push(to.value);
 }
 </script>
@@ -134,8 +143,8 @@ function open(e: MouseEvent) {
         </span>
       </div>
       <span class="chip">{{ env.kind === 'local' ? 'socket' : 'agent' }}</span>
-      <!-- TODO: open the environment's settings from here. -->
-      <GearButton label="Environment settings" class="gear" />
+      <!-- TODO: open the environment's settings from here; disabled until it does. -->
+      <GearButton label="Environment settings" class="gear" disabled />
     </div>
 
     <template v-if="env.online">

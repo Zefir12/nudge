@@ -4,7 +4,8 @@ import { createMemoryHistory } from 'vue-router';
 
 import type { Environment } from '../api/client';
 import { createAppRouter } from '../router';
-import { stubApi } from '../test-utils';
+import { currentUser } from '../session';
+import { admin, stubApi } from '../test-utils';
 import EnvironmentTile from './EnvironmentTile.vue';
 
 const base: Environment = {
@@ -18,6 +19,7 @@ const base: Environment = {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  currentUser.value = null;
 });
 
 async function mountTile(env: Environment) {
@@ -58,7 +60,8 @@ describe('EnvironmentTile', () => {
     expect(wrapper.find('.stats').text()).toContain('Volumes–');
   });
 
-  it('counts volumes and stacks', async () => {
+  it('counts volumes, and stacks for admins', async () => {
+    currentUser.value = admin;
     stubApi({
       'GET /environments/3': { body: { ...base, docker } },
       'GET /environments/3/volumes': { body: [{ name: 'a' }, { name: 'b' }] },
@@ -67,6 +70,12 @@ describe('EnvironmentTile', () => {
     const wrapper = await mountTile(base);
     const stats = wrapper.findAll('.stats dd').map((d) => d.text());
     expect(stats).toEqual(['3/5', '9', '2', '1']);
+  });
+
+  it('does not ask for stacks for other users', async () => {
+    const fetch = stubApi({ 'GET /environments/3': { body: { ...base, docker } } });
+    await mountTile(base);
+    expect(fetch.mock.calls.map(([url]) => url)).not.toContain('/api/v1/environments/3/stacks');
   });
 
   it('opens the environment from anywhere on the tile but the settings button', async () => {
