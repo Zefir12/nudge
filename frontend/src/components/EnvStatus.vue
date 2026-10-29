@@ -3,22 +3,23 @@ import { computed } from 'vue';
 
 import type { Environment } from '../api/client';
 import { formatDate } from '../format';
+import ConnPlug from './ConnPlug.vue';
 
 // EnvStatus shows whether an environment's Docker host answers, and when it last did.
 const props = defineProps<{ env: Environment }>();
 
 const status = computed(() => {
-  if (props.env.online) return { label: 'online', tone: 'good', lamp: 'on' };
+  if (props.env.online) return { label: 'online', tone: 'good', waiting: false };
   if (props.env.kind === 'agent' && !props.env.agent?.enrolled)
-    return { label: 'waiting for agent', tone: 'warn', lamp: 'warn' };
-  return { label: 'offline', tone: 'bad', lamp: '' };
+    return { label: 'waiting for agent', tone: 'warn', waiting: true };
+  return { label: 'offline', tone: 'bad', waiting: false };
 });
 </script>
 
 <template>
   <span class="status">
     <span class="badge" :class="status.tone">
-      <span class="lamp" :class="status.lamp" aria-hidden="true" />{{ status.label }}
+      <ConnPlug :online="env.online" :waiting="status.waiting" />{{ status.label }}
     </span>
     <span v-if="!env.online && env.last_seen_at" class="muted">
       last seen {{ formatDate(env.last_seen_at) }}

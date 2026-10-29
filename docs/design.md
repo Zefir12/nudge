@@ -17,11 +17,11 @@ only the variables, never raw colours.
     environment's name, `envIcon.ts`), then Dashboard, Environments, Registries,
     Notifications, API tokens, Audit log.
   - Per-environment part below a divider: headed by the open (or last used) environment's
-    name and lamp; Overview, Stacks, Containers, Images, Volumes, Networks, Events. Pages that
+    name and connection plug; Overview, Stacks, Containers, Images, Volumes, Networks, Events. Pages that
     belong to one environment go here; pages that span environments go in the global part.
 - **Global dashboard** (`/`): one large tile per environment (`EnvironmentTile`), plus an
   "Add environment" tile for admins. A tile opens `/env/:env`.
-- **Environment dashboard** (`/env/:env`): lamp, name and kind chip, a mono host line,
+- **Environment dashboard** (`/env/:env`): connection plug, name and kind chip, a mono host line,
   stat tiles, then Needs attention (updates available, stopped containers, untagged images) beside
   Recent events, live usage with the busiest containers, host details.
 - At 720px and below the sidebar stacks above the content and its links wrap.
@@ -68,7 +68,10 @@ variable weight. No requests to font CDNs.
 - **Settings** (`SettingsDialog`): native `<dialog>` modal, `--surface-solid`, blurred dark
   backdrop; opened by a `GearButton` (top bar for the server, an agent environment's
   dashboard header for its agent).
-- **Lamps** (`.lamp`, `.on`, `.bad`, `.warn`): 8px dots that glow in their colour; off is `--faint`.
+- **Connection plug** (`ConnPlug`): an environment's connection; plugged in and glowing
+  `--accent` when online, pulled apart and `--faint` when not (`--warn` while waiting for its agent).
+- **Lamps** (`.lamp`, `.bad`, `.warn`): 8px dots that glow in their colour; off is `--faint`.
+- **Hover**: effects come in fast (`--hover-in`, 0.04s) and fade out at 0.12–0.15s.
 - **Chips** (`.chip`): uppercase pill naming a kind (socket, agent).
 - **Status badges**: 2px radius, tinted background (`--ok-soft`, `--accent-soft`, …).
 - **Tiles and cards**: glass panel, 6px radius; links lift 2px and take `--accent-border` on hover.

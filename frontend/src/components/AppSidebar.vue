@@ -5,6 +5,7 @@ import { RouterLink, useRoute } from 'vue-router';
 import { getHealth } from '../api/client';
 import { environments } from '../environments';
 import { currentUser } from '../session';
+import ConnPlug from './ConnPlug.vue';
 import EnvSwitcher from './EnvSwitcher.vue';
 
 // AppSidebar has a global part (account, environment picker, pages that are not about one
@@ -134,7 +135,7 @@ function globalActive(to: string, exact?: boolean) {
 
     <nav v-if="env" class="env" :aria-label="`Environment ${envInfo?.name ?? env}`">
       <span class="group">
-        <span class="lamp" :class="{ on: envInfo?.online }" aria-hidden="true" />
+        <ConnPlug :online="!!envInfo?.online" />
         {{ envInfo?.name ?? env }}
       </span>
       <RouterLink
@@ -271,9 +272,9 @@ nav.env {
   letter-spacing: 0.14em;
 }
 
-.group .lamp {
-  width: 6px;
-  height: 6px;
+.group .plug {
+  width: 16px;
+  height: 16px;
 }
 
 .version {
@@ -300,8 +301,21 @@ nav a {
 }
 
 nav a:hover {
+  transition-duration: var(--hover-in);
   color: var(--text);
   background: var(--surface-hover);
+}
+
+nav a svg {
+  transition:
+    color 0.12s ease,
+    transform 0.12s ease;
+}
+
+nav a:hover svg {
+  color: var(--accent-strong);
+  transform: scale(1.08);
+  transition-duration: var(--hover-in);
 }
 
 nav a.active {

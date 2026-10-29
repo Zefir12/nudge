@@ -90,6 +90,7 @@ h1 {
 }
 
 .add:hover {
+  transition-duration: var(--hover-in);
   color: var(--text);
   border-color: var(--accent-border);
 }

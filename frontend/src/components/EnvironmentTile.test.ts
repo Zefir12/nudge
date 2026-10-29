@@ -45,7 +45,7 @@ describe('EnvironmentTile', () => {
     const wrapper = await mountTile(env);
     expect(wrapper.find('a').attributes('href')).toBe('/env/3');
     expect(wrapper.find('.address').text()).toBe('agent 0.9.0');
-    expect(wrapper.find('.lamp').classes()).toContain('on');
+    expect(wrapper.find('.plug').classes()).toContain('on');
     expect(wrapper.find('.stats').text()).toContain('3/5');
     expect(wrapper.find('.stats').text()).toContain('9');
     expect(wrapper.find('.engine').text()).toBe('Docker 27.3.1 · linux/aarch64');

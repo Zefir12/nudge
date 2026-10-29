@@ -4,6 +4,7 @@ import { RouterLink } from 'vue-router';
 
 import { getEnvironment, getEnvironmentSummary, type Environment } from '../api/client';
 import { useLoad } from '../composables/useLoad';
+import ConnPlug from './ConnPlug.vue';
 import { formatBytes, formatDate } from '../format';
 
 // EnvironmentTile is one environment on the global dashboard; it opens that environment.
@@ -61,7 +62,7 @@ const status = computed(() => {
 <template>
   <RouterLink class="tile" :to="{ name: 'env', params: { env: String(env.id) } }">
     <div class="head">
-      <span class="lamp" :class="{ on: env.online, warn: !env.online && waiting }" aria-hidden="true" />
+      <ConnPlug :online="env.online" :waiting="waiting" />
       <div class="title">
         <h2>{{ env.name }}</h2>
         <span class="address">{{ address }}</span>
@@ -154,6 +155,7 @@ const status = computed(() => {
 }
 
 .tile:hover {
+  transition-duration: var(--hover-in);
   color: var(--text);
   border-color: var(--accent-border);
   box-shadow:
@@ -168,10 +170,10 @@ const status = computed(() => {
   gap: 0.9rem;
 }
 
-.head .lamp {
-  width: 10px;
-  height: 10px;
-  margin-top: 0.65rem;
+.head .plug {
+  width: 22px;
+  height: 22px;
+  margin-top: 0.3rem;
 }
 
 .title {
