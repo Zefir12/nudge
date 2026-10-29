@@ -22,6 +22,8 @@ export default defineConfig({
   },
   test: {
     environment: 'jsdom',
+    // One jsdom per worker instead of per file (it was ~60% of the run); files stay isolated.
+    pool: 'vmThreads',
     include: ['src/**/*.test.ts'],
   },
   lint: {
