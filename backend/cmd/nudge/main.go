@@ -33,6 +33,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/deployments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/events"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/metrics"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/notify"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/oidc"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/probe"
@@ -207,6 +208,17 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 		log.Info("created local environment", "docker_host", cfg.DockerHost)
 	}
 
+	// Like nudge.db: migrated at startup, closed after the collector below stops.
+	metricsDB, err := metrics.Open(context.WithoutCancel(ctx), cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cerr := metricsDB.Close(); cerr != nil {
+			log.Warn("closing metrics database", "err", cerr)
+		}
+	}()
+
 	// The cleanup stops before the deferred st.Close above.
 	var wg sync.WaitGroup
 	cleanupCtx, stopCleanup := context.WithCancel(ctx)
@@ -244,6 +256,11 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 		// Like the update check, the first measurement waits for agents to reconnect.
 		wg.Go(func() { usageSvc.Run(cleanupCtx, 2*time.Minute, cfg.UsageInterval) })
 	}
+	metricsSvc := metrics.New(metrics.Options{
+		DB: metricsDB, Log: log, Envs: envs, Owners: api.ContainerOwners,
+		Interval: cfg.MetricsInterval, Retention: cfg.MetricsRetention,
+	})
+	wg.Go(func() { metricsSvc.Run(cleanupCtx) })
 	if cfg.Backup.Interval > 0 {
 		wg.Go(func() { backups.Run(cleanupCtx, cfg.Backup.Interval, backupPassphrase, cfg.Backup.Keep) })
 		log.Info("scheduled backups on", "interval", cfg.Backup.Interval, "keep", cfg.Backup.Keep, "dir", filepath.Join(cfg.DataDir, backup.Dir))
@@ -274,6 +291,7 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 			DeployHooks:  deployHooks,
 			Deployments:  deps,
 			Usage:        usageSvc,
+			Metrics:      metricsSvc,
 			Backups:      backups,
 			Allowances:   allowances.New(allowances.Options{DB: st.DB()}),
 			Tenant:       api.TenantHosting{CgroupParent: cfg.Tenant.CgroupParent, Runtime: cfg.Tenant.Runtime, StorageSize: cfg.Tenant.StorageSize},

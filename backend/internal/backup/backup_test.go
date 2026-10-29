@@ -179,9 +179,10 @@ func TestBackupRestore(t *testing.T) {
 }
 
 // oldData is a data directory a restore with Force replaces: a database, its WAL, a key,
-// a stack the backup doesn't have, and data stacks bind-mount from their directories.
+// the metrics database, a stack the backup doesn't have, and data stacks bind-mount from
+// their directories.
 var oldData = map[string]string{
-	"nudge.db": "old db", "nudge.db-wal": "old wal", "secret.key": "old key",
+	"nudge.db": "old db", "nudge.db-wal": "old wal", "secret.key": "old key", "metrics.db": "old metrics",
 	"stacks/9/old/compose.yaml": "old", "stacks/9/old/data/keep": "bind-mounted",
 	"stacks/1/web/compose.yaml": "old web", "stacks/1/web/data/keep": "bind-mounted",
 }
@@ -213,7 +214,7 @@ func TestRestoreExistingData(t *testing.T) {
 	// Only files move: bind-mounted data stays, and the stacks directory itself (a mount
 	// point in the shipped compose file) is never renamed.
 	want := []string{
-		"nudge.db", "pre-restore-20261028-120000/nudge.db", "pre-restore-20261028-120000/nudge.db-wal",
+		"nudge.db", "pre-restore-20261028-120000/metrics.db", "pre-restore-20261028-120000/nudge.db", "pre-restore-20261028-120000/nudge.db-wal",
 		"pre-restore-20261028-120000/secret.key", "secret.key",
 		"stacks/.pre-restore-20261028-120000/1/web/compose.yaml",
 		"stacks/.pre-restore-20261028-120000/9/old/compose.yaml",

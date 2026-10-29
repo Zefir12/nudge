@@ -58,6 +58,11 @@ type Server struct {
 	// UsageInterval is how often disk usage (volume sizes) is measured; zero turns the
 	// scheduled measurement off.
 	UsageInterval time.Duration
+	// MetricsInterval is how often every environment's and container's usage is
+	// collected into metrics.db; zero turns collection off.
+	MetricsInterval time.Duration
+	// MetricsRetention is how long the hourly usage rollups are kept (raw samples: 48h).
+	MetricsRetention time.Duration
 	// OIDC is the single sign-on provider; zero when SSO is off.
 	OIDC OIDC
 	// NoPasswordLogin turns password login off for everyone but the local break-glass
@@ -167,6 +172,16 @@ func LoadServer(args []string, getenv func(string) string, out io.Writer) (Serve
 		return Server{}, fmt.Errorf("NUDGE_USAGE_INTERVAL %q: want a duration such as 15m or 1h", getenv("NUDGE_USAGE_INTERVAL"))
 	}
 	fs.DurationVar(&c.UsageInterval, "usage-interval", usage, "how often to measure volume sizes, 0 for never (NUDGE_USAGE_INTERVAL)")
+	metricsInterval, err := time.ParseDuration(envOr(getenv, "NUDGE_METRICS_INTERVAL", "60s"))
+	if err != nil {
+		return Server{}, fmt.Errorf("NUDGE_METRICS_INTERVAL %q: want a duration such as 60s or 5m", getenv("NUDGE_METRICS_INTERVAL"))
+	}
+	fs.DurationVar(&c.MetricsInterval, "metrics-interval", metricsInterval, "how often to collect container and environment usage, 0 for never (NUDGE_METRICS_INTERVAL)")
+	metricsRetention, err := time.ParseDuration(envOr(getenv, "NUDGE_METRICS_RETENTION", "720h"))
+	if err != nil {
+		return Server{}, fmt.Errorf("NUDGE_METRICS_RETENTION %q: want a duration such as 720h", getenv("NUDGE_METRICS_RETENTION"))
+	}
+	fs.DurationVar(&c.MetricsRetention, "metrics-retention", metricsRetention, "how long to keep hourly usage history (NUDGE_METRICS_RETENTION)")
 	fs.StringVar(&c.OIDC.Issuer, "oidc-issuer", getenv("NUDGE_OIDC_ISSUER"), "OpenID Connect issuer URL; turns on single sign-on with the client ID and secret (NUDGE_OIDC_ISSUER)")
 	fs.StringVar(&c.OIDC.ClientID, "oidc-client-id", getenv("NUDGE_OIDC_CLIENT_ID"), "OpenID Connect client ID (NUDGE_OIDC_CLIENT_ID)")
 	fs.StringVar(&c.OIDC.Name, "oidc-name", envOr(getenv, "NUDGE_OIDC_NAME", "SSO"), "label of the single sign-on button (NUDGE_OIDC_NAME)")
@@ -242,6 +257,12 @@ func LoadServer(args []string, getenv func(string) string, out io.Writer) (Serve
 	}
 	if c.UsageInterval != 0 && c.UsageInterval < time.Minute {
 		return Server{}, errors.New("usage interval must be 0 (off) or at least 1m")
+	}
+	if c.MetricsInterval != 0 && c.MetricsInterval < 10*time.Second {
+		return Server{}, errors.New("metrics interval must be 0 (off) or at least 10s")
+	}
+	if c.MetricsRetention < 48*time.Hour {
+		return Server{}, errors.New("metrics retention must be at least 48h")
 	}
 	if (c.TLSCert == "") != (c.TLSKey == "") {
 		return Server{}, errors.New("set both -tls-cert and -tls-key (NUDGE_TLS_CERT, NUDGE_TLS_KEY) or neither")

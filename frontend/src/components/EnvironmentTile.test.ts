@@ -103,6 +103,40 @@ describe('EnvironmentTile', () => {
     expect(details[1]).toContain('/');
   });
 
+  // The charts come from the stored history at once, scaled like the gauges.
+  it('charts the stored usage history', async () => {
+    const point = (cpu: number, mem: number) => ({
+      time: '',
+      cpu_percent: cpu,
+      cpu_max: cpu,
+      memory_usage: mem,
+      memory_max: mem,
+      network_rx: 0,
+      network_tx: 0,
+      block_read: 0,
+      block_write: 0,
+    });
+    const fetch = stubApi({
+      'GET /environments/3': { body: { ...base, docker } },
+      'GET /environments/3/metrics?since=24h&resolution=15m': {
+        body: { source: 'raw', step: 900, points: [point(0, 0), point(400, 1024 ** 3)] },
+      },
+    });
+    const wrapper = await mountTile(base);
+    expect(fetch.mock.calls.map(([url]) => url)).toContain(
+      '/api/v1/environments/3/metrics?since=24h&resolution=15m',
+    );
+    const lines = wrapper.findAll('.charts path.line').map((p) => p.attributes('d'));
+    // 400% of one CPU on 4 and all the memory are both 100%: from the bottom to the top.
+    expect(lines).toEqual(['M0.00,29.00 L100.00,2.00', 'M0.00,29.00 L100.00,2.00']);
+  });
+
+  it('draws no line without a history', async () => {
+    stubApi({ 'GET /environments/3': { body: { ...base, docker } } });
+    const wrapper = await mountTile(base);
+    expect(wrapper.findAll('.charts path.line').map((p) => p.attributes('d'))).toEqual(['', '']);
+  });
+
   it('says when the Docker host cannot be read', async () => {
     stubApi({ 'GET /environments/3': { status: 502, body: { error: 'daemon gone' } } });
     const wrapper = await mountTile(base);

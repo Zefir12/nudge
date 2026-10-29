@@ -4,6 +4,7 @@ import { RouterLink, useRouter } from 'vue-router';
 
 import {
   getEnvironment,
+  getEnvironmentMetrics,
   getEnvironmentSummary,
   listStacks,
   listVolumes,
@@ -15,26 +16,31 @@ import ActivityHeatmap from './ActivityHeatmap.vue';
 import ConnPlug from './ConnPlug.vue';
 import DiskUsage from './DiskUsage.vue';
 import GearButton from './GearButton.vue';
-import { mockActivity, mockAgentLink, mockCpuHistory, mockDisk, mockMemHistory } from './tileMock';
+import { mockActivity, mockAgentLink, mockDisk } from './tileMock';
 import UsageGauges, { type Gauge } from './UsageGauges.vue';
 import UsageHistory from './UsageHistory.vue';
 import { formatBytes, formatDate } from '../format';
 
 // EnvironmentTile is one environment on the global dashboard; it opens that environment.
-// An online environment's Docker info fills in the counts once it arrives, and its usage
-// summary the CPU and memory gauges. Disk, history and activity are mock data for now
-// (tileMock.ts says what each needs).
+// An online environment's Docker info fills in the counts once it arrives, its usage
+// summary the CPU and memory gauges and its stored usage history the 24h charts. Disk and
+// activity are mock data for now (tileMock.ts says what each needs).
 const props = defineProps<{ env: Environment }>();
 const router = useRouter();
 
-// refreshMs is how often the gauges are asked for again; the server samples at most every
-// 30 s, so asking more often would repeat the same numbers.
-const refreshMs = 30_000;
+// refreshMs is how often the gauges and charts are asked for again; the server collects
+// every minute by default, so asking more often would repeat the same numbers.
+const refreshMs = 60_000;
+// The charts: the last 24 hours in 15 minute buckets.
+const historyRange = { since: '24h', resolution: '15m' };
 
 const id = computed(() => (props.env.online ? String(props.env.id) : ''));
 const { data, error } = useLoad(id, getEnvironment);
 const docker = computed(() => data.value?.docker);
 const { data: usage, reload: reloadUsage } = useLoad(id, getEnvironmentSummary);
+const { data: metrics, reload: reloadMetrics } = useLoad(id, (env) =>
+  getEnvironmentMetrics(env, historyRange),
+);
 const { data: volumes } = useLoad(id, listVolumes);
 // Stacks are for admins; other users would only get a 403.
 const { data: stacks } = useLoad(
@@ -45,7 +51,9 @@ const { data: stacks } = useLoad(
 let timer: ReturnType<typeof setInterval> | undefined;
 onMounted(() => {
   timer = setInterval(() => {
-    if (id.value && document.visibilityState !== 'hidden') void reloadUsage();
+    if (!id.value || document.visibilityState === 'hidden') return;
+    void reloadUsage();
+    void reloadMetrics();
   }, refreshMs);
 });
 onUnmounted(() => clearInterval(timer));
@@ -59,6 +67,18 @@ const load = computed(() => {
     cpu: Math.min(100, u.cpu_percent / d.ncpu),
     mem: Math.min(100, (u.memory_usage / d.mem_total) * 100),
     memLabel: `${formatBytes(u.memory_usage)} / ${formatBytes(d.mem_total)}`,
+  };
+});
+
+// history is the stored usage as the gauges show it: CPU against every CPU, memory
+// against the host's.
+const history = computed(() => {
+  const d = docker.value;
+  const points = metrics.value?.points ?? [];
+  if (!d || !d.ncpu || !d.mem_total) return { cpu: [], mem: [] };
+  return {
+    cpu: points.map((p) => Math.min(100, p.cpu_percent / d.ncpu)),
+    mem: points.map((p) => Math.min(100, (p.memory_usage / d.mem_total) * 100)),
   };
 });
 
@@ -171,14 +191,12 @@ function open(e: MouseEvent) {
               <dd>{{ stacks?.length ?? '–' }}</dd>
             </div>
           </dl>
-          <div class="mock" title="TODO: mock data until the server keeps usage history">
-            <UsageHistory
-              :cpu="mockCpuHistory"
-              :mem="mockMemHistory"
-              :cpu-now="load?.cpu ?? null"
-              :mem-now="load?.mem ?? null"
-            />
-          </div>
+          <UsageHistory
+            :cpu="history.cpu"
+            :mem="history.mem"
+            :cpu-now="load?.cpu ?? null"
+            :mem-now="load?.mem ?? null"
+          />
           <div class="mock" title="TODO: mock data until there is a disk usage endpoint">
             <DiskUsage :total="mockDisk.total" :parts="mockDisk.parts" :reclaimable="mockDisk.reclaimable" />
           </div>

@@ -17,7 +17,7 @@ browser ──HTTPS──▶ nudge serve ──unix socket──▶ local docker
 ```
 
 - **Server** (`nudge serve`): API under `/api/v1`, embedded web UI, SQLite store in
-  `/data/nudge.db`, the registry of connected agents.
+  `/data/nudge.db`, usage history in `/data/metrics.db`, the registry of connected agents.
 - **Agent** (`nudge-agent`): its own binary (`cmd/nudge-agent`) and image, on each remote
   host with that host's socket mounted. It dials the server; it has no API of its own and
   stores only its credential in `/data`.
@@ -197,8 +197,9 @@ object or setting is the admins' until something explicitly opens it to users.
   (`refuseImageLabels`).
 - The event stream passes a user only events of containers they own (each container
   checked once, bounded `ownerCache` per stream); volume and network events carry no
-  labels, so users get none. Environment stats and the usage summary sample only the
-  user's containers and are cached per owner key.
+  labels, so users get none. Environment stats sample only the user's containers; the
+  usage summary and history add up the collected rows filed under their owner key (see
+  Metrics).
 - The `net.zefirlabs.nudge.` label namespace is reserved: no request can set it, a
   recreate keeps it, and users' objects get it from `ownerLabels` / `buildTenant`.
 
@@ -472,6 +473,30 @@ to the old image after the new one migrated the database may not work: the backu
 The generic container recreate/update and stack runs refuse nudge's own container and its
 compose project (`409`), since they would stop it halfway. Agents from before
 `GET /v1/self` can't be found, so they are updated by hand once.
+
+## Metrics (#164)
+`internal/metrics` collects usage in the background into its own SQLite file,
+`<data>/metrics.db` (`store.OpenDB` with the package's own migrations), apart from
+`nudge.db`: it is rewritten every tick, is not part of backups, and losing it loses only
+history.
+
+- `Service.Run` lists the environments every interval and keeps one collector goroutine
+  per environment (owned by Run, cancelled when the environment goes or Run's context
+  ends). Each tick (`Collect`) lists the running containers, samples them with the one-shot
+  stats call the API's overview uses (`SampleContainers`, 8 at a time, bounded by a
+  minute) and stores every container's row and the environment's totals in one
+  transaction. A tick cut short or one that sampled nothing is dropped; an offline
+  environment simply has no ticks.
+- Each container row carries its owner key, from the API's ownership rule
+  (`api.ContainerOwners`: the owner label unless the image sets one). A user's history is
+  the sum of their rows at query time rather than kept per owner: no third copy of every
+  tick, and it is exactly the rows the user may see.
+- `Cleanup` (every 10 minutes) rolls finished hours up into `*_hours` (average, maximum,
+  the counters' largest, sample count), re-rolling the newest rolled hour so a tick that
+  straddled it counts, then drops raw rows after 48 h, rollups after the retention and
+  every row of a removed environment.
+- `stats/summary` answers the latest tick if it is at most three intervals old, so the API
+  keeps no cache of its own; the history endpoints bucket raw rows or rollups in SQL.
 
 ## Storage
 SQLite (`modernc.org/sqlite`, pure Go, so the image stays static) with numbered SQL

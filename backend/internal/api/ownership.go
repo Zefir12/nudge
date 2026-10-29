@@ -290,3 +290,30 @@ func (oc *ownerCache) event(ctx context.Context, typ, id string, attrs map[strin
 	oc.owners[id] = ok
 	return ok
 }
+
+// ContainerOwners returns the owner key of each of items a user owns, by container ID:
+// the owner label, unless the container's image sets one too (see ownsContainer). The
+// metrics collector files each container's samples under it.
+func ContainerOwners(ctx context.Context, c docker.Client, items []container.Summary) (map[string]string, error) {
+	owners := map[string]string{}
+	// By image: whether it leaves the owner label to its containers.
+	images := map[string]bool{}
+	for _, item := range items {
+		key := item.Labels[ownerLabel]
+		if key == "" {
+			continue
+		}
+		ok, seen := images[item.ImageID]
+		if !seen {
+			var err error
+			if ok, err = (scope{key: key}).ownsContainer(ctx, c, item.Labels, item.ImageID); err != nil {
+				return nil, err
+			}
+			images[item.ImageID] = ok
+		}
+		if ok {
+			owners[item.ID] = key
+		}
+	}
+	return owners, nil
+}

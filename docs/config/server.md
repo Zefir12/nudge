@@ -18,6 +18,8 @@ image without setting anything. A flag wins over its variable.
 | `-audit-retention-days` | `NUDGE_AUDIT_RETENTION_DAYS` | `90` | days the audit log keeps entries (at least 1); older ones are deleted hourly |
 | `-update-check-interval` | `NUDGE_UPDATE_CHECK_INTERVAL` | `6h` | how often every environment's images are checked for updates (a Go duration, at least `5m`; `0` turns the scheduled check off, the UI's check still works); the first check runs two minutes after start |
 | `-usage-interval` | `NUDGE_USAGE_INTERVAL` | `15m` | how often every environment's volume sizes are measured (a Go duration, at least `1m`; `0` turns the scheduled measurement off, the UI's "Measure sizes" still works); the first measurement runs two minutes after start. Docker walks every volume to size it, so on hosts with large volumes a longer interval is kinder to the disks |
+| `-metrics-interval` | `NUDGE_METRICS_INTERVAL` | `60s` | how often every environment's and container's CPU, memory, network and block I/O is collected into `<data>/metrics.db` (a Go duration, at least `10s`; `0` turns collection off: the dashboard's gauges and charts go empty, stored history still answers). Each tick asks the daemon for one stats reading per running container, 8 at a time. See [Metrics database](#metrics-database) |
+| `-metrics-retention` | `NUDGE_METRICS_RETENTION` | `720h` | how long the hourly usage rollups are kept (at least `48h`); raw samples are kept for 48 hours |
 | `-backup-interval` | `NUDGE_BACKUP_INTERVAL` | `0` | how often an encrypted backup is saved to `<data>/backups/` (a Go duration, at least `5m`; `0` turns scheduled backups off); needs `-backup-passphrase-file`. See [Backup and restore](#backup-and-restore) |
 | `-backup-keep` | `NUDGE_BACKUP_KEEP` | `7` | how many scheduled backups are kept; older ones are deleted after each new one |
 | `-backup-passphrase-file` | `NUDGE_BACKUP_PASSPHRASE_FILE` | unset | file holding the passphrase (at least 12 characters; a trailing newline is ignored) scheduled backups are encrypted with; `nudge restore` reads its passphrase from here too |
@@ -46,6 +48,15 @@ registry passwords and the notification webhooks' URLs and header values in the 
 Back it up with nudge's own backups (below) rather than by copying the files: a copy of
 `nudge.db` taken while the server runs can miss what is still in `nudge.db-wal`. A
 database migrated by a newer nudge is refused by an older one.
+
+### Metrics database
+Usage history lives apart in `<data>/metrics.db` (SQLite, WAL, its own migrations), written
+every `-metrics-interval`: one row per running container per tick and the environment's
+totals. Every 10 minutes the finished hours are rolled up (average and maximum), raw rows
+older than 48 hours and rollups older than `-metrics-retention` are deleted, and so are
+the rows of removed environments. At the default minute raw samples take roughly 2 MB per 10
+running containers and day, the rollups far less. It is not part of
+backups; a restore moves it aside with the rest of the old data, so history starts over.
 
 ## Backup and restore
 A backup is one file, `nudge-<UTC time>.nudgebak`, holding a consistent snapshot of the
@@ -81,7 +92,7 @@ docker compose start nudge
 `restore` takes `-data` and `-stacks-dir` (or `NUDGE_DATA`, `NUDGE_STACKS_DIR`) like
 `serve`, and `-passphrase-file` (or `NUDGE_BACKUP_PASSPHRASE_FILE`). It decrypts and checks
 the whole archive before it changes anything, so a wrong passphrase or a damaged or cut
-file leaves the data alone. It refuses a data directory that already has a database, key
+file leaves the data alone. It refuses a data directory that already has a database (or `metrics.db`), key
 or stacks; with `-force` it moves them to `<data>/pre-restore-<time>/` and the stacks'
 `compose.yaml` and `.env` files to `<stacks>/.pre-restore-<time>/` first. Only those files
 move: data that stacks bind-mount from their directories stays in place, and the stacks

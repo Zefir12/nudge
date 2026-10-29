@@ -74,6 +74,8 @@ Flags with `NUDGE_*` environment variable fallbacks; the defaults work in the im
 | `NUDGE_AUDIT_RETENTION_DAYS` | `90` | days the audit log keeps entries |
 | `NUDGE_UPDATE_CHECK_INTERVAL` | `6h` | how often images are checked for updates, `0` for never |
 | `NUDGE_USAGE_INTERVAL` | `15m` | how often volume sizes are measured, `0` for never |
+| `NUDGE_METRICS_INTERVAL` | `60s` | how often container and environment usage is collected into `metrics.db`, `0` for never |
+| `NUDGE_METRICS_RETENTION` | `720h` | how long the hourly usage history is kept (raw samples: 48h) |
 | `NUDGE_BACKUP_INTERVAL` | `0` (off) | how often an encrypted backup is saved to `<data>/backups` |
 | `NUDGE_BACKUP_KEEP` | `7` | how many scheduled backups are kept |
 | `NUDGE_BACKUP_PASSPHRASE_FILE` | unset | file with the backups' passphrase (needed for scheduled backups and `nudge restore`) |
