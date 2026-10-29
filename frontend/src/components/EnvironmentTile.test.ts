@@ -1,11 +1,11 @@
 import { flushPromises, mount } from '@vue/test-utils';
-import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import { createMemoryHistory } from 'vue-router';
 
 import type { Environment } from '../api/client';
 import { createAppRouter } from '../router';
 import { currentUser } from '../session';
-import { admin, stubApi } from '../test-utils';
+import { admin, stubApi, stubSockets, type FakeWebSocket } from '../test-utils';
 import EnvironmentTile from './EnvironmentTile.vue';
 
 const base: Environment = {
@@ -16,6 +16,12 @@ const base: Environment = {
   created_at: '',
   last_seen_at: null,
 };
+
+let sockets: FakeWebSocket[];
+
+beforeEach(() => {
+  sockets = stubSockets();
+});
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -153,7 +159,7 @@ describe('EnvironmentTile', () => {
     expect(wrapper.findAll('.gauge .detail').map((d) => d.text())[2]).toBe(gauge[1]);
   });
 
-  it('shows no disk bar before the first measurement, nor to other users', async () => {
+  it('shows no disk bar before the first measurement', async () => {
     currentUser.value = admin;
     stubApi({
       'GET /environments/3': { body: { ...base, docker } },
@@ -162,8 +168,9 @@ describe('EnvironmentTile', () => {
     const wrapper = await mountTile(base);
     expect(wrapper.find('.big').exists()).toBe(false);
     expect(gaugeLabels(wrapper)[2]).toBe('Disk 40%');
+  });
 
-    currentUser.value = null;
+  it('does not ask other users for the disk', async () => {
     const fetch = stubApi({ 'GET /environments/3': { body: { ...base, docker } } });
     const other = await mountTile(base);
     expect(fetch.mock.calls.map(([url]) => url)).not.toContain('/api/v1/environments/3/disk');
@@ -222,6 +229,36 @@ describe('EnvironmentTile', () => {
     const details = wrapper.findAll('.gauge .detail').map((d) => d.text());
     expect(details[0]).toBe('4 cores');
     expect(details[1]).toContain('/');
+  });
+
+  // The live stream takes over from the stored summary with every sample.
+  it('updates the gauges from the live usage stream', async () => {
+    stubApi({
+      'GET /environments/3': { body: { ...base, docker } },
+      'GET /environments/3/stats/summary': {
+        body: { sampled_at: '', cpu_percent: 200, memory_usage: 256 * 1024 ** 2, containers: 3 },
+      },
+    });
+    const wrapper = await mountTile(base);
+    expect(gaugeLabels(wrapper).slice(0, 2)).toEqual(['CPU 50%', 'Memory 25%']);
+    const ws = sockets.find((s) => s.url.endsWith('/environments/3/metrics/live'))!;
+    ws.message({
+      time: '2026-10-27T12:00:05Z',
+      containers: [],
+      skipped: 0,
+      total: {
+        cpu_percent: 100,
+        memory_usage: 512 * 1024 ** 2,
+        network_rx: 0,
+        network_tx: 0,
+        block_read: 0,
+        block_write: 0,
+      },
+    });
+    await flushPromises();
+    expect(gaugeLabels(wrapper).slice(0, 2)).toEqual(['CPU 25%', 'Memory 50%']);
+    wrapper.unmount();
+    expect(ws.closed).toBe(true);
   });
 
   // The charts come from the stored history at once, scaled like the gauges.
@@ -292,5 +329,6 @@ describe('EnvironmentTile', () => {
     expect(wrapper.find('.stats').exists()).toBe(false);
     expect(wrapper.find('.gauges').exists()).toBe(false);
     expect(fetch.mock.calls.map(([url]) => url)).not.toContain('/api/v1/environments/3');
+    expect(sockets).toHaveLength(0);
   });
 });

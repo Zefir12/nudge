@@ -500,6 +500,13 @@ history.
   every row of a removed environment.
 - `stats/summary` answers the latest tick if it is at most three intervals old, so the API
   keeps no cache of its own; the history endpoints bucket raw rows or rollups in SQL.
+- Live usage (#166, live.go): each tick also goes to the environment's live subscribers
+  (`SubscribeLive`, the `metrics/live` WebSocket), each getting its own scope's share,
+  like `events.Hub`: a bounded buffer per subscriber, a slow one dropped, at most 100
+  per environment. The first subscriber wakes the environment's collector, which then
+  samples every live interval while anyone watches; only the ticks on the background
+  cadence (`nextSave`) are stored. The hub keeps each environment's latest tick for a
+  new subscriber; its subscriptions end when the collector stops.
 
 ## Storage
 SQLite (`modernc.org/sqlite`, pure Go, so the image stays static) with numbered SQL

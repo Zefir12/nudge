@@ -66,6 +66,9 @@ type Server struct {
 	MetricsInterval time.Duration
 	// MetricsRetention is how long the hourly usage rollups are kept (raw samples: 48h).
 	MetricsRetention time.Duration
+	// MetricsLiveInterval is how often an environment is sampled while someone watches
+	// its live usage; those samples are not stored.
+	MetricsLiveInterval time.Duration
 	// OIDC is the single sign-on provider; zero when SSO is off.
 	OIDC OIDC
 	// NoPasswordLogin turns password login off for everyone but the local break-glass
@@ -189,6 +192,11 @@ func LoadServer(args []string, getenv func(string) string, out io.Writer) (Serve
 		return Server{}, fmt.Errorf("NUDGE_METRICS_RETENTION %q: want a duration such as 720h", getenv("NUDGE_METRICS_RETENTION"))
 	}
 	fs.DurationVar(&c.MetricsRetention, "metrics-retention", metricsRetention, "how long to keep hourly usage history (NUDGE_METRICS_RETENTION)")
+	metricsLive, err := time.ParseDuration(envOr(getenv, "NUDGE_METRICS_LIVE_INTERVAL", "5s"))
+	if err != nil {
+		return Server{}, fmt.Errorf("NUDGE_METRICS_LIVE_INTERVAL %q: want a duration such as 5s", getenv("NUDGE_METRICS_LIVE_INTERVAL"))
+	}
+	fs.DurationVar(&c.MetricsLiveInterval, "metrics-live-interval", metricsLive, "how often to sample an environment while its live usage is watched (NUDGE_METRICS_LIVE_INTERVAL)")
 	fs.StringVar(&c.OIDC.Issuer, "oidc-issuer", getenv("NUDGE_OIDC_ISSUER"), "OpenID Connect issuer URL; turns on single sign-on with the client ID and secret (NUDGE_OIDC_ISSUER)")
 	fs.StringVar(&c.OIDC.ClientID, "oidc-client-id", getenv("NUDGE_OIDC_CLIENT_ID"), "OpenID Connect client ID (NUDGE_OIDC_CLIENT_ID)")
 	fs.StringVar(&c.OIDC.Name, "oidc-name", envOr(getenv, "NUDGE_OIDC_NAME", "SSO"), "label of the single sign-on button (NUDGE_OIDC_NAME)")
@@ -267,6 +275,9 @@ func LoadServer(args []string, getenv func(string) string, out io.Writer) (Serve
 	}
 	if c.MetricsInterval != 0 && c.MetricsInterval < 10*time.Second {
 		return Server{}, errors.New("metrics interval must be 0 (off) or at least 10s")
+	}
+	if c.MetricsLiveInterval < 2*time.Second {
+		return Server{}, errors.New("metrics live interval must be at least 2s")
 	}
 	if c.MetricsRetention < 48*time.Hour {
 		return Server{}, errors.New("metrics retention must be at least 48h")

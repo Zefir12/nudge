@@ -5,7 +5,7 @@ import { createMemoryHistory } from 'vue-router';
 import type { EnvironmentDetail } from '../api/client';
 import { createAppRouter } from '../router';
 import { currentUser } from '../session';
-import { admin, user, stubApi, stubSockets } from '../test-utils';
+import { admin, user, stubApi, stubSockets, type FakeWebSocket } from '../test-utils';
 import DashboardView from './DashboardView.vue';
 
 const env: EnvironmentDetail = {
@@ -44,9 +44,11 @@ async function mountAt(path: string) {
   return wrapper;
 }
 
+let sockets: FakeWebSocket[];
+
 beforeEach(() => {
   currentUser.value = admin;
-  stubSockets();
+  sockets = stubSockets();
 });
 
 afterEach(() => {
@@ -59,17 +61,20 @@ describe('DashboardView', () => {
       'GET /environments/1': { body: env },
       'GET /environments/1/volumes': { body: [{}, {}] },
       'GET /environments/1/networks': { body: [{}, {}, {}] },
-      'GET /environments/1/stats': {
-        body: {
-          containers: [],
-          total: { cpu_percent: 12.5, memory_usage: 2e9, network_rx: 0, network_tx: 0 },
-        },
-      },
       'GET /environments/1/containers': { body: [] },
       'GET /environments/1/images': { body: [] },
       'GET /environments/1/updates': { body: [] },
     });
     const wrapper = await mountAt('/env/1');
+    sockets
+      .find((s) => s.url.endsWith('/environments/1/metrics/live'))!
+      .message({
+        time: '2026-10-24T12:00:00Z',
+        containers: [],
+        skipped: 0,
+        total: { cpu_percent: 12.5, memory_usage: 2e9, network_rx: 0, network_tx: 0 },
+      });
+    await flushPromises();
     const counts = wrapper.findAll('.count').map((c) => c.text());
     expect(counts[0]).toContain('5');
     expect(counts[0]).toContain('3 running · 2 stopped');

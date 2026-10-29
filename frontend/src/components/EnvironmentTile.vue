@@ -12,6 +12,7 @@ import {
   type Environment,
   type EnvironmentDisk,
 } from '../api/client';
+import { useLiveUsage } from '../composables/useLiveUsage';
 import { useLoad } from '../composables/useLoad';
 import { currentUser } from '../session';
 import ActivityHeatmap from './ActivityHeatmap.vue';
@@ -27,8 +28,9 @@ import { formatBytes, formatDate } from '../format';
 
 // EnvironmentTile is one environment on the global dashboard; it opens that environment.
 // An online environment's Docker info fills in the counts once it arrives, its usage
-// summary the CPU and memory gauges and its stored usage history the 24h charts; an
-// admin sees its disk usage. Activity is mock data for now (tileMock.ts). An admin's gear opens
+// summary the CPU and memory gauges, then its live usage stream keeps them current; its
+// stored usage history fills the 24h charts; an admin sees its disk usage. Activity is mock
+// data for now (tileMock.ts). An admin's gear opens
 // the environment's settings; changed fires after one of them ran, so the dashboard
 // reloads the list.
 const props = defineProps<{ env: Environment }>();
@@ -36,8 +38,8 @@ const emit = defineEmits<{ changed: [] }>();
 const router = useRouter();
 const settingsOpen = ref(false);
 
-// refreshMs is how often the gauges and charts are asked for again; the server collects
-// every minute by default, so asking more often would repeat the same numbers.
+// refreshMs is how often the charts are asked for again; the server stores a sample every
+// minute by default, so asking more often would repeat the same numbers.
 const refreshMs = 60_000;
 // The charts: the last 24 hours in 15 minute buckets.
 const historyRange = { since: '24h', resolution: '15m' };
@@ -45,7 +47,19 @@ const historyRange = { since: '24h', resolution: '15m' };
 const id = computed(() => (props.env.online ? String(props.env.id) : ''));
 const { data, error } = useLoad(id, getEnvironment);
 const docker = computed(() => data.value?.docker);
-const { data: usage, reload: reloadUsage } = useLoad(id, getEnvironmentSummary);
+const { data: summary } = useLoad(id, getEnvironmentSummary);
+const { usage: live } = useLiveUsage(id);
+// usage is the latest sample: the live stream's once it sends one, else the stored one.
+const usage = computed(() => {
+  const l = live.value;
+  if (!l) return summary.value;
+  return {
+    sampled_at: l.time,
+    cpu_percent: l.total.cpu_percent,
+    memory_usage: l.total.memory_usage,
+    containers: l.containers.length,
+  };
+});
 const { data: metrics, reload: reloadMetrics } = useLoad(id, (env) =>
   getEnvironmentMetrics(env, historyRange),
 );
@@ -59,7 +73,6 @@ let timer: ReturnType<typeof setInterval> | undefined;
 onMounted(() => {
   timer = setInterval(() => {
     if (!id.value || document.visibilityState === 'hidden') return;
-    void reloadUsage();
     void reloadMetrics();
     if (adminId.value) void reloadDisk();
   }, refreshMs);
