@@ -37,7 +37,6 @@ describe('AppSidebar', () => {
     expect(wrapper.find('.account').text()).toContain('admin');
     expect(labels(wrapper.findAll('nav[aria-label="Global"] a'))).toEqual([
       'Dashboard',
-      'Environments',
       'Deployments',
       'Registries',
       'Notifications',

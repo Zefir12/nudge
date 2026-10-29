@@ -18,7 +18,6 @@ import ContainerView from './views/ContainerView.vue';
 import DashboardView from './views/DashboardView.vue';
 import DeploymentsView from './views/DeploymentsView.vue';
 import DeploymentView from './views/DeploymentView.vue';
-import EnvironmentsView from './views/EnvironmentsView.vue';
 import EventsView from './views/EventsView.vue';
 import HomeView from './views/HomeView.vue';
 import ImagesView from './views/ImagesView.vue';
@@ -87,7 +86,8 @@ export function createAppRouter(history: RouterHistory) {
       { path: '/env/:env/new-stack', name: 'stack-new', component: StackNewView },
       { path: '/env/:env/stacks/:id', name: 'stack', component: StackView },
       { path: '/env/:env/events', name: 'events', component: EventsView, meta: { users: true } },
-      { path: '/environments', name: 'environments', component: EnvironmentsView },
+      // Environments are managed on the dashboard now; old links land there.
+      { path: '/environments', redirect: '/' },
       { path: '/deployments', name: 'deployments', component: DeploymentsView, meta: { users: true } },
       { path: '/deployments/:name', name: 'deployment', component: DeploymentView, meta: { users: true } },
       { path: '/registries', name: 'registries', component: RegistriesView },

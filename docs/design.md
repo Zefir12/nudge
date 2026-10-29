@@ -14,14 +14,18 @@ only the variables, never raw colours.
 - **Sidebar** (248px, sticky), `AppSidebar.vue`:
   - Global part, the same on every page: account box (avatar initial, name, role, log out),
     environment picker (`EnvSwitcher`: no box or status, an icon picked by hashing the
-    environment's name, `envIcon.ts`), then Dashboard, Environments, Registries,
+    environment's name, `envIcon.ts`), then Dashboard, Registries,
     Notifications, API tokens, Audit log.
   - Per-environment part below a divider: headed by the open (or last used) environment's
     name and connection plug; Overview, Stacks, Containers, Images, Volumes, Networks, Events. Pages that
     belong to one environment go here; pages that span environments go in the global part.
 - **Global dashboard** (`/`): one large tile per environment (`EnvironmentTile`), two per row,
-  plus an "Add environment" tile for admins. A tile opens `/env/:env` (its name is the link;
-  a click anywhere else on it opens it too) and has a settings gear top right. Inside: CPU,
+  plus an "Add environment" tile for admins. Environments are managed here, in modals
+  (`SettingsDialog`), for admins: the "Add environment" button and tile open the name form
+  (`AddEnvironment`, then the new join token), and a tile's gear top right opens its
+  settings (`EnvironmentSettings`: new join token, revoke agent, remove). `/environments`
+  redirects here. A tile opens `/env/:env` (its name is the link; a click anywhere else on
+  it but its settings opens it too). Inside: CPU,
   memory and disk gauges in a rail on the left (`UsageGauges`); beside them the running,
   images, volumes and stacks counts, CPU and memory over 24h (`UsageHistory`), disk use by
   kind (`DiskUsage`) and events per hour over 7 days (`ActivityHeatmap`, square cells). An

@@ -29,7 +29,6 @@ onMounted(async () => {
 // users: open to users without the admin role; the others are hidden from them.
 const globalItems = [
   { to: '/', label: 'Dashboard', exact: true, icon: 'M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z' },
-  { to: '/environments', label: 'Environments', icon: 'M4 4h16v6H4zM4 14h16v6H4zM8 7h.01M8 17h.01' },
   { to: '/deployments', label: 'Deployments', users: true, icon: 'M12 3v12M7 10l5 5 5-5M4 21h16' },
   {
     to: '/registries',
