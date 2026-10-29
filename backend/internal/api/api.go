@@ -21,6 +21,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/deployments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/events"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/metrics"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/notify"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/oidc"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/registries"
@@ -63,6 +64,8 @@ type Options struct {
 	Deployments *deployments.Service
 	// Usage keeps the measured volume sizes; nil means sizes aren't available.
 	Usage *usage.Service
+	// Metrics keeps the collected usage samples; nil answers no samples.
+	Metrics *metrics.Service
 	// Backups writes backups; nil means none can be downloaded.
 	Backups *backup.Service
 	// Allowances are the users' allowances, checked before a user's container is
@@ -92,7 +95,7 @@ type Options struct {
 	// After is time.After outside tests: the deployments' stability window and the
 	// keepalives of their progress streams.
 	After func(time.Duration) <-chan time.Time
-	// Now is time.Now outside tests: the age of the environments' usage summaries.
+	// Now is time.Now outside tests: audit entries' times.
 	Now func() time.Time
 	// OIDC signs users in through the SSO provider; nil means SSO is off.
 	OIDC *oidc.Client
@@ -205,6 +208,8 @@ var userRoutes = map[string]bool{
 	"GET /api/v1/environments/{env}/containers/{id}/exec":     true,
 	"GET /api/v1/environments/{env}/stats":                    true,
 	"GET /api/v1/environments/{env}/stats/summary":            true,
+	"GET /api/v1/environments/{env}/metrics":                  true,
+	"GET /api/v1/environments/{env}/containers/{id}/metrics":  true,
 	// Their own allowance; setting one is for admins.
 	"GET /api/v1/environments/{env}/allowance":        true,
 	"GET /api/v1/environments/{env}/events":           true,
@@ -294,6 +299,8 @@ var routes = []route{
 	{"GET /api/v1/environments/{env}/containers/{id}/exec", (*server).containerExec},
 	{"GET /api/v1/environments/{env}/stats", (*server).environmentStats},
 	{"GET /api/v1/environments/{env}/stats/summary", (*server).environmentSummary},
+	{"GET /api/v1/environments/{env}/metrics", (*server).environmentMetrics},
+	{"GET /api/v1/environments/{env}/containers/{id}/metrics", (*server).containerMetrics},
 	{"GET /api/v1/environments/{env}/allowance", (*server).getAllowance},
 	{"PUT /api/v1/environments/{env}/allowance", (*server).setAllowance},
 	{"DELETE /api/v1/environments/{env}/allowance", (*server).deleteAllowance},
@@ -359,9 +366,9 @@ var routes = []route{
 func New(opts Options) http.Handler {
 	s := &server{
 		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries, audit: opts.Audit, updates: opts.Updates,
-		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, deployments: opts.Deployments, usage: opts.Usage, backups: opts.Backups, allowances: opts.Allowances, tenant: opts.Tenant, deniedLabels: opts.DeniedLabels, registryClient: opts.RegistryClient,
+		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, deployments: opts.Deployments, usage: opts.Usage, metrics: opts.Metrics, backups: opts.Backups, allowances: opts.Allowances, tenant: opts.Tenant, deniedLabels: opts.DeniedLabels, registryClient: opts.RegistryClient,
 		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, oidc: opts.OIDC, oidcName: opts.OIDCName, noPasswordLogin: opts.NoPasswordLogin, recreating: map[string]bool{},
-		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{}, summaries: map[summaryKey]*summaryEntry{},
+		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{},
 		self: opts.Self, dockerHost: opts.DockerHost, agentSelf: opts.AgentSelf,
 		checks:         make(chan struct{}, maxStackChecks),
 		done:           context.Background(),
@@ -437,6 +444,7 @@ type server struct {
 	// deployTokens serves the requests that carry a deploy token.
 	deployTokens *http.ServeMux
 	usage        *usage.Service
+	metrics      *metrics.Service
 	backups      *backup.Service
 	allowances   *allowances.Service
 	// tenant is the host-side hardening of users' containers (tenant_host.go).
@@ -472,8 +480,6 @@ type server struct {
 	recreating map[string]bool
 	// stackBusy holds stackKey of the stacks being changed or deployed now.
 	stackBusy map[string]bool
-	// summaries holds each environment's last usage totals, by environment and owner.
-	summaries map[summaryKey]*summaryEntry
 	// after is Options.After.
 	after func(time.Duration) <-chan time.Time
 	// now is Options.Now.

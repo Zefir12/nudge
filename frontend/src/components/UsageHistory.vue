@@ -2,12 +2,13 @@
 import { usageIcons as icons } from './usageIcons';
 
 // UsageHistory charts CPU and memory side by side: percentages oldest first, scaled to
-// 100, under the current value.
+// 100, under the current value. With fewer than two values there is no line to draw.
 defineProps<{ cpu: number[]; mem: number[]; cpuNow: number | null; memNow: number | null }>();
 
 // line and area paths in a 100×30 box.
 function line(values: number[]): string {
   const n = values.length;
+  if (n < 2) return '';
   return values
     .map(
       (v, i) =>
@@ -15,7 +16,7 @@ function line(values: number[]): string {
     )
     .join(' ');
 }
-const area = (values: number[]) => `${line(values)} L100,30 L0,30 Z`;
+const area = (values: number[]) => (values.length < 2 ? '' : `${line(values)} L100,30 L0,30 Z`);
 const pct = (v: number | null) => (v === null ? '–' : `${v.toFixed(v < 10 ? 1 : 0)}%`);
 </script>
 

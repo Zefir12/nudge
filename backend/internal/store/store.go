@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"path/filepath"
 
@@ -34,7 +35,18 @@ type Store struct {
 // Open opens (creating if needed) <dataDir>/nudge.db and applies pending migrations.
 // The data directory must already exist.
 func Open(ctx context.Context, dataDir string) (*Store, error) {
-	path := filepath.Join(dataDir, FileName)
+	db, err := OpenDB(ctx, filepath.Join(dataDir, FileName), migrationsFS, migrationsDir)
+	if err != nil {
+		return nil, err
+	}
+	return &Store{db: db}, nil
+}
+
+// OpenDB opens (creating if needed) the SQLite database at path with nudge's settings
+// (WAL, foreign keys, busy timeout, BEGIN IMMEDIATE) and applies the NNNN_name.sql
+// migrations in dir of fsys that it lacks. Packages with a database of their own (the
+// metrics) open it with their own migrations.
+func OpenDB(ctx context.Context, path string, fsys fs.FS, dir string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", dsn(path))
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
@@ -48,11 +60,11 @@ func Open(ctx context.Context, dataDir string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
-	if err := migrate(ctx, db, migrationsFS, migrationsDir); err != nil {
+	if err := migrate(ctx, db, fsys, dir); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate %s: %w", path, err)
 	}
-	return &Store{db: db}, nil
+	return db, nil
 }
 
 // dsn sets the busy timeout first, so the WAL switch also waits for other writers, and

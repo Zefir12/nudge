@@ -488,6 +488,37 @@ const selfUpdate = (version: string, image = 'registrydedic.zefirlabs.net/nudge:
   can_update: true,
 });
 
+// history is a usage history around scale × the environment's current totals: since and
+// resolution (durations only) as the server reads them, defaults 24h and a minute.
+function history(env: number, url: URL, scale = 1) {
+  const secs = (v: string | null, def: number) => {
+    const m = v?.match(/^(\d+)([smh])$/);
+    return m ? Number(m[1]) * { s: 1, m: 60, h: 3600 }[m[2] as 's' | 'm' | 'h'] : def;
+  };
+  const span = secs(url.searchParams.get('since'), 86_400);
+  const step = Math.max(60, secs(url.searchParams.get('resolution'), 60));
+  const n = Math.min(3000, Math.floor(span / step));
+  const now = Math.floor(Date.now() / 1000 / step) * step;
+  const t = usage(env).total;
+  const points = Array.from({ length: n }, (_, i) => {
+    const wave = 1 + 0.35 * Math.sin(i / 9 + env) + 0.15 * Math.sin(i * 1.3 + env * 2);
+    const cpu = Math.round(t.cpu_percent * scale * wave * 10) / 10;
+    const mem = Math.round(t.memory_usage * scale * (0.9 + 0.1 * Math.sin(i / 20 + env)));
+    return {
+      time: new Date((now - (n - 1 - i) * step) * 1000).toISOString(),
+      cpu_percent: cpu,
+      cpu_max: Math.round(cpu * 1.3 * 10) / 10,
+      memory_usage: mem,
+      memory_max: Math.round(mem * 1.05),
+      network_rx: Math.round((t.network_rx * scale * (i + 1)) / n),
+      network_tx: Math.round((t.network_tx * scale * (i + 1)) / n),
+      block_read: Math.round((t.block_read * scale * (i + 1)) / n),
+      block_write: Math.round((t.block_write * scale * (i + 1)) / n),
+    };
+  });
+  return { source: span > 48 * 3600 ? 'hourly' : 'raw', step, points };
+}
+
 // withEnv resolves the environment and refuses offline ones, like the real server.
 const withEnv =
   (fn: (env: number, m: string[], body: unknown, url: URL) => unknown) =>
@@ -801,6 +832,12 @@ const routes: Route[] = [
   ],
   ['POST', /^\/stacks\/check$/, () => ({ errors: [] })],
   ['GET', new RegExp(`^${envRe}/stats$`), withEnv((env) => usage(env))],
+  ['GET', new RegExp(`^${envRe}/metrics$`), withEnv((env, _m, _b, url) => history(env, url))],
+  [
+    'GET',
+    new RegExp(`^${envRe}/containers/([^/]+)/metrics$`),
+    withEnv((env, _m, _b, url) => history(env, url, 0.2)),
+  ],
   [
     'GET',
     new RegExp(`^${envRe}/stats/summary$`),

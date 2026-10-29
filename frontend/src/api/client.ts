@@ -953,8 +953,9 @@ export interface EnvironmentStats {
 export const getEnvironmentStats = (env: string, signal?: AbortSignal) =>
   apiFetch<EnvironmentStats>(envPath(env, '/stats'), { signal });
 
-// UsageSummary is an environment's usage totals from its last overview: CPU as a
-// percentage of one CPU, memory without the page cache, over `containers` sampled.
+// UsageSummary is an environment's usage totals from the server's latest collection (a
+// user's: of their containers): CPU as a percentage of one CPU, memory without the page
+// cache, over `containers` sampled.
 export interface UsageSummary {
   sampled_at: string;
   cpu_percent: number;
@@ -962,8 +963,56 @@ export interface UsageSummary {
   containers: number;
 }
 
-// getEnvironmentSummary answers the environment's usage totals, sampled at most every 30 s.
+// getEnvironmentSummary answers the environment's latest collected usage totals; 404 when
+// there is no recent one (collection is off, or the environment is offline).
 export const getEnvironmentSummary = (env: string) => apiFetch<UsageSummary>(envPath(env, '/stats/summary'));
+
+// MetricsPoint is one bucket of a usage history: CPU (percent of one CPU) and memory
+// averaged and at their maximum; network and block I/O are counters since each
+// container started, at their largest in the bucket.
+export interface MetricsPoint {
+  time: string;
+  cpu_percent: number;
+  cpu_max: number;
+  memory_usage: number;
+  memory_max: number;
+  network_rx: number;
+  network_tx: number;
+  block_read: number;
+  block_write: number;
+}
+
+// MetricsHistory is a usage history, oldest point first; `source` says whether raw
+// samples or hourly rollups answered and `step` is the bucket size in seconds.
+export interface MetricsHistory {
+  source: 'raw' | 'hourly';
+  step: number;
+  points: MetricsPoint[];
+}
+
+// MetricsRange picks a history: `since` a duration back (24h) or an RFC 3339 time,
+// `resolution` a bucket size (15m); the server's defaults are 24h and as stored.
+export interface MetricsRange {
+  since?: string;
+  resolution?: string;
+}
+
+function metricsQuery(r: MetricsRange): string {
+  const q = new URLSearchParams();
+  if (r.since) q.set('since', r.since);
+  if (r.resolution) q.set('resolution', r.resolution);
+  const s = q.toString();
+  return s ? `?${s}` : '';
+}
+
+// getEnvironmentMetrics answers the environment's usage history (a user's: of their
+// containers).
+export const getEnvironmentMetrics = (env: string, range: MetricsRange = {}) =>
+  apiFetch<MetricsHistory>(envPath(env, `/metrics${metricsQuery(range)}`));
+
+// getContainerMetrics answers one container's usage history.
+export const getContainerMetrics = (env: string, id: string, range: MetricsRange = {}) =>
+  apiFetch<MetricsHistory>(envPath(env, `/containers/${enc(id)}/metrics${metricsQuery(range)}`));
 
 // force also removes an image with several tags or used by stopped containers.
 export const removeImage = (env: string, id: string, force = false) =>

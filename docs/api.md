@@ -71,7 +71,9 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | GET | `/api/v1/environments/{env}/containers/{id}/stats` | user | WebSocket: a running container's usage, a sample about every second; see Stats |
 | GET | `/api/v1/environments/{env}/containers/{id}/exec` | user | WebSocket: a command with a terminal in a running container (audited); see Container exec |
 | GET | `/api/v1/environments/{env}/stats` | user | one usage sample of every running container, with totals; see Stats |
-| GET | `/api/v1/environments/{env}/stats/summary` | user | the environment's CPU and memory totals, sampled at most every 30 s; see Stats |
+| GET | `/api/v1/environments/{env}/stats/summary` | user | the environment's CPU and memory totals from the latest collection; see Stats |
+| GET | `/api/v1/environments/{env}/metrics` | user | the environment's usage history (a user's: of their containers); see Metrics |
+| GET | `/api/v1/environments/{env}/containers/{id}/metrics` | user | one container's usage history; see Metrics |
 | GET | `/api/v1/environments/{env}/allowance` | user | a user's allowance with what they use and what is left (admin: `?user=`); see Allowances |
 | PUT | `/api/v1/environments/{env}/allowance?user={id}` | session | set a user's allowance in the environment; see Allowances |
 | DELETE | `/api/v1/environments/{env}/allowance?user={id}` | session | remove it; `204`, `404` if there was none |
@@ -627,13 +629,46 @@ reading) and samples 8 containers at a time, for at most a minute; a container t
 meanwhile, or isn't sampled in time, is left out and counted in `skipped`.
 
 `GET /api/v1/environments/{env}/stats/summary` answers `{"sampled_at": "...", "cpu_percent":
-200, "memory_usage": 536870912, "containers": 2}`: the totals of the environment's last
-overview and how many containers it sampled (running ones that stopped meanwhile are not
-counted). An overview cut short, or one that could sample none of the listed containers,
-is not kept. It is cheap to ask for often (the global
-dashboard asks for every environment's): a summary younger than 30 s is answered as it
-is, else the server samples like the overview (callers at the same time share one
-sampling) and answers when it is done. Every overview refreshes the summary too.
+200, "memory_usage": 536870912, "containers": 2}`: the totals of the metrics collector's
+latest tick (see Metrics) and how many containers it sampled; for a user, of their own
+containers. It reads the database only, so it is cheap to ask for often (the global
+dashboard asks for every environment's). `404` `no recent usage sample` when there is
+none from the last three collection intervals: collection is off, it hasn't run yet, or
+the environment is offline.
+
+### Metrics
+The server collects every environment's usage in the background (`-metrics-interval`,
+every minute by default; docs/config/server.md) into `<data>/metrics.db`: one sample of
+every running container per tick, and the environment's totals. Raw samples are kept for
+48 hours, hourly rollups (average and maximum) for `-metrics-retention` (30 days).
+
+`GET /api/v1/environments/{env}/metrics?since=24h&resolution=15m` answers the
+environment's history: of every container for an admin, the sum of their own containers
+for a user (a tick where they ran nothing has no point). `GET
+/api/v1/environments/{env}/containers/{id}/metrics` answers one container's; the container
+must exist and, for a user, be theirs (`404` otherwise, `503` when the environment is
+offline). Parameters:
+
+- `since`: a duration back (`24h`, `90m`) or an RFC 3339 time; default `24h`, clamped to
+  the retention.
+- `resolution`: the bucket size, a duration of at least `1s` (`15m`); default the
+  collection interval for raw samples, an hour for rollups.
+
+Raw samples answer while `since` is within 48 hours and the resolution is under an hour;
+otherwise the hourly rollups do, in whole hours. A finer resolution than 3000 buckets
+over the span is coarsened. `400` for an unreadable `since` or `resolution`. The answer:
+
+```json
+{"source": "raw", "step": 900, "points": [{"time": "2026-10-27T11:45:00Z",
+  "cpu_percent": 12.5, "cpu_max": 30.1, "memory_usage": 268435456, "memory_max": 301989888,
+  "network_rx": 1024, "network_tx": 256, "block_read": 8192, "block_write": 512}]}
+```
+
+`source` is `raw` or `hourly`, `step` the bucket size in seconds; points are oldest first,
+each `time` the start of its bucket. CPU (a percentage of one CPU) and memory are averaged
+over the bucket and at their maximum (`cpu_max`, `memory_max`; for a user's rollups the
+sum of their containers' maximums, an upper bound). Network and block I/O are byte
+counters since each container started, at their largest in the bucket.
 
 ### Events
 `GET /api/v1/environments/{env}/events` upgrades to a WebSocket like the log stream (same

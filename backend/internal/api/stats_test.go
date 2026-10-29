@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +17,7 @@ import (
 	"github.com/moby/moby/client"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker/dockertest"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/metrics"
 )
 
 var statsT0 = time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
@@ -51,103 +51,6 @@ func linuxStats(sec int) container.StatsResponse {
 		s.PreCPUStats = cpu(sec - 1)
 	}
 	return s
-}
-
-func TestToStatsSample(t *testing.T) {
-	t.Parallel()
-	want := statsSample{
-		Time: statsT0.Add(time.Second), CPUPercent: 100, MemoryUsage: 256 << 20, MemoryLimit: 1 << 30,
-		MemoryPercent: 25, NetworkRx: 1024, NetworkTx: 256, BlockRead: 8192, BlockWrite: 512, PIDs: 7,
-	}
-	tests := []struct {
-		name   string
-		in     func(s *container.StatsResponse)
-		want   func(w *statsSample)
-		wantOK bool
-	}{
-		{name: "cgroup v2", wantOK: true},
-		{
-			name: "cgroup v1 cache",
-			in: func(s *container.StatsResponse) {
-				s.MemoryStats.Stats = map[string]uint64{"total_inactive_file": 44 << 20}
-			},
-			wantOK: true,
-		},
-		{
-			name: "cache larger than usage is ignored",
-			in:   func(s *container.StatsResponse) { s.MemoryStats.Stats = map[string]uint64{"inactive_file": 400 << 20} },
-			want: func(w *statsSample) {
-				w.MemoryUsage, w.MemoryPercent = 300<<20, 300.0/1024*100
-			},
-			wantOK: true,
-		},
-		{
-			name: "online CPUs missing: counts per-CPU usage",
-			in: func(s *container.StatsResponse) {
-				s.CPUStats.OnlineCPUs = 0
-				s.CPUStats.CPUUsage.PercpuUsage = []uint64{1, 2, 3, 4}
-			},
-			want:   func(w *statsSample) { w.CPUPercent = 200 },
-			wantOK: true,
-		},
-		{
-			name:   "no memory limit",
-			in:     func(s *container.StatsResponse) { s.MemoryStats.Limit = 0 },
-			want:   func(w *statsSample) { w.MemoryLimit, w.MemoryPercent = 0, 0 },
-			wantOK: true,
-		},
-		{
-			name:   "idle",
-			in:     func(s *container.StatsResponse) { s.PreCPUStats.CPUUsage = s.CPUStats.CPUUsage },
-			want:   func(w *statsSample) { w.CPUPercent = 0 },
-			wantOK: true,
-		},
-		{
-			name: "no previous reading",
-			in:   func(s *container.StatsResponse) { s.PreCPUStats = container.CPUStats{} },
-		},
-		{
-			name: "windows",
-			in: func(s *container.StatsResponse) {
-				s.OSType, s.NumProcs = "windows", 4
-				// 1s is 1e7 units of 100ns on each of 4 processors; 2e7 used is 50%.
-				s.CPUStats = container.CPUStats{CPUUsage: container.CPUUsage{TotalUsage: 3e7}}
-				s.PreCPUStats = container.CPUStats{CPUUsage: container.CPUUsage{TotalUsage: 1e7}}
-				s.MemoryStats = container.MemoryStats{PrivateWorkingSet: 64 << 20}
-				s.BlkioStats = container.BlkioStats{}
-				s.StorageStats = container.StorageStats{ReadSizeBytes: 10, WriteSizeBytes: 20}
-			},
-			want: func(w *statsSample) {
-				w.CPUPercent, w.MemoryUsage, w.MemoryLimit, w.MemoryPercent = 50, 64<<20, 0, 0
-				w.BlockRead, w.BlockWrite = 10, 20
-			},
-			wantOK: true,
-		},
-		{
-			name: "windows without a previous reading",
-			in:   func(s *container.StatsResponse) { s.OSType, s.PreRead = "windows", time.Time{} },
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			in := linuxStats(1)
-			if tt.in != nil {
-				tt.in(&in)
-			}
-			w := want
-			if tt.want != nil {
-				tt.want(&w)
-			}
-			got, ok := toStatsSample(in)
-			if ok != tt.wantOK {
-				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
-			}
-			if ok && got != w {
-				t.Errorf("sample =\n%+v\nwant\n%+v", got, w)
-			}
-		})
-	}
 }
 
 type statsTest struct {
@@ -221,13 +124,13 @@ func TestContainerStatsStream(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	ws := st.dial(ctx, t, st.path("local", "/containers/web/stats"))
-	var got []statsSample
+	var got []metrics.Sample
 	for range 2 {
 		_, data, err := ws.Read(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
-		var s statsSample
+		var s metrics.Sample
 		if err := json.Unmarshal(data, &s); err != nil {
 			t.Fatal(err)
 		}
@@ -282,7 +185,7 @@ func TestContainerStatsRefused(t *testing.T) {
 		{name: "stopped", path: st.path("local", "/containers/stopped/stats"), cookie: true, code: http.StatusConflict, want: "container is not running"},
 		{name: "offline", path: st.path("down", "/containers/web/stats"), cookie: true, code: http.StatusServiceUnavailable, want: "the environment is offline"},
 		{name: "environment offline", path: st.path("down", "/stats"), cookie: true, code: http.StatusServiceUnavailable, want: "the environment is offline"},
-		{name: "summary offline", path: st.path("down", "/stats/summary"), cookie: true, code: http.StatusServiceUnavailable, want: "the environment is offline"},
+		{name: "summary without a sample", path: st.path("down", "/stats/summary"), cookie: true, code: http.StatusNotFound, want: "no recent usage sample"},
 		{name: "summary without session", path: st.path("local", "/stats/summary"), code: http.StatusUnauthorized, want: "authentication required"},
 		{name: "environment without session", path: st.path("local", "/stats"), code: http.StatusUnauthorized, want: "authentication required"},
 	}
@@ -317,9 +220,9 @@ func TestEnvironmentStats(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	sample, _ := toStatsSample(linuxStats(1))
+	sample, _ := metrics.ToSample(linuxStats(1))
 	want := environmentStats{
-		Containers: []containerUsage{{ID: "aaa", Name: "db", statsSample: sample}, {ID: "bbb", Name: "web", statsSample: sample}},
+		Containers: []containerUsage{{ID: "aaa", Name: "db", Sample: sample}, {ID: "bbb", Name: "web", Sample: sample}},
 		Skipped:    1,
 		Total:      usageTotals{CPUPercent: 200, MemoryUsage: 512 << 20, NetworkRx: 2048, NetworkTx: 512, BlockRead: 16384, BlockWrite: 1024},
 	}
@@ -332,127 +235,5 @@ func TestEnvironmentStats(t *testing.T) {
 		if o != (client.ContainerStatsOptions{IncludePreviousSample: true}) {
 			t.Errorf("options = %+v, want one-shot with a previous sample", o)
 		}
-	}
-}
-
-// fakeClock is a settable Options.Now.
-type fakeClock struct {
-	mu  sync.Mutex
-	now time.Time
-}
-
-func (c *fakeClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-func (c *fakeClock) Add(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.now = c.now.Add(d)
-}
-
-// The summary samples the environment once per summaryFresh, shares a sampling between
-// concurrent callers and reuses what an overview sampled.
-func TestEnvironmentSummary(t *testing.T) {
-	t.Parallel()
-	clock := &fakeClock{now: time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)}
-	st := newStatsTestOpts(t, func(o *Options) { o.Now = clock.Now })
-	// Each sampling records the stats calls of the two containers that have stats.
-	samplings := func() int { return len(st.fake.StatsOptions()) / 2 }
-	get := func() usageSummary {
-		t.Helper()
-		rec := do(t, st.h, request{method: "GET", path: st.path("local", "/stats/summary"), cookie: st.cookie})
-		if rec.Code != http.StatusOK {
-			t.Fatalf("code = %d (%s)", rec.Code, rec.Body)
-		}
-		var got usageSummary
-		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-			t.Fatal(err)
-		}
-		return got
-	}
-
-	var wg sync.WaitGroup
-	for range 5 {
-		wg.Go(func() { get() })
-	}
-	wg.Wait()
-	want := usageSummary{SampledAt: clock.Now(), CPUPercent: 200, MemoryUsage: 512 << 20, Containers: 2}
-	if got := get(); got != want {
-		t.Errorf("summary = %+v, want %+v", got, want)
-	}
-	if n := samplings(); n != 1 {
-		t.Errorf("samplings = %d, want 1", n)
-	}
-
-	clock.Add(summaryFresh - time.Second)
-	get()
-	if n := samplings(); n != 1 {
-		t.Errorf("samplings while fresh = %d, want 1", n)
-	}
-
-	clock.Add(time.Second)
-	if got := get(); !got.SampledAt.Equal(clock.Now()) {
-		t.Errorf("sampled at %v, want a new sample at %v", got.SampledAt, clock.Now())
-	}
-	if n := samplings(); n != 2 {
-		t.Errorf("samplings when stale = %d, want 2", n)
-	}
-
-	clock.Add(summaryFresh)
-	if rec := do(t, st.h, request{method: "GET", path: st.path("local", "/stats"), cookie: st.cookie}); rec.Code != http.StatusOK {
-		t.Fatalf("overview code = %d (%s)", rec.Code, rec.Body)
-	}
-	if got := get(); !got.SampledAt.Equal(clock.Now()) {
-		t.Errorf("sampled at %v, want the overview's %v", got.SampledAt, clock.Now())
-	}
-	if n := samplings(); n != 3 {
-		t.Errorf("samplings after an overview = %d, want 3 (the overview's)", n)
-	}
-}
-
-// Summaries nobody refreshed for summaryKeep are dropped when another is stored.
-func TestEnvironmentSummaryEviction(t *testing.T) {
-	t.Parallel()
-	clock := &fakeClock{now: time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)}
-	s := &server{summaries: map[summaryKey]*summaryEntry{}, now: clock.Now}
-	s.storeSummary(summaryKey{env: 1}, environmentStats{})
-	clock.Add(summaryKeep)
-	s.storeSummary(summaryKey{env: 2}, environmentStats{})
-	if len(s.summaries) != 2 {
-		t.Fatalf("summaries = %d, want 2 before summaryKeep passed", len(s.summaries))
-	}
-	clock.Add(time.Second)
-	s.storeSummary(summaryKey{env: 2}, environmentStats{})
-	if _, ok := s.summaries[summaryKey{env: 1}]; ok || len(s.summaries) != 1 {
-		t.Errorf("summaries = %v, want only environment 2", s.summaries)
-	}
-}
-
-// A sampling cut short, or one that sampled none of the listed containers, is not kept.
-func TestIncomplete(t *testing.T) {
-	t.Parallel()
-	cancelled, cancel := context.WithCancel(context.Background())
-	cancel()
-	tests := []struct {
-		name  string
-		ctx   context.Context
-		stats environmentStats
-		bad   bool
-	}{
-		{name: "whole", ctx: context.Background(), stats: environmentStats{Containers: []containerUsage{{}}, Skipped: 1}},
-		{name: "no containers", ctx: context.Background(), stats: environmentStats{}},
-		{name: "none sampled", ctx: context.Background(), stats: environmentStats{Skipped: 2}, bad: true},
-		{name: "cut short", ctx: cancelled, stats: environmentStats{Containers: []containerUsage{{}}}, bad: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			if err := incomplete(tt.ctx, tt.stats); (err != nil) != tt.bad {
-				t.Errorf("incomplete = %v, want error %v", err, tt.bad)
-			}
-		})
 	}
 }

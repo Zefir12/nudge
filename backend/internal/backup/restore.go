@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"git.zefirlabs.net/zefir/nudge/backend/internal/metrics"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/secretbox"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/store"
 )
@@ -141,8 +142,12 @@ func Restore(ctx context.Context, r io.Reader, o RestoreOptions) (_ Manifest, _ 
 }
 
 // dataFiles are what a restore replaces in the data directory: the database with its WAL
-// files, and the key.
-var dataFiles = []string{store.FileName, store.FileName + "-wal", store.FileName + "-shm", secretbox.KeyFile}
+// files, and the key. The metrics database is not in backups but goes aside too: its
+// rows name the old database's environments.
+var dataFiles = []string{
+	store.FileName, store.FileName + "-wal", store.FileName + "-shm", secretbox.KeyFile,
+	metrics.FileName, metrics.FileName + "-wal", metrics.FileName + "-shm",
+}
 
 func hasData(dataDir string) (bool, error) {
 	for _, name := range dataFiles {
