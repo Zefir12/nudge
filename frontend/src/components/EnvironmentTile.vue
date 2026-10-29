@@ -1,18 +1,32 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted } from 'vue';
-import { RouterLink } from 'vue-router';
+import { RouterLink, useRouter } from 'vue-router';
 
-import { getEnvironment, getEnvironmentSummary, type Environment } from '../api/client';
+import {
+  getEnvironment,
+  getEnvironmentSummary,
+  listStacks,
+  listVolumes,
+  type Environment,
+} from '../api/client';
 import { useLoad } from '../composables/useLoad';
+import ActivityHeatmap from './ActivityHeatmap.vue';
 import ConnPlug from './ConnPlug.vue';
+import DiskUsage from './DiskUsage.vue';
+import GearButton from './GearButton.vue';
+import { mockActivity, mockAgentLink, mockCpuHistory, mockDisk, mockMemHistory } from './tileMock';
+import UsageGauges, { type Gauge } from './UsageGauges.vue';
+import UsageHistory from './UsageHistory.vue';
 import { formatBytes, formatDate } from '../format';
 
 // EnvironmentTile is one environment on the global dashboard; it opens that environment.
 // An online environment's Docker info fills in the counts once it arrives, and its usage
-// summary the CPU and memory bars.
+// summary the CPU and memory gauges. Disk, history and activity are mock data for now
+// (tileMock.ts says what each needs).
 const props = defineProps<{ env: Environment }>();
+const router = useRouter();
 
-// refreshMs is how often the bars are asked for again; the server samples at most every
+// refreshMs is how often the gauges are asked for again; the server samples at most every
 // 30 s, so asking more often would repeat the same numbers.
 const refreshMs = 30_000;
 
@@ -20,6 +34,8 @@ const id = computed(() => (props.env.online ? String(props.env.id) : ''));
 const { data, error } = useLoad(id, getEnvironment);
 const docker = computed(() => data.value?.docker);
 const { data: usage, reload: reloadUsage } = useLoad(id, getEnvironmentSummary);
+const { data: volumes } = useLoad(id, listVolumes);
+const { data: stacks } = useLoad(id, listStacks);
 
 let timer: ReturnType<typeof setInterval> | undefined;
 onMounted(() => {
@@ -29,20 +45,40 @@ onMounted(() => {
 });
 onUnmounted(() => clearInterval(timer));
 
-// bars are the usage against the host: CPU against every CPU, memory against all of it.
-const bars = computed(() => {
+// load is the usage against the host: CPU against every CPU, memory against all of it.
+const load = computed(() => {
   const d = docker.value;
   const u = usage.value;
   if (!d || !u || !d.ncpu || !d.mem_total) return null;
-  const cpu = Math.min(100, u.cpu_percent / d.ncpu);
-  const mem = Math.min(100, (u.memory_usage / d.mem_total) * 100);
   return {
-    cpu,
-    mem,
-    cpuLabel: `${cpu.toFixed(cpu < 10 ? 1 : 0)}%`,
+    cpu: Math.min(100, u.cpu_percent / d.ncpu),
+    mem: Math.min(100, (u.memory_usage / d.mem_total) * 100),
     memLabel: `${formatBytes(u.memory_usage)} / ${formatBytes(d.mem_total)}`,
   };
 });
+
+const diskUsed = mockDisk.parts.reduce((s, p) => s + p.bytes, 0);
+const gauges = computed<Gauge[]>(() => [
+  {
+    label: 'CPU',
+    percent: load.value?.cpu ?? null,
+    detail: docker.value ? `${docker.value.ncpu} cores` : '',
+    tone: 'cpu',
+  },
+  { label: 'Memory', percent: load.value?.mem ?? null, detail: load.value?.memLabel ?? '', tone: 'mem' },
+  // TODO: mock until the disk usage endpoint exists (see tileMock.ts).
+  {
+    label: 'Disk',
+    percent: (diskUsed / mockDisk.total) * 100,
+    detail: `${formatBytes(diskUsed)} / ${formatBytes(mockDisk.total)}`,
+    tone: 'disk',
+  },
+]);
+
+// The heatmap's rows end today.
+const days = Array.from({ length: 7 }, (_, i) =>
+  new Date(Date.now() - (6 - i) * 86_400_000).toLocaleDateString('en', { weekday: 'short' }),
+);
 
 const waiting = computed(() => props.env.kind === 'agent' && !props.env.agent?.enrolled);
 const address = computed(() =>
@@ -52,59 +88,98 @@ const address = computed(() =>
       ? 'agent not enrolled'
       : `agent ${props.env.agent?.version ?? ''}`,
 );
+// TODO: mock until the server reports the agent's address and round trip (tileMock.ts).
+const link = computed(() =>
+  props.env.kind === 'agent' && props.env.online ? mockAgentLink(props.env.id) : null,
+);
+const pingTone = computed(() => {
+  const ms = link.value?.pingMs ?? 0;
+  return ms < 50 ? 'good' : ms < 150 ? 'warn' : 'bad';
+});
+
 const status = computed(() => {
   if (props.env.online) return { label: 'Online', tone: 'good' };
   if (waiting.value) return { label: 'Waiting for agent', tone: 'warn' };
   return { label: 'Offline', tone: 'off' };
 });
+
+const to = computed(() => ({ name: 'env', params: { env: String(props.env.id) } }));
+
+// The whole tile opens the environment; the name is its link for the keyboard, and the
+// tile's own buttons and links do their own thing.
+function open(e: MouseEvent) {
+  if ((e.target as Element).closest('a, button')) return;
+  void router.push(to.value);
+}
 </script>
 
 <template>
-  <RouterLink class="tile" :to="{ name: 'env', params: { env: String(env.id) } }">
+  <article class="tile" @click="open">
     <div class="head">
       <ConnPlug :online="env.online" :waiting="waiting" />
       <div class="title">
-        <h2>{{ env.name }}</h2>
-        <span class="address">{{ address }}</span>
+        <h2>
+          <RouterLink :to="to">{{ env.name }}</RouterLink>
+        </h2>
+        <span class="address">
+          {{ address }}
+          <span
+            v-if="link"
+            class="link"
+            title="TODO: mock data until the server reports the agent's address and ping"
+          >
+            · {{ link.ip }} · <span class="ping" :class="pingTone">{{ link.pingMs }} ms</span>
+            <span class="mock-tag">mock</span>
+          </span>
+        </span>
       </div>
       <span class="chip">{{ env.kind === 'local' ? 'socket' : 'agent' }}</span>
+      <!-- TODO: open the environment's settings from here. -->
+      <GearButton label="Environment settings" class="gear" />
     </div>
 
     <template v-if="env.online">
-      <dl v-if="docker" class="stats">
-        <div>
-          <dt>Running</dt>
-          <dd>
-            {{ docker.containers_running }}<span class="of">/{{ docker.containers }}</span>
-          </dd>
+      <div v-if="docker" class="body">
+        <UsageGauges :gauges="gauges" />
+        <div class="col">
+          <dl class="stats">
+            <div>
+              <dt>Running</dt>
+              <dd>
+                {{ docker.containers_running }}<span class="of">/{{ docker.containers }}</span>
+              </dd>
+            </div>
+            <div>
+              <dt>Images</dt>
+              <dd>{{ docker.images }}</dd>
+            </div>
+            <div>
+              <dt>Volumes</dt>
+              <dd>{{ volumes?.length ?? '–' }}</dd>
+            </div>
+            <div>
+              <dt>Stacks</dt>
+              <dd>{{ stacks?.length ?? '–' }}</dd>
+            </div>
+          </dl>
+          <div class="mock" title="TODO: mock data until the server keeps usage history">
+            <UsageHistory
+              :cpu="mockCpuHistory"
+              :mem="mockMemHistory"
+              :cpu-now="load?.cpu ?? null"
+              :mem-now="load?.mem ?? null"
+            />
+          </div>
+          <div class="mock" title="TODO: mock data until there is a disk usage endpoint">
+            <DiskUsage :total="mockDisk.total" :parts="mockDisk.parts" :reclaimable="mockDisk.reclaimable" />
+          </div>
+          <div class="mock" title="TODO: mock data until the server counts events per hour">
+            <ActivityHeatmap :counts="mockActivity" :days="days" />
+          </div>
         </div>
-        <div>
-          <dt>Images</dt>
-          <dd>{{ docker.images }}</dd>
-        </div>
-        <div>
-          <dt>CPUs</dt>
-          <dd>{{ docker.ncpu }}</dd>
-        </div>
-        <div>
-          <dt>Memory</dt>
-          <dd>{{ formatBytes(docker.mem_total) }}</dd>
-        </div>
-      </dl>
-      <div v-if="bars" class="bars">
-        <label>
-          <span>CPU</span>
-          <meter class="cpu" min="0" max="100" :value="bars.cpu" />
-          <span class="val">{{ bars.cpuLabel }}</span>
-        </label>
-        <label>
-          <span>Memory</span>
-          <meter class="mem" min="0" max="100" :value="bars.mem" />
-          <span class="val">{{ bars.memLabel }}</span>
-        </label>
       </div>
-      <p v-if="!docker && error" class="note error">Could not read the Docker host: {{ error }}</p>
-      <p v-else-if="!docker" class="note muted">Loading…</p>
+      <p v-else-if="error" class="note error">Could not read the Docker host: {{ error }}</p>
+      <p v-else class="note muted">Loading…</p>
     </template>
     <div v-else class="away">
       <template v-if="waiting">
@@ -132,7 +207,7 @@ const status = computed(() => {
       </span>
       <span class="status" :class="status.tone">{{ status.label }}</span>
     </div>
-  </RouterLink>
+  </article>
 </template>
 
 <style scoped>
@@ -141,13 +216,14 @@ const status = computed(() => {
   flex-direction: column;
   gap: 1.4rem;
   min-height: 260px;
-  padding: 1.5rem;
+  padding: 1.4rem 1.5rem;
   color: var(--text);
-  text-decoration: none;
+  cursor: pointer;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow);
+  container-type: inline-size;
   transition:
     border-color 0.15s ease,
     transform 0.15s ease,
@@ -156,7 +232,6 @@ const status = computed(() => {
 
 .tile:hover {
   transition-duration: var(--hover-in);
-  color: var(--text);
   border-color: var(--accent-border);
   box-shadow:
     0 10px 32px rgb(0 0 0 / 50%),
@@ -166,14 +241,13 @@ const status = computed(() => {
 
 .head {
   display: flex;
-  align-items: flex-start;
-  gap: 0.9rem;
+  align-items: center;
+  gap: 0.8rem;
 }
 
 .head .plug {
   width: 22px;
   height: 22px;
-  margin-top: 0.3rem;
 }
 
 .title {
@@ -186,9 +260,18 @@ const status = computed(() => {
 h2 {
   margin: 0;
   overflow: hidden;
-  font-size: 1.5rem;
+  font-size: 1.4rem;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+h2 a {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.head .gear {
+  margin: -0.35rem -0.6rem -0.35rem -0.3rem;
 }
 
 .address,
@@ -198,65 +281,98 @@ h2 {
   color: var(--muted);
 }
 
+/* Gauges in a rail on the left, everything else beside them; stacked when narrow. */
+.body {
+  display: grid;
+  grid-template-columns: 8.5rem minmax(0, 1fr);
+  gap: 1.25rem;
+  align-items: start;
+}
+
+@container (max-width: 520px) {
+  .body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+  min-width: 0;
+}
+
 .stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0.75rem;
+  gap: 0.6rem;
   margin: 0;
 }
 
-.stats div {
-  display: flex;
-  flex-direction: column-reverse;
-}
-
 dt {
-  font-size: 12px;
+  font-size: 10.5px;
   color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
 }
 
 dd {
   margin: 0;
   font-family: var(--font-display);
-  font-size: 1.6rem;
+  font-size: 22px;
   font-weight: 600;
-  line-height: 1.15;
   white-space: nowrap;
 }
 
 .of {
-  font-size: 1rem;
+  font-size: 0.7em;
   color: var(--muted);
+}
+
+.ping.good {
+  color: var(--ok-text);
+}
+
+.ping.warn {
+  color: var(--warn);
+}
+
+.ping.bad {
+  color: var(--danger-text);
+}
+
+/* TODO: remove with tileMock.ts; marks the parts that show mock data. */
+.mock {
+  position: relative;
+}
+
+.mock-tag,
+.mock::after {
+  padding: 0 0.35rem;
+  font-family: var(--font);
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--warn);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  background: var(--warn-soft);
+  border-radius: var(--radius-sm);
+}
+
+.mock-tag {
+  margin-left: 0.3rem;
+  vertical-align: 1px;
+}
+
+.mock::after {
+  position: absolute;
+  top: -0.45rem;
+  right: 0;
+  content: 'mock';
 }
 
 .note {
   margin: 0;
-}
-
-.bars {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-
-.bars label {
-  display: grid;
-  grid-template-columns: 4.5rem minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 0.75rem;
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.bars meter {
-  width: 100%;
-  height: 0.5rem;
-}
-
-.bars .val {
-  font-family: var(--mono);
-  color: var(--text);
-  white-space: nowrap;
 }
 
 .away {
@@ -308,7 +424,7 @@ dd {
   background: rgb(255 255 255 / 5%);
 }
 
-@media (max-width: 480px) {
+@container (max-width: 420px) {
   .stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

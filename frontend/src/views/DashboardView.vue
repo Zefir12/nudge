@@ -213,6 +213,11 @@ h1 {
   margin-bottom: 1rem;
 }
 
+/* Side by side the grid gap spaces the cards; a stacking margin would push one down. */
+.panels > .card + .card {
+  margin-top: 0;
+}
+
 .card + .card {
   margin-top: 1rem;
 }

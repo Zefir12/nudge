@@ -228,11 +228,11 @@ describe('ContainersView', () => {
       },
     });
     const { wrapper } = await mountAt('/env/1/containers');
-    const stop = wrapper.findAll('tbody button').find((b) => b.text() === 'Stop');
+    const stop = wrapper.findAll('tbody button').find((b) => b.attributes('title') === 'Stop');
     await stop!.trigger('click');
     await flushPromises();
     expect(wrapper.find('tbody tr').text()).toContain('exited');
-    expect(wrapper.findAll('tbody button').map((b) => b.text())).toEqual(['Start', 'Remove']);
+    expect(wrapper.findAll('tbody button').map((b) => b.attributes('title'))).toEqual(['Start', 'Remove']);
   });
 
   it('reloads when the environment changes', async () => {

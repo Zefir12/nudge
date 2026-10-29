@@ -100,6 +100,7 @@ const shown = computed(() =>
                   :id="c.id"
                   :name="c.name"
                   :state="c.state"
+                  icons
                   @changed="reload"
                   @removed="reload"
                 />

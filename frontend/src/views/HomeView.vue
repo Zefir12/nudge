@@ -68,7 +68,7 @@ h1 {
 
 .tiles {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(420px, 100%), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(34rem, 100%), 1fr));
   gap: 1.25rem;
 }
 
