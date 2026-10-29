@@ -30,8 +30,7 @@ only the variables, never raw colours.
   images, volumes and stacks counts, CPU and memory over 24h (`UsageHistory`), disk use by
   kind (`DiskUsage`) and events per hour over 7 days (`ActivityHeatmap`, square cells). An
   agent's tile also shows its address (admins only) and last ping. The CPU and memory charts
-  are the stored 24h history; disk and activity are mock data (`tileMock.ts`, tagged "mock")
-  until the server reports them.
+  are the stored 24h history, the heatmap the counted container events (`activity`).
 - **Environment dashboard** (`/env/:env`): connection plug, name and kind chip, a mono host line,
   stat tiles, then Needs attention (updates available, stopped containers, untagged images) beside
   Recent events, live usage with the busiest containers, host details.

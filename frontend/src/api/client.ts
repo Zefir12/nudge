@@ -1096,6 +1096,19 @@ export interface EnvironmentDisk {
   disk: { total: number; free: number } | null;
 }
 
+// ActivityDay is one day's container events by hour of the day (24 counts).
+export interface ActivityDay {
+  date: string;
+  counts: number[];
+}
+
+// getEnvironmentActivity answers the environment's container events per hour (a user's:
+// of their containers) for the last days days in the browser's time zone, oldest first.
+export const getEnvironmentActivity = (env: string, days = 7) => {
+  const q = new URLSearchParams({ days: String(days), tz: Intl.DateTimeFormat().resolvedOptions().timeZone });
+  return apiFetch<{ days: ActivityDay[] }>(envPath(env, `/activity?${q}`));
+};
+
 // getEnvironmentDisk answers the environment's disk usage (admins only).
 export const getEnvironmentDisk = (env: string) => apiFetch<EnvironmentDisk>(envPath(env, '/disk'));
 

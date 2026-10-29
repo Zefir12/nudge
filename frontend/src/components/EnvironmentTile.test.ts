@@ -170,6 +170,50 @@ describe('EnvironmentTile', () => {
     expect(gaugeLabels(wrapper)[2]).toBe('Disk 40%');
   });
 
+  it('shows the counted events per hour in the heatmap', async () => {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const days = [
+      '2026-10-21',
+      '2026-10-22',
+      '2026-10-23',
+      '2026-10-24',
+      '2026-10-25',
+      '2026-10-26',
+      '2026-10-27',
+    ];
+    stubApi({
+      'GET /environments/3': { body: { ...base, docker } },
+      [`GET /environments/3/activity?${new URLSearchParams({ days: '7', tz })}`]: {
+        body: {
+          days: days.map((date, i) => ({
+            date,
+            counts: Array.from({ length: 24 }, (_, h) => (h === 13 ? i + 1 : 0)),
+          })),
+        },
+      },
+    });
+    const wrapper = await mountTile(base);
+    const heatmap = wrapper.find('.heatmap');
+    expect(heatmap.findAll('.days li').map((li) => li.text())).toEqual([
+      'Wed',
+      'Thu',
+      'Fri',
+      'Sat',
+      'Sun',
+      'Mon',
+      'Tue',
+    ]);
+    const cells = heatmap.findAll('rect');
+    expect(cells).toHaveLength(7 * 24);
+    expect(cells[6 * 24 + 13]?.find('title').text()).toBe('Tue 13:00, 7 events');
+  });
+
+  it('leaves the heatmap out until the counts arrive', async () => {
+    stubApi({ 'GET /environments/3': { body: { ...base, docker } } });
+    const wrapper = await mountTile(base);
+    expect(wrapper.find('.heatmap').exists()).toBe(false);
+  });
+
   it('does not ask other users for the disk', async () => {
     const fetch = stubApi({ 'GET /environments/3': { body: { ...base, docker } } });
     const other = await mountTile(base);

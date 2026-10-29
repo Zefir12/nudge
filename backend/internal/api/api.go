@@ -67,6 +67,8 @@ type Options struct {
 	Usage *usage.Service
 	// Metrics keeps the collected usage samples; nil answers no samples.
 	Metrics *metrics.Service
+	// Activity counts the container events per hour; nil answers 404.
+	Activity *metrics.Activity
 	// Backups writes backups; nil means none can be downloaded.
 	Backups *backup.Service
 	// Allowances are the users' allowances, checked before a user's container is
@@ -214,6 +216,7 @@ var userRoutes = map[string]bool{
 	"GET /api/v1/environments/{env}/stats/summary":            true,
 	"GET /api/v1/environments/{env}/metrics":                  true,
 	"GET /api/v1/environments/{env}/metrics/live":             true,
+	"GET /api/v1/environments/{env}/activity":                 true,
 	"GET /api/v1/environments/{env}/containers/{id}/metrics":  true,
 	// Their own allowance; setting one is for admins.
 	"GET /api/v1/environments/{env}/allowance":        true,
@@ -306,6 +309,7 @@ var routes = []route{
 	{"GET /api/v1/environments/{env}/stats/summary", (*server).environmentSummary},
 	{"GET /api/v1/environments/{env}/metrics", (*server).environmentMetrics},
 	{"GET /api/v1/environments/{env}/metrics/live", (*server).environmentLiveMetrics},
+	{"GET /api/v1/environments/{env}/activity", (*server).environmentActivity},
 	{"GET /api/v1/environments/{env}/containers/{id}/metrics", (*server).containerMetrics},
 	{"GET /api/v1/environments/{env}/allowance", (*server).getAllowance},
 	{"PUT /api/v1/environments/{env}/allowance", (*server).setAllowance},
@@ -374,7 +378,7 @@ var routes = []route{
 func New(opts Options) http.Handler {
 	s := &server{
 		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries, audit: opts.Audit, updates: opts.Updates,
-		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, deployments: opts.Deployments, usage: opts.Usage, metrics: opts.Metrics, backups: opts.Backups, allowances: opts.Allowances, tenant: opts.Tenant, deniedLabels: opts.DeniedLabels, registryClient: opts.RegistryClient,
+		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, deployments: opts.Deployments, usage: opts.Usage, metrics: opts.Metrics, activity: opts.Activity, backups: opts.Backups, allowances: opts.Allowances, tenant: opts.Tenant, deniedLabels: opts.DeniedLabels, registryClient: opts.RegistryClient,
 		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, oidc: opts.OIDC, oidcName: opts.OIDCName, noPasswordLogin: opts.NoPasswordLogin, recreating: map[string]bool{},
 		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{},
 		self: opts.Self, dockerHost: opts.DockerHost, agentSelf: opts.AgentSelf, diskSpace: opts.DiskSpace,
@@ -455,6 +459,7 @@ type server struct {
 	deployTokens *http.ServeMux
 	usage        *usage.Service
 	metrics      *metrics.Service
+	activity     *metrics.Activity
 	backups      *backup.Service
 	allowances   *allowances.Service
 	// tenant is the host-side hardening of users' containers (tenant_host.go).

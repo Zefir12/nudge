@@ -230,7 +230,7 @@ func (w *Watcher) startStream(ctx context.Context, env environments.Environment)
 		w.log.Warn("notify: environment client", "env", env.ID, "err", err)
 		return
 	}
-	sub, err := w.hub.SubscribeReserved(env.ID, c)
+	sub, err := w.hub.SubscribeReserved(env.ID, "notify", c)
 	if err != nil {
 		w.log.Warn("notify: watch events", "env", env.ID, "err", err)
 		return
