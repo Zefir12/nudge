@@ -507,6 +507,18 @@ history.
   samples every live interval while anyone watches; only the ticks on the background
   cadence (`nextSave`) are stored. The hub keeps each environment's latest tick for a
   new subscriber; its subscriptions end when the collector stops.
+- Activity (#168, activity.go): `Activity` counts container events per hour for the
+  tile's heatmap. Like the notify watcher it holds a reserved `events.Hub` subscription
+  per online environment (reserved slots are named, one per name, outside the client
+  limit), so counting costs no extra Docker stream. Exec events are skipped (health
+  checks fire them every interval). Counts are kept per owner key (`api.EventOwner`, the
+  same ownership rule, cached per container so a `destroy` still has its owner): unlike
+  the usage history these are counts, so per-owner rows are what a user's scope needs and
+  an admin's answer is their sum. They wait in memory (bounded; past the bound new owners
+  go to the unowned bucket, so totals stay right), are added to `activity_hours` every
+  hour and when `Run` stops, and reads add the waiting ones. Days are cut in the
+  client's time zone at read time; rows go with the rollups' retention. Events while the
+  server or a stream is down are not counted.
 
 ## Storage
 SQLite (`modernc.org/sqlite`, pure Go, so the image stays static) with numbered SQL

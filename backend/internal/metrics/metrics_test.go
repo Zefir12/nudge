@@ -422,6 +422,14 @@ func TestCleanup(t *testing.T) {
 	mt.insert(t, 1, old, ctr("a", "bob", 5, 50, 1))
 	mt.insert(t, 1, t0.Add(-10*24*time.Hour), ctr("a", "bob", 5, 50, 1))
 	mt.insert(t, 2, t0.Add(-50*time.Minute), ctr("z", "", 1, 1, 1))
+	for _, r := range []struct {
+		env  int64
+		hour time.Time
+	}{{1, old}, {1, t0.Add(-10 * 24 * time.Hour)}, {2, t0}} {
+		if _, err := mt.db.Exec(`INSERT INTO activity_hours (environment_id, hour, owner, count) VALUES (?, ?, '', 1)`, r.env, r.hour.Unix()); err != nil {
+			t.Fatal(err)
+		}
+	}
 	now := t0.Add(15 * time.Minute)
 	for range 2 {
 		if err := mt.svc.Cleanup(t.Context(), now, []int64{1}); err != nil {
@@ -457,6 +465,9 @@ func TestCleanup(t *testing.T) {
 			{"rollups past retention dropped", `SELECT COUNT(*) FROM environment_hours WHERE hour < ?`, t0.Add(-7 * 24 * time.Hour).Unix(), 0},
 			{"removed environment", `SELECT COUNT(*) FROM container_samples WHERE environment_id = 2 OR ? = 0`, 1, 0},
 			{"removed environment rollups", `SELECT COUNT(*) FROM environment_hours WHERE environment_id = 2 OR ? = 0`, 1, 0},
+			{"activity kept", `SELECT COUNT(*) FROM activity_hours WHERE hour = ?`, old.Unix(), 1},
+			{"activity past retention dropped", `SELECT COUNT(*) FROM activity_hours WHERE hour < ?`, t0.Add(-7 * 24 * time.Hour).Unix(), 0},
+			{"removed environment activity", `SELECT COUNT(*) FROM activity_hours WHERE environment_id = 2 OR ? = 0`, 1, 0},
 		}
 		for _, c := range checks {
 			if n := mt.count(t, c.query, c.arg); n != c.want {

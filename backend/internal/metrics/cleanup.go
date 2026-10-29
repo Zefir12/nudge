@@ -8,8 +8,8 @@ import (
 )
 
 // Cleanup rolls the finished hours of raw samples up into hourly rows, drops raw samples
-// older than RawRetention and rollups older than the retention, and drops every row of
-// an environment not in envs (removed ones), all in one transaction.
+// older than RawRetention and rollups and activity counts older than the retention, and
+// drops every row of an environment not in envs (removed ones), all in one transaction.
 //
 // Each run rolls up again from the newest hour already rolled up, so samples a tick
 // stored after the last run (a tick that straddled the hour) are counted; REPLACE
@@ -35,6 +35,7 @@ func (s *Service) Cleanup(ctx context.Context, now time.Time, envs []int64) erro
 		{"drop removed environments", `DELETE FROM environment_hours WHERE environment_id NOT IN (SELECT value FROM json_each(?))`, []any{string(ids)}},
 		{"drop removed environments", `DELETE FROM container_hours WHERE environment_id NOT IN (SELECT value FROM json_each(?))`, []any{string(ids)}},
 		{"drop removed environments", `DELETE FROM disk_usage WHERE environment_id NOT IN (SELECT value FROM json_each(?))`, []any{string(ids)}},
+		{"drop removed environments", `DELETE FROM activity_hours WHERE environment_id NOT IN (SELECT value FROM json_each(?))`, []any{string(ids)}},
 		{"roll up environments", `INSERT OR REPLACE INTO environment_hours
 			(environment_id, hour, cpu_avg, cpu_max, memory_avg, memory_max, network_rx, network_tx, block_read, block_write, containers, samples)
 			SELECT environment_id, time / 3600 * 3600 AS h, AVG(cpu), MAX(cpu), AVG(memory), MAX(memory),
@@ -53,6 +54,7 @@ func (s *Service) Cleanup(ctx context.Context, now time.Time, envs []int64) erro
 		{"drop raw samples", `DELETE FROM container_samples WHERE time < ?`, []any{now.Add(-RawRetention).Unix()}},
 		{"drop rollups", `DELETE FROM environment_hours WHERE hour < ?`, []any{now.Add(-s.retention).Unix()}},
 		{"drop rollups", `DELETE FROM container_hours WHERE hour < ?`, []any{now.Add(-s.retention).Unix()}},
+		{"drop activity", `DELETE FROM activity_hours WHERE hour < ?`, []any{now.Add(-s.retention).Unix()}},
 	}
 	for _, st := range stmts {
 		if _, err := tx.ExecContext(ctx, st.sql, st.args...); err != nil {

@@ -4,6 +4,7 @@ import { RouterLink, useRouter } from 'vue-router';
 
 import {
   getEnvironment,
+  getEnvironmentActivity,
   getEnvironmentDisk,
   getEnvironmentMetrics,
   getEnvironmentSummary,
@@ -21,7 +22,6 @@ import DiskUsage from './DiskUsage.vue';
 import EnvironmentSettings from './EnvironmentSettings.vue';
 import GearButton from './GearButton.vue';
 import SettingsDialog from './SettingsDialog.vue';
-import { mockActivity } from './tileMock';
 import UsageGauges, { type Gauge } from './UsageGauges.vue';
 import UsageHistory from './UsageHistory.vue';
 import { formatBytes, formatDate } from '../format';
@@ -29,16 +29,15 @@ import { formatBytes, formatDate } from '../format';
 // EnvironmentTile is one environment on the global dashboard; it opens that environment.
 // An online environment's Docker info fills in the counts once it arrives, its usage
 // summary the CPU and memory gauges, then its live usage stream keeps them current; its
-// stored usage history fills the 24h charts; an admin sees its disk usage. Activity is mock
-// data for now (tileMock.ts). An admin's gear opens
-// the environment's settings; changed fires after one of them ran, so the dashboard
-// reloads the list.
+// stored usage history fills the 24h charts and its counted events the heatmap; an admin
+// sees its disk usage. An admin's gear opens the environment's settings; changed fires
+// after one of them ran, so the dashboard reloads the list.
 const props = defineProps<{ env: Environment }>();
 const emit = defineEmits<{ changed: [] }>();
 const router = useRouter();
 const settingsOpen = ref(false);
 
-// refreshMs is how often the charts are asked for again; the server stores a sample every
+// refreshMs is how often the charts and the heatmap are asked for again; the server stores a sample every
 // minute by default, so asking more often would repeat the same numbers.
 const refreshMs = 60_000;
 // The charts: the last 24 hours in 15 minute buckets.
@@ -63,6 +62,7 @@ const usage = computed(() => {
 const { data: metrics, reload: reloadMetrics } = useLoad(id, (env) =>
   getEnvironmentMetrics(env, historyRange),
 );
+const { data: activityData, reload: reloadActivity } = useLoad(id, (env) => getEnvironmentActivity(env));
 const { data: volumes } = useLoad(id, listVolumes);
 // Stacks and the disk are for admins; other users would only get a 403.
 const adminId = computed(() => (currentUser.value?.admin ? id.value : ''));
@@ -74,6 +74,7 @@ onMounted(() => {
   timer = setInterval(() => {
     if (!id.value || document.visibilityState === 'hidden') return;
     void reloadMetrics();
+    void reloadActivity();
     if (adminId.value) void reloadDisk();
   }, refreshMs);
 });
@@ -163,10 +164,14 @@ const gauges = computed<Gauge[]>(() => [
   { label: 'Disk', percent: diskGauge.value.percent, detail: diskGauge.value.detail, tone: 'disk' },
 ]);
 
-// The heatmap's rows end today.
-const days = Array.from({ length: 7 }, (_, i) =>
-  new Date(Date.now() - (6 - i) * 86_400_000).toLocaleDateString('en', { weekday: 'short' }),
-);
+// activity is the heatmap's counts, oldest day first, and its rows' weekdays.
+const activity = computed(() => {
+  const days = activityData.value?.days ?? [];
+  return {
+    counts: days.flatMap((d) => d.counts),
+    days: days.map((d) => new Date(`${d.date}T00:00`).toLocaleDateString('en', { weekday: 'short' })),
+  };
+});
 
 const waiting = computed(() => props.env.kind === 'agent' && !props.env.agent?.enrolled);
 const address = computed(() =>
@@ -266,9 +271,7 @@ function open(e: MouseEvent) {
             :mem-now="load?.mem ?? null"
           />
           <DiskUsage v-if="disk" :total="disk.total" :parts="disk.parts" :reclaimable="disk.reclaimable" />
-          <div class="mock" title="TODO: mock data until the server counts events per hour">
-            <ActivityHeatmap :counts="mockActivity" :days="days" />
-          </div>
+          <ActivityHeatmap v-if="activity.days.length" :counts="activity.counts" :days="activity.days" />
         </div>
       </div>
       <p v-else-if="error" class="note error">Could not read the Docker host: {{ error }}</p>
@@ -439,30 +442,6 @@ dd {
 
 .ping.bad {
   color: var(--danger-text);
-}
-
-/* TODO: remove with tileMock.ts; marks the parts that show mock data. */
-.mock {
-  position: relative;
-}
-
-.mock::after {
-  padding: 0 0.35rem;
-  font-family: var(--font);
-  font-size: 9.5px;
-  font-weight: 600;
-  color: var(--warn);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  background: var(--warn-soft);
-  border-radius: var(--radius-sm);
-}
-
-.mock::after {
-  position: absolute;
-  top: -0.45rem;
-  right: 0;
-  content: 'mock';
 }
 
 .note {

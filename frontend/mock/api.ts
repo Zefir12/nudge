@@ -522,6 +522,22 @@ function history(env: number, url: URL, scale = 1) {
 }
 
 // withEnv resolves the environment and refuses offline ones, like the real server.
+// activity is an environment's container events per hour: busier in the day, a nightly
+// burst at 03:00, oldest day first.
+function activity(env: number, url: URL) {
+  const n = Number(url.searchParams.get('days') ?? 7);
+  return {
+    days: Array.from({ length: n }, (_, d) => ({
+      date: new Date(Date.now() - (n - 1 - d) * 86_400_000).toISOString().slice(0, 10),
+      counts: Array.from({ length: 24 }, (_, h) => {
+        const i = d * 24 + h + env;
+        const busy = h >= 8 && h <= 23 ? 0.35 : 0.08;
+        return Math.round(40 * Math.min(1, busy + 0.5 * Math.abs(Math.sin(i * 0.37)) * (h === 3 ? 2 : 1)));
+      }),
+    })),
+  };
+}
+
 const withEnv =
   (fn: (env: number, m: string[], body: unknown, url: URL) => unknown) =>
   (m: string[], body: unknown, url: URL) => {
@@ -835,6 +851,7 @@ const routes: Route[] = [
   ['POST', /^\/stacks\/check$/, () => ({ errors: [] })],
   ['GET', new RegExp(`^${envRe}/stats$`), withEnv((env) => usage(env))],
   ['GET', new RegExp(`^${envRe}/metrics$`), withEnv((env, _m, _b, url) => history(env, url))],
+  ['GET', new RegExp(`^${envRe}/activity$`), withEnv((env, _m, _b, url) => activity(env, url))],
   [
     'GET',
     new RegExp(`^${envRe}/containers/([^/]+)/metrics$`),

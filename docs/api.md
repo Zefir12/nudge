@@ -75,6 +75,7 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | GET | `/api/v1/environments/{env}/metrics` | user | the environment's usage history (a user's: of their containers); see Metrics |
 | GET | `/api/v1/environments/{env}/containers/{id}/metrics` | user | one container's usage history; see Metrics |
 | GET | `/api/v1/environments/{env}/metrics/live` | user | WebSocket: the environment's usage as each sample is taken (a user's: of their containers); see Metrics |
+| GET | `/api/v1/environments/{env}/activity` | user | container events per hour for the last days (a user's: of their containers); see Activity |
 | GET | `/api/v1/environments/{env}/allowance` | user | a user's allowance with what they use and what is left (admin: `?user=`); see Allowances |
 | PUT | `/api/v1/environments/{env}/allowance?user={id}` | session | set a user's allowance in the environment; see Allowances |
 | DELETE | `/api/v1/environments/{env}/allowance?user={id}` | session | remove it; `204`, `404` if there was none |
@@ -696,6 +697,25 @@ behind gets `{"error": "the usage stream fell behind; reconnect to resume"}` and
 disconnected; every client gets an error frame when collection of the environment stops
 (it was removed, or the server is shutting down). An offline environment simply sends
 nothing until it is back.
+
+### Activity
+The server counts every environment's container events per hour (all container events
+except `exec_*`, which health checks fire every interval) into `<data>/metrics.db`, kept
+as long as the usage rollups (`-metrics-retention`, 30 days). Events while the server is
+down, or an environment is offline, are not counted. A user's counts are only their own
+containers' events; the events of a container that was gone before the server first saw
+it (a `destroy` right after a restart) count only toward the environment's total.
+
+`GET /api/v1/environments/{env}/activity?days=7&tz=Europe/Warsaw` answers the last
+`days` days (1 to 30, 7 if absent) in the time zone `tz` (an IANA name, UTC if absent),
+oldest first, today last and still counting, 24 counts each, by local hour:
+
+```json
+{"days": [{"date": "2026-10-21", "counts": [0, 2, 0, …, 14]}, …]}
+```
+
+An hour is filed under the local hour it starts in: on the day the clocks go forward one
+hour stays 0, on the day they go back one hour holds two. `400` for a bad `days` or `tz`.
 
 ### Events
 `GET /api/v1/environments/{env}/events` upgrades to a WebSocket like the log stream (same

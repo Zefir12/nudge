@@ -258,6 +258,9 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 		LiveInterval: cfg.MetricsLiveInterval,
 	})
 	wg.Go(func() { metricsSvc.Run(cleanupCtx) })
+	// Counts the heatmap's events per hour; flushes to metrics.db when it stops.
+	activity := metrics.NewActivity(metrics.ActivityOptions{DB: metricsDB, Log: log, Envs: envs, Hub: hub, Owner: api.EventOwner})
+	wg.Go(func() { activity.Run(cleanupCtx) })
 	// Volume sizes go to nudge.db, the usage by kind to metrics.db.
 	usageSvc := diskusage.New(diskusage.Options{DB: st.DB(), Log: log, Envs: envs, Disk: metricsSvc})
 	if cfg.UsageInterval > 0 {
@@ -295,6 +298,7 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 			Deployments:  deps,
 			Usage:        usageSvc,
 			Metrics:      metricsSvc,
+			Activity:     activity,
 			Backups:      backups,
 			Allowances:   allowances.New(allowances.Options{DB: st.DB()}),
 			Tenant:       api.TenantHosting{CgroupParent: cfg.Tenant.CgroupParent, Runtime: cfg.Tenant.Runtime, StorageSize: cfg.Tenant.StorageSize},
