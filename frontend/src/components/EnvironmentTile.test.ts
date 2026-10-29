@@ -4,7 +4,8 @@ import { createMemoryHistory } from 'vue-router';
 
 import type { Environment } from '../api/client';
 import { createAppRouter } from '../router';
-import { stubApi } from '../test-utils';
+import { currentUser } from '../session';
+import { admin, stubApi } from '../test-utils';
 import EnvironmentTile from './EnvironmentTile.vue';
 
 const base: Environment = {
@@ -18,14 +19,18 @@ const base: Environment = {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  currentUser.value = null;
 });
 
 async function mountTile(env: Environment) {
   const router = createAppRouter(createMemoryHistory());
   const wrapper = mount(EnvironmentTile, { props: { env }, global: { plugins: [router] } });
   await flushPromises();
-  return wrapper;
+  return Object.assign(wrapper, { router });
 }
+
+const gaugeLabels = (wrapper: Awaited<ReturnType<typeof mountTile>>) =>
+  wrapper.findAll('.gauge svg[role="img"]').map((g) => g.attributes('aria-label'));
 
 const docker = {
   version: '27.3.1',
@@ -43,19 +48,48 @@ describe('EnvironmentTile', () => {
     const env = { ...base, agent: { enrolled: true, version: '0.9.0' } };
     stubApi({ 'GET /environments/3': { body: { ...env, docker } } });
     const wrapper = await mountTile(env);
-    expect(wrapper.find('a').attributes('href')).toBe('/env/3');
-    expect(wrapper.find('.address').text()).toBe('agent 0.9.0');
-    expect(wrapper.find('.lamp').classes()).toContain('on');
+    expect(wrapper.find('h2 a').attributes('href')).toBe('/env/3');
+    expect(wrapper.find('.address').text()).toMatch(/^agent 0\.9\.0/);
+    expect(wrapper.find('.plug').classes()).toContain('on');
     expect(wrapper.find('.stats').text()).toContain('3/5');
     expect(wrapper.find('.stats').text()).toContain('9');
     expect(wrapper.find('.engine').text()).toBe('Docker 27.3.1 · linux/aarch64');
     expect(wrapper.find('.status').text()).toBe('Online');
-    // The summary is not stubbed (599): no bars, the rest still shows.
-    expect(wrapper.find('.bars').exists()).toBe(false);
+    // The summary, volumes and stacks are not stubbed (599): no load, dashes for the counts.
+    expect(gaugeLabels(wrapper).slice(0, 2)).toEqual(['CPU unknown', 'Memory unknown']);
+    expect(wrapper.find('.stats').text()).toContain('Volumes–');
+  });
+
+  it('counts volumes, and stacks for admins', async () => {
+    currentUser.value = admin;
+    stubApi({
+      'GET /environments/3': { body: { ...base, docker } },
+      'GET /environments/3/volumes': { body: [{ name: 'a' }, { name: 'b' }] },
+      'GET /environments/3/stacks': { body: [{ name: 'web' }] },
+    });
+    const wrapper = await mountTile(base);
+    const stats = wrapper.findAll('.stats dd').map((d) => d.text());
+    expect(stats).toEqual(['3/5', '9', '2', '1']);
+  });
+
+  it('does not ask for stacks for other users', async () => {
+    const fetch = stubApi({ 'GET /environments/3': { body: { ...base, docker } } });
+    await mountTile(base);
+    expect(fetch.mock.calls.map(([url]) => url)).not.toContain('/api/v1/environments/3/stacks');
+  });
+
+  it('opens the environment from anywhere on the tile but the settings button', async () => {
+    stubApi({ 'GET /environments/3': { body: { ...base, docker } } });
+    const wrapper = await mountTile(base);
+    const push = vi.spyOn(wrapper.router, 'push');
+    await wrapper.find('.gear').trigger('click');
+    expect(push).not.toHaveBeenCalled();
+    await wrapper.find('.stats').trigger('click');
+    expect(push).toHaveBeenCalledWith({ name: 'env', params: { env: '3' } });
   });
 
   // CPU is against every CPU (200% of one CPU on 4 is half), memory against the host's.
-  it('shows usage bars from the summary', async () => {
+  it('shows load gauges from the summary', async () => {
     stubApi({
       'GET /environments/3': { body: { ...base, docker } },
       'GET /environments/3/stats/summary': {
@@ -63,11 +97,10 @@ describe('EnvironmentTile', () => {
       },
     });
     const wrapper = await mountTile(base);
-    const meters = wrapper.findAll('.bars meter').map((m) => (m.element as HTMLMeterElement).value);
-    expect(meters).toEqual([50, 25]);
-    const vals = wrapper.findAll('.bars .val').map((v) => v.text());
-    expect(vals[0]).toBe('50%');
-    expect(vals[1]).toContain('/');
+    expect(gaugeLabels(wrapper).slice(0, 2)).toEqual(['CPU 50%', 'Memory 25%']);
+    const details = wrapper.findAll('.gauge .detail').map((d) => d.text());
+    expect(details[0]).toBe('4 cores');
+    expect(details[1]).toContain('/');
   });
 
   it('says when the Docker host cannot be read', async () => {
@@ -102,7 +135,7 @@ describe('EnvironmentTile', () => {
     expect(wrapper.find('.away').text()).toContain(text);
     expect(wrapper.find('.status').text()).toBe(status);
     expect(wrapper.find('.stats').exists()).toBe(false);
-    expect(wrapper.find('.bars').exists()).toBe(false);
+    expect(wrapper.find('.gauges').exists()).toBe(false);
     expect(fetch.mock.calls.map(([url]) => url)).not.toContain('/api/v1/environments/3');
   });
 });

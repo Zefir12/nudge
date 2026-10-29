@@ -59,7 +59,7 @@ describe('HomeView', () => {
     expect(wrapper.text()).toContain('2 hosts · 1 online');
     const tiles = wrapper.findAll('.tile');
     expect(tiles.map((t) => t.find('h2').text())).toEqual(['local', 'nas']);
-    expect(tiles[0]?.attributes('href')).toBe('/env/1');
+    expect(tiles[0]?.find('h2 a').attributes('href')).toBe('/env/1');
     expect(tiles[0]?.text()).toContain('14/16');
     expect(tiles[1]?.text()).toContain('Agent not connected');
   });

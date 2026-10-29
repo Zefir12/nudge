@@ -4,6 +4,7 @@ import { RouterLink } from 'vue-router';
 
 import { getAllowance, getEnvironment, listNetworks, listVolumes } from '../api/client';
 import AllowanceUsage from '../components/AllowanceUsage.vue';
+import ConnPlug from '../components/ConnPlug.vue';
 import EnvironmentUsage from '../components/EnvironmentUsage.vue';
 import GearButton from '../components/GearButton.vue';
 import KeyValues from '../components/KeyValues.vue';
@@ -37,7 +38,7 @@ const { data, error, reload } = useLoad(env, async (id) => {
 
 <template>
   <div class="head">
-    <span v-if="data" class="lamp" :class="{ on: data.detail.online }" aria-hidden="true" />
+    <ConnPlug v-if="data" :online="data.detail.online" />
     <h1>{{ data?.detail.name ?? 'Dashboard' }}</h1>
     <span v-if="data" class="chip">{{ data.detail.kind === 'local' ? 'socket' : 'agent' }}</span>
     <GearButton
@@ -151,9 +152,9 @@ const { data, error, reload } = useLoad(env, async (id) => {
   margin-left: auto;
 }
 
-.head .lamp {
-  width: 10px;
-  height: 10px;
+.head .plug {
+  width: 22px;
+  height: 22px;
 }
 
 h1 {
@@ -188,6 +189,7 @@ h1 {
 }
 
 .count:hover {
+  transition-duration: var(--hover-in);
   color: var(--text);
   border-color: var(--accent-border);
 }
@@ -209,6 +211,11 @@ h1 {
   grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
   gap: 1rem;
   margin-bottom: 1rem;
+}
+
+/* Side by side the grid gap spaces the cards; a stacking margin would push one down. */
+.panels > .card + .card {
+  margin-top: 0;
 }
 
 .card + .card {

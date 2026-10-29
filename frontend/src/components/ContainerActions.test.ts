@@ -45,6 +45,21 @@ describe('ContainerActions', () => {
     expect(wrapper.emitted('changed')).toHaveLength(1);
   });
 
+  // In a table row the actions are icons, named by their title for the pointer and
+  // their aria-label for screen readers.
+  it.each([
+    { state: 'running', want: ['Stop', 'Restart', 'Kill', 'Remove'] },
+    { state: 'exited', want: ['Start', 'Remove'] },
+  ])('shows the actions of a $state container as icons', ({ state, want }) => {
+    const wrapper = mount(ContainerActions, {
+      props: { env: '1', id: 'abc123', name: 'web', state, icons: true },
+    });
+    const buttons = wrapper.findAll('button');
+    expect(buttons.map((b) => b.attributes('title'))).toEqual(want);
+    expect(buttons.map((b) => b.attributes('aria-label'))).toEqual(want);
+    expect(buttons.every((b) => b.classes('icon') && b.text() === '')).toBe(true);
+  });
+
   it('kills only after confirming', async () => {
     const fetch = stubApi({ 'POST /environments/1/containers/abc123/kill': { status: 204 } });
     const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);

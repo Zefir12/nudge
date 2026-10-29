@@ -17,11 +17,17 @@ only the variables, never raw colours.
     environment's name, `envIcon.ts`), then Dashboard, Environments, Registries,
     Notifications, API tokens, Audit log.
   - Per-environment part below a divider: headed by the open (or last used) environment's
-    name and lamp; Overview, Stacks, Containers, Images, Volumes, Networks, Events. Pages that
+    name and connection plug; Overview, Stacks, Containers, Images, Volumes, Networks, Events. Pages that
     belong to one environment go here; pages that span environments go in the global part.
-- **Global dashboard** (`/`): one large tile per environment (`EnvironmentTile`), plus an
-  "Add environment" tile for admins. A tile opens `/env/:env`.
-- **Environment dashboard** (`/env/:env`): lamp, name and kind chip, a mono host line,
+- **Global dashboard** (`/`): one large tile per environment (`EnvironmentTile`), two per row,
+  plus an "Add environment" tile for admins. A tile opens `/env/:env` (its name is the link;
+  a click anywhere else on it opens it too) and has a settings gear top right. Inside: CPU,
+  memory and disk gauges in a rail on the left (`UsageGauges`); beside them the running,
+  images, volumes and stacks counts, CPU and memory over 24h (`UsageHistory`), disk use by
+  kind (`DiskUsage`) and events per hour over 7 days (`ActivityHeatmap`, square cells). An
+  agent's tile also shows its address and ping. Disk, history, activity, address and ping are
+  mock data (`tileMock.ts`, tagged "mock") until the server reports them.
+- **Environment dashboard** (`/env/:env`): connection plug, name and kind chip, a mono host line,
   stat tiles, then Needs attention (updates available, stopped containers, untagged images) beside
   Recent events, live usage with the busiest containers, host details.
 - At 720px and below the sidebar stacks above the content and its links wrap.
@@ -38,9 +44,9 @@ only the variables, never raw colours.
 | `--faint` | `#5c5c62` | off lamps only, never text |
 | `--accent` | `#ff7a30` | accent: active nav, lamps of the brand, focus |
 | `--accent-strong` | `#ff9152` | accent text on dark (links, active nav, eyebrows) |
-| `--accent-deep` | `#ea580c` | end of the primary button gradient |
 | `--accent-hover` | `#ffb07f` | link hover |
 | `--accent-soft` / `--accent-border` | accent at 14% / 35% | selected backgrounds / accent borders, hover |
+| `--series-2`, `--series-3` | `#9aa4b8`, `#a51d3b` | chart series after the accent: memory (grey-blue), disk (crimson) |
 | `--ok`, `--danger`, `--warn` | `#56d364`, `#f0605a`, `#d4a72c` | lamps; `*-text` and `*-soft` (`--warn-soft`) for badges |
 | `--radius-sm` / `--radius` / `--radius-lg` | 2 / 3 / 6px | tags / controls / panels |
 | `--shadow` | `0 4px 24px rgb(0 0 0 / 40%)` | panels |
@@ -57,19 +63,28 @@ variable weight. No requests to font CDNs.
   table headers and nav groups in `--muted`).
 
 ## Components
-- **Buttons**: default is a faint fill with `--border-strong`; `.primary` is the orange
-  gradient with an inner highlight and a soft orange shadow; `.danger` is red text on
+- **Buttons**: default is a faint fill with `--border-strong`; `.primary` is an orange
+  outline with orange text that fills with `--accent-soft` and glows orange on hover; `.danger` is red text on
   `--danger-soft`. 3px radius, compact padding (0.25rem 0.7rem).
-- **Fields** (input, select, textarea): compact padding (0.25rem 0.5rem); no focus ring,
+- **Fields** (input, select, textarea): sunk into the card (`rgb(0 0 0 / 30%)` background),
+  compact padding (0.25rem 0.5rem); no focus ring,
   the border turns `--accent-border`. Selects draw their own chevron, inset as far from the
   right as from top and bottom; where `appearance: base-select` is supported the open list
   is themed (orange border, `--accent-soft` highlight).
-- **Tables**: cells centred vertically.
+- **Tables**: cells centred vertically. Row actions are icon buttons (`ContainerActions`
+  with `icons`), each in its own colour (start green, stop amber, restart orange, kill red;
+  remove grey until hovered), named by their tooltip.
+- **Scrollbars**: a thin rounded grey thumb on no track, everywhere.
 - **Settings** (`SettingsDialog`): native `<dialog>` modal, `--surface-solid`, blurred dark
   backdrop; opened by a `GearButton` (top bar for the server, an agent environment's
   dashboard header for its agent).
-- **Lamps** (`.lamp`, `.on`, `.bad`, `.warn`): 8px dots that glow in their colour; off is `--faint`.
+- **Connection plug** (`ConnPlug`): an environment's connection; plugged in and glowing
+  `--accent` when online, pulled apart and `--faint` when not (`--warn` while waiting for its agent).
+- **Lamps** (`.lamp`, `.bad`, `.warn`): 8px dots that glow in their colour; off is `--faint`.
+- **Hover**: effects come in fast (`--hover-in`, 0.04s) and fade out at 0.12–0.15s.
 - **Chips** (`.chip`): uppercase pill naming a kind (socket, agent).
 - **Status badges**: 2px radius, tinted background (`--ok-soft`, `--accent-soft`, …).
 - **Tiles and cards**: glass panel, 6px radius; links lift 2px and take `--accent-border` on hover.
 - **Icons**: inline 24×24 stroke SVG, 1.8 stroke, `currentColor`; no icon font or emoji.
+  Sidebar icons turn orange and grow slightly on hover. CPU, memory and disk have their own
+  icons (`usageIcons.ts`) in their series colour.
