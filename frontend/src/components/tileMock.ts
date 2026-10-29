@@ -28,13 +28,6 @@ export const mockDisk = {
   reclaimable: '7.9 GB reclaimable: 11 unused images, 4 dangling volumes',
 };
 
-// TODO: an agent's address and round trip need the server to keep the address its tunnel
-// came from (honouring the trusted proxy headers) and to time a yamux Ping now and then,
-// both answered on the environment.
-export function mockAgentLink(env: number) {
-  return { ip: `192.168.1.${20 + env}`, pingMs: [12, 48, 135][env % 3] };
-}
-
 // TODO: the heatmap needs the server to count Docker events per hour (only live events
 // stream today) and an endpoint for the last 7 days, oldest day first, 24 hours each.
 export const mockActivity = Array.from({ length: 7 * 24 }, (_, i) => {

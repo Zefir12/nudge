@@ -69,7 +69,7 @@ func newEnrolled(t *testing.T, s *Service) (Environment, Credentials) {
 // serve runs ServeAgent in the background; the channel gets its result.
 func serve(s *Service, env Environment, agentID string, sess *tunnel.Session) <-chan error {
 	errc := make(chan error, 1)
-	go func() { errc <- s.ServeAgent(context.Background(), env, agentID, sess) }()
+	go func() { errc <- s.ServeAgent(context.Background(), env, agentID, "192.0.2.7", sess) }()
 	return errc
 }
 
@@ -201,5 +201,55 @@ func TestCloseDropsSessions(t *testing.T) {
 	late, _ := newSession(t, pingOK)
 	if err := wait(t, serve(s, env, creds.AgentID, late)); !errors.Is(err, ErrClosed) {
 		t.Errorf("ServeAgent after Close = %v, want ErrClosed", err)
+	}
+}
+
+func TestServeAgentLink(t *testing.T) {
+	t.Parallel()
+	s, clock, _ := newTestService(t, &dockertest.Fake{})
+	waits := make(chan time.Duration, 10)
+	ticks := make(chan time.Time)
+	s.after = func(d time.Duration) <-chan time.Time {
+		waits <- d
+		return ticks
+	}
+	env, creds := newEnrolled(t, s)
+	if _, ok := s.Link(env.ID); ok {
+		t.Fatal("link without a tunnel")
+	}
+	waitPing := func() {
+		t.Helper()
+		select {
+		case d := <-waits:
+			if d != pingInterval {
+				t.Errorf("waits %v between pings, want %v", d, pingInterval)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("tunnel not pinged")
+		}
+	}
+
+	sess, _ := newSession(t, pingOK)
+	errc := serve(s, env, creds.AgentID, sess)
+	// The first ping goes out at connect.
+	waitPing()
+	link, ok := s.Link(env.ID)
+	if !ok || link.Addr != "192.0.2.7" || link.RTT <= 0 || !link.PingedAt.Equal(clock.Now()) {
+		t.Errorf("after connect: link %+v, %v; want 192.0.2.7 with a round trip at %v", link, ok, clock.Now())
+	}
+
+	clock.Advance(pingInterval)
+	ticks <- clock.Now()
+	waitPing()
+	if link, _ := s.Link(env.ID); !link.PingedAt.Equal(clock.Now()) {
+		t.Errorf("after a tick: pinged at %v, want %v", link.PingedAt, clock.Now())
+	}
+
+	_ = sess.Close()
+	if err := wait(t, errc); err != nil {
+		t.Fatalf("ServeAgent = %v", err)
+	}
+	if link, ok := s.Link(env.ID); ok {
+		t.Errorf("link after disconnect: %+v", link)
 	}
 }

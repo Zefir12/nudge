@@ -392,8 +392,9 @@ export interface Environment {
   online: boolean;
   created_at: string;
   last_seen_at: string | null;
-  // Only on agent environments.
-  agent?: { enrolled: boolean; version: string };
+  // Only on agent environments. While its tunnel is up: the address it came from (admins
+  // only) and the round trip of its last ping, in ms.
+  agent?: { enrolled: boolean; version: string; address?: string; rtt_ms?: number };
 }
 
 export interface JoinToken {
