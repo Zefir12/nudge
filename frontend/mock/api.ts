@@ -2,7 +2,9 @@
 // from in-memory fake data, so the UI can be previewed without a nudge server or Docker.
 // Dev only; never part of a build. Writes are accepted and mostly change nothing, except
 // container start/stop/restart/kill, which flip the container's state.
+import { createHash } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { Duplex } from 'node:stream';
 import type { Plugin } from 'vite';
 
 const now = Date.now();
@@ -921,10 +923,66 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
   }
 }
 
+// liveRe is the live usage WebSocket, the one stream the mock serves.
+const liveRe = new RegExp(`^/api/v1${envRe}/metrics/live$`);
+
+// wsFrame is one unmasked text frame, as a server sends it.
+function wsFrame(text: string): Buffer {
+  const data = Buffer.from(text);
+  let head: Buffer;
+  if (data.length < 126) {
+    head = Buffer.from([0x81, data.length]);
+  } else if (data.length < 65536) {
+    head = Buffer.from([0x81, 126, 0, 0]);
+    head.writeUInt16BE(data.length, 2);
+  } else {
+    head = Buffer.alloc(10);
+    head[0] = 0x81;
+    head[1] = 127;
+    head.writeBigUInt64BE(BigInt(data.length), 2);
+  }
+  return Buffer.concat([head, data]);
+}
+
+// streamLive answers the live usage WebSocket: a sample now and then every 5 s, like the
+// server while an environment is watched, until the browser goes away. What the browser
+// sends (pings, its close) is ignored.
+function streamLive(req: IncomingMessage, socket: Duplex, env: number) {
+  const key = req.headers['sec-websocket-key'];
+  if (typeof key !== 'string') return socket.destroy();
+  const accept = createHash('sha1').update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest('base64');
+  socket.write(
+    `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
+  );
+  const send = () => socket.write(wsFrame(JSON.stringify({ time: new Date().toISOString(), ...usage(env) })));
+  send();
+  const timer = setInterval(send, 5000);
+  const stop = () => {
+    clearInterval(timer);
+    socket.destroy();
+  };
+  socket.on('data', (d: Buffer) => {
+    // A close frame (opcode 8) ends the stream.
+    if ((d[0]! & 0x0f) === 8) stop();
+  });
+  socket.on('close', stop);
+  socket.on('error', stop);
+}
+
 export function mockApi(): Plugin {
   return {
     name: 'nudge-mock-api',
     configureServer(server) {
+      server.httpServer?.on('upgrade', (req: IncomingMessage, socket: Duplex) => {
+        const m = new URL(req.url ?? '/', 'http://mock').pathname.match(liveRe);
+        if (!m) return; // Vite's own HMR socket, among others
+        const env = envOf(decodeURIComponent(m[1] ?? ''));
+        if (!env || !env.online) {
+          socket.end('HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n');
+          return;
+        }
+        streamLive(req, socket, env.id);
+      });
       server.middlewares.use('/api/v1', async (req, res) => {
         const url = new URL(req.url ?? '/', 'http://mock');
         const method = req.method ?? 'GET';

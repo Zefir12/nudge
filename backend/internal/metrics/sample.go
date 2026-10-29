@@ -119,8 +119,8 @@ func SampleOne(ctx context.Context, c docker.Client, id string) (Sample, error) 
 
 // Container is one listed container's sample.
 type Container struct {
-	ID   string
-	Name string
+	ID   string `json:"id"`
+	Name string `json:"name"`
 	Sample
 }
 

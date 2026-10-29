@@ -74,6 +74,7 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | GET | `/api/v1/environments/{env}/stats/summary` | user | the environment's CPU and memory totals from the latest collection; see Stats |
 | GET | `/api/v1/environments/{env}/metrics` | user | the environment's usage history (a user's: of their containers); see Metrics |
 | GET | `/api/v1/environments/{env}/containers/{id}/metrics` | user | one container's usage history; see Metrics |
+| GET | `/api/v1/environments/{env}/metrics/live` | user | WebSocket: the environment's usage as each sample is taken (a user's: of their containers); see Metrics |
 | GET | `/api/v1/environments/{env}/allowance` | user | a user's allowance with what they use and what is left (admin: `?user=`); see Allowances |
 | PUT | `/api/v1/environments/{env}/allowance?user={id}` | session | set a user's allowance in the environment; see Allowances |
 | DELETE | `/api/v1/environments/{env}/allowance?user={id}` | session | remove it; `204`, `404` if there was none |
@@ -669,6 +670,30 @@ each `time` the start of its bucket. CPU (a percentage of one CPU) and memory ar
 over the bucket and at their maximum (`cpu_max`, `memory_max`; for a user's rollups the
 sum of their containers' maximums, an upper bound). Network and block I/O are byte
 counters since each container started, at their largest in the bucket.
+
+`GET /api/v1/environments/{env}/metrics/live` upgrades to a WebSocket like the event
+stream (same auth, keep-alive pings) and sends a frame per sample of the environment:
+every container for an admin, their own for a user. While at least one client watches,
+the environment is sampled every `-metrics-live-interval` (5 s) instead of every
+`-metrics-interval`; those extra samples are only streamed, not stored, so the history
+keeps its cadence. The latest sample, if it is recent, comes at once. A frame is the
+environment overview's shape with the sample's time, containers sorted by name:
+
+```json
+{"time": "2026-10-27T12:00:05Z", "containers": [{"id": "3f2a…", "name": "web",
+  "time": "2026-10-27T12:00:04Z", "cpu_percent": 12.5, "memory_usage": 268435456,
+  "memory_limit": 1073741824, "memory_percent": 25, "network_rx": 1024, "network_tx": 256,
+  "block_read": 8192, "block_write": 512, "pids": 7}], "skipped": 0,
+  "total": {"cpu_percent": 12.5, "memory_usage": 268435456, "network_rx": 1024,
+  "network_tx": 256, "block_read": 8192, "block_write": 512}}
+```
+
+Before the upgrade: `404` when collection is off (`-metrics-interval 0`) or for an
+unknown environment, `503` past 100 live streams of one environment. A client that falls
+behind gets `{"error": "the usage stream fell behind; reconnect to resume"}` and is
+disconnected; every client gets an error frame when collection of the environment stops
+(it was removed, or the server is shutting down). An offline environment simply sends
+nothing until it is back.
 
 ### Events
 `GET /api/v1/environments/{env}/events` upgrades to a WebSocket like the log stream (same

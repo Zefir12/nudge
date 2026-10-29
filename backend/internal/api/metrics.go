@@ -4,7 +4,11 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sync"
 	"time"
+
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/metrics"
@@ -13,8 +17,12 @@ import (
 // defaultSince is how far back a history goes when the request doesn't say.
 const defaultSince = 24 * time.Hour
 
-// errNoSample answers a summary without a recent sample.
-const errNoSample = "no recent usage sample"
+const (
+	// errNoSample answers a summary without a recent sample.
+	errNoSample = "no recent usage sample"
+	// errCollectionOff answers a live stream while collection is off.
+	errCollectionOff = "usage collection is off"
+)
 
 // environmentSummary answers the environment's usage totals (a user's: of their
 // containers) from the collector's latest tick; 404 when there is none from the last
@@ -140,4 +148,71 @@ func (s *server) answerHistory(w http.ResponseWriter, r *http.Request, q metrics
 		return
 	}
 	s.writeJSON(w, http.StatusOK, h)
+}
+
+// environmentLiveMetrics streams the environment's usage over a WebSocket, one frame per
+// collector tick: every container for an admin, their own containers for a user. While
+// anyone watches, the environment is sampled every live interval. The latest tick, if
+// recent, comes at once. A client that falls behind is sent an error frame and
+// disconnected, and so is every client when collection of the environment stops.
+func (s *server) environmentLiveMetrics(w http.ResponseWriter, r *http.Request) {
+	env, _, ok := s.environment(w, r)
+	if !ok {
+		return
+	}
+	sc, err := s.scopeOf(r.Context())
+	if err != nil {
+		s.internalError(w, "live metrics", err)
+		return
+	}
+	if s.metrics == nil {
+		s.writeError(w, http.StatusNotFound, errCollectionOff)
+		return
+	}
+	sub, err := s.metrics.SubscribeLive(env.ID, metrics.Scope{All: sc.all, Owner: sc.key})
+	switch {
+	case errors.Is(err, metrics.ErrOff):
+		s.writeError(w, http.StatusNotFound, errCollectionOff)
+		return
+	case errors.Is(err, metrics.ErrTooMany):
+		s.writeError(w, http.StatusServiceUnavailable, "too many live usage streams open for this environment")
+		return
+	case err != nil:
+		s.writeError(w, http.StatusServiceUnavailable, "usage collection is stopping")
+		return
+	}
+	defer sub.Close()
+
+	ws, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		s.log.Warn("live metrics: websocket upgrade", "env", env.ID, "err", err)
+		return
+	}
+	defer func() { _ = ws.CloseNow() }()
+	ctx, cancel := context.WithCancel(ws.CloseRead(r.Context()))
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	defer cancel()
+	wg.Go(func() { keepAlive(ctx, cancel, ws) })
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case l, ok := <-sub.C():
+			if !ok {
+				msg := "usage collection of the environment stopped"
+				if errors.Is(sub.Err(), metrics.ErrSlow) {
+					msg = "the usage stream fell behind; reconnect to resume"
+				}
+				if wsjson.Write(ctx, ws, streamEnd{Error: msg}) == nil {
+					_ = ws.Close(websocket.StatusNormalClosure, "")
+				}
+				return
+			}
+			if wsjson.Write(ctx, ws, l) != nil {
+				return
+			}
+		}
+	}
 }

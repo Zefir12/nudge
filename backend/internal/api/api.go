@@ -209,6 +209,7 @@ var userRoutes = map[string]bool{
 	"GET /api/v1/environments/{env}/stats":                    true,
 	"GET /api/v1/environments/{env}/stats/summary":            true,
 	"GET /api/v1/environments/{env}/metrics":                  true,
+	"GET /api/v1/environments/{env}/metrics/live":             true,
 	"GET /api/v1/environments/{env}/containers/{id}/metrics":  true,
 	// Their own allowance; setting one is for admins.
 	"GET /api/v1/environments/{env}/allowance":        true,
@@ -300,6 +301,7 @@ var routes = []route{
 	{"GET /api/v1/environments/{env}/stats", (*server).environmentStats},
 	{"GET /api/v1/environments/{env}/stats/summary", (*server).environmentSummary},
 	{"GET /api/v1/environments/{env}/metrics", (*server).environmentMetrics},
+	{"GET /api/v1/environments/{env}/metrics/live", (*server).environmentLiveMetrics},
 	{"GET /api/v1/environments/{env}/containers/{id}/metrics", (*server).containerMetrics},
 	{"GET /api/v1/environments/{env}/allowance", (*server).getAllowance},
 	{"PUT /api/v1/environments/{env}/allowance", (*server).setAllowance},

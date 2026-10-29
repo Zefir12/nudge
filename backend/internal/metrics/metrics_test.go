@@ -153,6 +153,8 @@ type fakeClock struct {
 	mu      sync.Mutex
 	now     time.Time
 	waiting []chan time.Time
+	// waits are the durations of every After so far.
+	waits []time.Duration
 }
 
 func (c *fakeClock) Now() time.Time {
@@ -161,9 +163,10 @@ func (c *fakeClock) Now() time.Time {
 	return c.now
 }
 
-func (c *fakeClock) After(time.Duration) <-chan time.Time {
+func (c *fakeClock) After(d time.Duration) <-chan time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.waits = append(c.waits, d)
 	ch := make(chan time.Time, 1)
 	c.waiting = append(c.waiting, ch)
 	return ch
@@ -178,6 +181,25 @@ func (c *fakeClock) tick(d time.Duration) {
 		ch <- c.now
 	}
 	c.waiting = nil
+}
+
+// wait returns the duration of the nth After (from 1), waiting for it to be asked for.
+func (c *fakeClock) wait(t *testing.T, n int) time.Duration {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		c.mu.Lock()
+		if len(c.waits) >= n {
+			d := c.waits[n-1]
+			c.mu.Unlock()
+			return d
+		}
+		c.mu.Unlock()
+		if time.Now().After(deadline) {
+			t.Fatalf("After #%d never asked for", n)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 func (c *fakeClock) set(t time.Time) {

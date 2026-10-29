@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 	"github.com/moby/moby/api/types/container"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
@@ -17,10 +19,15 @@ import (
 
 var metricsNow = time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
 
-// metricsEnvs hands the collector one fake for every environment.
-type metricsEnvs struct{ fake *dockertest.Fake }
+// metricsEnvs lists list to the collector and hands it one fake for every environment.
+type metricsEnvs struct {
+	fake *dockertest.Fake
+	list []environments.Environment
+}
 
-func (metricsEnvs) List(context.Context) ([]environments.Environment, error) { return nil, nil }
+func (e *metricsEnvs) List(context.Context) ([]environments.Environment, error) {
+	return e.list, nil
+}
 func (e *metricsEnvs) Client(environments.Environment) (docker.Client, error) {
 	return e.fake, nil
 }
@@ -147,5 +154,67 @@ func TestContainerOwners(t *testing.T) {
 	}
 	if len(got) != 2 || got["mine"] != ot.bobKey || got["alices"] != ot.alice {
 		t.Errorf("owners = %v, want mine (bob) and alices (alice), not forged", got)
+	}
+}
+
+// The live stream sends each tick within the caller's scope, and ends with an error
+// frame when collection stops; it is refused while collection is off.
+func TestLiveMetrics(t *testing.T) {
+	t.Parallel()
+	envs := &metricsEnvs{}
+	var svc *metrics.Service
+	ot := newOwnTestOpts(t, withMetrics(t, envs, &svc))
+	envs.fake = ot.fake
+	envs.list = []environments.Environment{{ID: ot.local}}
+	for _, name := range ownedObjects {
+		ot.fake.Stats[name] = []container.StatsResponse{linuxStats(1)}
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	path := ot.path(ot.local, "/metrics/live")
+	dial := func(cookie *http.Cookie) *websocket.Conn {
+		lt := logsTest{envTest: envTest{h: ot.h, cookie: cookie}, srv: ot.srv}
+		ws, err := lt.dial(ctx, t, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = ws.CloseNow() })
+		return ws
+	}
+	admin, bob := dial(ot.admin), dial(ot.bob)
+
+	runCtx, stop := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		svc.Run(runCtx)
+	}()
+	read := func(ws *websocket.Conn) metrics.Live {
+		t.Helper()
+		var l metrics.Live
+		if err := wsjson.Read(ctx, ws, &l); err != nil {
+			t.Fatal(err)
+		}
+		return l
+	}
+	if l := read(admin); len(l.Containers) != 4 || l.Total.CPUPercent != 400 || !l.Time.Equal(metricsNow) {
+		t.Errorf("admin's tick = %+v, want all 4 containers", l)
+	}
+	if l := read(bob); len(l.Containers) != 1 || l.Containers[0].ID != "mine" || l.Total.CPUPercent != 100 {
+		t.Errorf("bob's tick = %+v, want his one container", l)
+	}
+
+	stop()
+	<-done
+	frames := readAll(ctx, t, bob)
+	if len(frames) != 1 || frames[0]["error"] != "usage collection of the environment stopped" {
+		t.Errorf("frames after collection stopped = %v", frames)
+	}
+
+	off := newOwnTestOpts(t, func(o *Options) {
+		o.Metrics = metrics.New(metrics.Options{}) // Interval 0: collection off
+	})
+	if rec := do(t, off.h, request{method: "GET", path: off.path(off.local, "/metrics/live"), cookie: off.admin}); rec.Code != http.StatusNotFound {
+		t.Errorf("collection off = %d %s, want 404", rec.Code, rec.Body)
 	}
 }

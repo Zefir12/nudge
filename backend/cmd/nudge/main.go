@@ -259,6 +259,7 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 	metricsSvc := metrics.New(metrics.Options{
 		DB: metricsDB, Log: log, Envs: envs, Owners: api.ContainerOwners,
 		Interval: cfg.MetricsInterval, Retention: cfg.MetricsRetention,
+		LiveInterval: cfg.MetricsLiveInterval,
 	})
 	wg.Go(func() { metricsSvc.Run(cleanupCtx) })
 	if cfg.Backup.Interval > 0 {

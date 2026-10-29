@@ -1,23 +1,28 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, shallowRef, toRef, watch } from 'vue';
 import { RouterLink } from 'vue-router';
 
 import { getEnvironmentStats, type EnvironmentStats } from '../api/client';
+import { useLiveUsage } from '../composables/useLiveUsage';
 import { formatBytes } from '../format';
 
 const props = defineProps<{ env: string }>();
 
-// refreshMs is the pause between one overview and the next request.
-const refreshMs = 10_000;
 // busiest is how many containers the table shows until all are asked for.
 const busiest = 5;
 
-const stats = shallowRef<EnvironmentStats | null>(null);
-const error = ref('');
-let timer: ReturnType<typeof setTimeout> | undefined;
+// The server's live usage stream updates the card with every sample. When it can't be
+// opened before a first sample (collection is off), one overview is asked for instead.
+const { usage: live, error: liveError } = useLiveUsage(toRef(props, 'env'));
+const fallback = shallowRef<EnvironmentStats | null>(null);
+const fallbackError = ref('');
 // request is the overview in flight; stop aborts it, so the daemon stops sampling too.
 let request: AbortController | null = null;
+let triedFallback = false;
 const showAll = ref(false);
+
+const stats = computed<EnvironmentStats | null>(() => live.value ?? fallback.value);
+const error = computed(() => (stats.value ? '' : fallbackError.value || liveError.value));
 
 // The busiest containers by CPU, then memory, come first.
 const sorted = computed(() =>
@@ -28,42 +33,38 @@ const sorted = computed(() =>
 const shown = computed(() => (showAll.value ? sorted.value : sorted.value.slice(0, busiest)));
 
 function stop() {
-  clearTimeout(timer);
   request?.abort();
   request = null;
 }
 
-async function load() {
-  stop();
-  // A hidden tab skips the overview (each one costs the daemon a second per container).
-  if (document.visibilityState === 'hidden') {
-    timer = setTimeout(load, refreshMs);
-    return;
-  }
+async function loadOverview() {
+  triedFallback = true;
   const ctrl = new AbortController();
   request = ctrl;
   try {
     const s = await getEnvironmentStats(props.env, ctrl.signal);
     if (ctrl.signal.aborted) return;
-    stats.value = s;
-    error.value = '';
+    fallback.value = s;
   } catch (e) {
     if (ctrl.signal.aborted) return;
-    error.value = e instanceof Error ? e.message : String(e);
+    fallbackError.value = e instanceof Error ? e.message : String(e);
   }
   request = null;
-  timer = setTimeout(load, refreshMs);
 }
+
+watch(liveError, (e) => {
+  if (e && !live.value && !triedFallback) void loadOverview();
+});
 
 watch(
   () => props.env,
   () => {
-    stats.value = null;
-    error.value = '';
+    stop();
+    fallback.value = null;
+    fallbackError.value = '';
+    triedFallback = false;
     showAll.value = false;
-    void load();
   },
-  { immediate: true },
 );
 onBeforeUnmount(stop);
 </script>

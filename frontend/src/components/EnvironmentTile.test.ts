@@ -1,11 +1,11 @@
 import { flushPromises, mount } from '@vue/test-utils';
-import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import { createMemoryHistory } from 'vue-router';
 
 import type { Environment } from '../api/client';
 import { createAppRouter } from '../router';
 import { currentUser } from '../session';
-import { admin, stubApi } from '../test-utils';
+import { admin, stubApi, stubSockets, type FakeWebSocket } from '../test-utils';
 import EnvironmentTile from './EnvironmentTile.vue';
 
 const base: Environment = {
@@ -16,6 +16,12 @@ const base: Environment = {
   created_at: '',
   last_seen_at: null,
 };
+
+let sockets: FakeWebSocket[];
+
+beforeEach(() => {
+  sockets = stubSockets();
+});
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -155,6 +161,36 @@ describe('EnvironmentTile', () => {
     expect(details[1]).toContain('/');
   });
 
+  // The live stream takes over from the stored summary with every sample.
+  it('updates the gauges from the live usage stream', async () => {
+    stubApi({
+      'GET /environments/3': { body: { ...base, docker } },
+      'GET /environments/3/stats/summary': {
+        body: { sampled_at: '', cpu_percent: 200, memory_usage: 256 * 1024 ** 2, containers: 3 },
+      },
+    });
+    const wrapper = await mountTile(base);
+    expect(gaugeLabels(wrapper).slice(0, 2)).toEqual(['CPU 50%', 'Memory 25%']);
+    const ws = sockets.find((s) => s.url.endsWith('/environments/3/metrics/live'))!;
+    ws.message({
+      time: '2026-10-27T12:00:05Z',
+      containers: [],
+      skipped: 0,
+      total: {
+        cpu_percent: 100,
+        memory_usage: 512 * 1024 ** 2,
+        network_rx: 0,
+        network_tx: 0,
+        block_read: 0,
+        block_write: 0,
+      },
+    });
+    await flushPromises();
+    expect(gaugeLabels(wrapper).slice(0, 2)).toEqual(['CPU 25%', 'Memory 50%']);
+    wrapper.unmount();
+    expect(ws.closed).toBe(true);
+  });
+
   // The charts come from the stored history at once, scaled like the gauges.
   it('charts the stored usage history', async () => {
     const point = (cpu: number, mem: number) => ({
@@ -223,5 +259,6 @@ describe('EnvironmentTile', () => {
     expect(wrapper.find('.stats').exists()).toBe(false);
     expect(wrapper.find('.gauges').exists()).toBe(false);
     expect(fetch.mock.calls.map(([url]) => url)).not.toContain('/api/v1/environments/3');
+    expect(sockets).toHaveLength(0);
   });
 });
