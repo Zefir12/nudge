@@ -31,6 +31,34 @@ No `--privileged` is needed: the socket is all it uses. The socket gives root on
 so keep nudge behind TLS: its own (`NUDGE_TLS_*`) or a reverse proxy's (see
 [docs/config/server.md](docs/config/server.md#reverse-proxy)).
 
+## Update
+
+nudge updates itself and its agents. As an admin, open the gear in the top bar (or on an
+agent environment's dashboard), then "Check for updates" and "Update"; the API has the
+same under `/api/v1/system/update` and `/api/v1/environments/{env}/agent/update`.
+
+nudge pulls the newest image of its tag and starts a short-lived helper container from
+it. The helper stops the old container, sets it aside, starts the new one with the same
+settings and waits until it has run (or been healthy) for 15 s. Then the old one is
+removed and the UI reloads.
+
+<video src="docs/img/self-update.webm" autoplay loop muted playsinline width="960">
+  <a href="docs/img/self-update.webm">Self-update (video)</a>
+</video>
+
+If the new container doesn't come up healthy, the helper removes it and starts the old
+one again, so nudge stays on the version it had:
+
+<video src="docs/img/self-update-rollback.webm" autoplay loop muted playsinline width="960">
+  <a href="docs/img/self-update-rollback.webm">Self-update rollback (video)</a>
+</video>
+
+Back up first ([backups](docs/config/server.md#backup-and-restore)): a database the new
+version migrated is refused by an older one. Agents from before self-update, and a server
+without it, are updated by hand once (`docker compose pull && docker compose up -d`).
+Keep the server and agents on the same tag. The limits are in
+[docs/architecture.md](docs/architecture.md#self-update-159).
+
 ## Configuration
 
 Flags with `NUDGE_*` environment variable fallbacks; the defaults work in the image.
