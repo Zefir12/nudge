@@ -58,6 +58,12 @@ describe('router guard', () => {
       want: '/registries',
     },
     {
+      name: 'the old environments page goes to the dashboard',
+      routes: { 'GET /auth/me': { body: admin } },
+      to: '/environments',
+      want: '/',
+    },
+    {
       name: 'setup after setup goes to login',
       routes: { 'GET /setup': { body: { needed: false } } },
       to: '/setup',

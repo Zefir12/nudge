@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
 
 import {
@@ -14,7 +14,9 @@ import { currentUser } from '../session';
 import ActivityHeatmap from './ActivityHeatmap.vue';
 import ConnPlug from './ConnPlug.vue';
 import DiskUsage from './DiskUsage.vue';
+import EnvironmentSettings from './EnvironmentSettings.vue';
 import GearButton from './GearButton.vue';
+import SettingsDialog from './SettingsDialog.vue';
 import { mockActivity, mockAgentLink, mockCpuHistory, mockDisk, mockMemHistory } from './tileMock';
 import UsageGauges, { type Gauge } from './UsageGauges.vue';
 import UsageHistory from './UsageHistory.vue';
@@ -23,9 +25,12 @@ import { formatBytes, formatDate } from '../format';
 // EnvironmentTile is one environment on the global dashboard; it opens that environment.
 // An online environment's Docker info fills in the counts once it arrives, and its usage
 // summary the CPU and memory gauges. Disk, history and activity are mock data for now
-// (tileMock.ts says what each needs).
+// (tileMock.ts says what each needs). An admin's gear opens the environment's settings;
+// changed fires after one of them ran, so the dashboard reloads the list.
 const props = defineProps<{ env: Environment }>();
+const emit = defineEmits<{ changed: [] }>();
 const router = useRouter();
+const settingsOpen = ref(false);
 
 // refreshMs is how often the gauges are asked for again; the server samples at most every
 // 30 s, so asking more often would repeat the same numbers.
@@ -112,10 +117,10 @@ const status = computed(() => {
 const to = computed(() => ({ name: 'env', params: { env: String(props.env.id) } }));
 
 // The whole tile opens the environment; the name is its link for the keyboard and for
-// opening in a new tab. The tile's own buttons and links do their own thing, and a click
-// with a modifier or one that ends a text selection does nothing.
+// opening in a new tab. The tile's own buttons, links and settings dialog do their own
+// thing, and a click with a modifier or one that ends a text selection does nothing.
 function open(e: MouseEvent) {
-  if ((e.target as Element).closest('a, button')) return;
+  if ((e.target as Element).closest('a, button, dialog')) return;
   if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
   if (window.getSelection()?.toString()) return;
   void router.push(to.value);
@@ -143,9 +148,16 @@ function open(e: MouseEvent) {
         </span>
       </div>
       <span class="chip">{{ env.kind === 'local' ? 'socket' : 'agent' }}</span>
-      <!-- TODO: open the environment's settings from here; disabled until it does. -->
-      <GearButton label="Environment settings" class="gear" disabled />
+      <GearButton
+        v-if="currentUser?.admin"
+        label="Environment settings"
+        class="gear"
+        @click="settingsOpen = true"
+      />
     </div>
+    <SettingsDialog v-if="settingsOpen" :title="`Environment ${env.name}`" @close="settingsOpen = false">
+      <EnvironmentSettings :env="env" @changed="emit('changed')" />
+    </SettingsDialog>
 
     <template v-if="env.online">
       <div v-if="docker" class="body">
@@ -193,7 +205,9 @@ function open(e: MouseEvent) {
     <div v-else class="away">
       <template v-if="waiting">
         <strong>Waiting for the agent</strong>
-        <span class="muted">Start the agent on the host with the join command from Environments.</span>
+        <span class="muted"
+          >Start the agent on the host with the join command from this environment's settings.</span
+        >
       </template>
       <template v-else>
         <strong>{{ env.kind === 'agent' ? 'Agent not connected' : 'Docker is not answering' }}</strong>
@@ -281,6 +295,11 @@ h2 a {
 
 .head .gear {
   margin: -0.35rem -0.6rem -0.35rem -0.3rem;
+}
+
+/* The settings dialog sits in the tile's DOM, but clicks in it don't open the tile. */
+.tile dialog {
+  cursor: auto;
 }
 
 .address,

@@ -19,6 +19,7 @@ const base: Environment = {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   currentUser.value = null;
 });
 
@@ -78,14 +79,42 @@ describe('EnvironmentTile', () => {
     expect(fetch.mock.calls.map(([url]) => url)).not.toContain('/api/v1/environments/3/stacks');
   });
 
-  it('opens the environment from anywhere on the tile but the settings button', async () => {
+  it('opens the environment from anywhere on the tile but the settings', async () => {
+    currentUser.value = admin;
     stubApi({ 'GET /environments/3': { body: { ...base, docker } } });
     const wrapper = await mountTile(base);
     const push = vi.spyOn(wrapper.router, 'push');
     await wrapper.find('.gear').trigger('click');
     expect(push).not.toHaveBeenCalled();
+    // A click in the settings dialog stays there.
+    await wrapper.find('dialog .facts').trigger('click');
+    expect(push).not.toHaveBeenCalled();
     await wrapper.find('.stats').trigger('click');
     expect(push).toHaveBeenCalledWith({ name: 'env', params: { env: '3' } });
+  });
+
+  it('opens the settings from the gear and passes on changes', async () => {
+    currentUser.value = admin;
+    const env = { ...base, online: false, agent: { enrolled: true, version: '0.9.0' } };
+    stubApi({ 'DELETE /environments/3/credentials': { status: 204 } });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const wrapper = await mountTile(env);
+    expect(wrapper.find('dialog').exists()).toBe(false);
+    await wrapper.find('.gear').trigger('click');
+    expect(wrapper.find('dialog').attributes('aria-label')).toBe('Environment prod');
+    const revoke = wrapper.findAll('dialog button').find((b) => b.text() === 'Revoke agent');
+    await revoke?.trigger('click');
+    await flushPromises();
+    expect(wrapper.emitted('changed')).toHaveLength(1);
+    await wrapper.find('dialog .close').trigger('click');
+    expect(wrapper.find('dialog').exists()).toBe(false);
+  });
+
+  it('has no settings for other users', async () => {
+    currentUser.value = { ...admin, admin: false };
+    stubApi({});
+    const wrapper = await mountTile({ ...base, online: false });
+    expect(wrapper.find('.gear').exists()).toBe(false);
   });
 
   // CPU is against every CPU (200% of one CPU on 4 is half), memory against the host's.
