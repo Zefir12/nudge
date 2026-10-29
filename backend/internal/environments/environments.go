@@ -15,7 +15,6 @@ import (
 	"github.com/moby/moby/client"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
-	"git.zefirlabs.net/zefir/nudge/backend/internal/tunnel"
 )
 
 // Kinds of environment.
@@ -67,6 +66,8 @@ type Options struct {
 	// Connect builds the client of a local environment; it is called once per
 	// environment. Agent environments always use their tunnel.
 	Connect ConnectFunc
+	// After waits between an agent tunnel's pings (time.After by default).
+	After func(time.Duration) <-chan time.Time
 }
 
 // Service lists environments and hands out their Docker clients.
@@ -74,6 +75,7 @@ type Service struct {
 	db      *sql.DB
 	log     *slog.Logger
 	now     func() time.Time
+	after   func(time.Duration) <-chan time.Time
 	connect ConnectFunc
 
 	mu sync.Mutex
@@ -85,7 +87,7 @@ type Service struct {
 	sessMu sync.Mutex
 	// sessions are the agents' live tunnels, one per environment id, so bounded by the
 	// environments table like clients.
-	sessions map[int64]*tunnel.Session
+	sessions map[int64]*agentSession
 	closed   bool
 	// serving counts running ServeAgent calls.
 	serving sync.WaitGroup
@@ -97,15 +99,19 @@ func New(opts Options) *Service {
 		db:       opts.DB,
 		log:      opts.Log,
 		now:      opts.Now,
+		after:    opts.After,
 		connect:  opts.Connect,
 		clients:  map[int64]cachedClient{},
-		sessions: map[int64]*tunnel.Session{},
+		sessions: map[int64]*agentSession{},
 	}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
 	}
 	if s.now == nil {
 		s.now = time.Now
+	}
+	if s.after == nil {
+		s.after = time.After
 	}
 	return s
 }

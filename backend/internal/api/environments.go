@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"math"
 	"net/http"
 	"slices"
 	"strconv"
@@ -37,6 +38,10 @@ type environmentResponse struct {
 type agentResponse struct {
 	Enrolled bool   `json:"enrolled"`
 	Version  string `json:"version"`
+	// Address is the IP the agent's tunnel came from and RTTMs the round trip of its last
+	// ping, while it is connected; a user (not admin) isn't told the address.
+	Address string   `json:"address,omitempty"`
+	RTTMs   *float64 `json:"rtt_ms,omitempty"`
 }
 
 func toEnvironmentResponse(env environments.Environment, online bool) environmentResponse {
@@ -49,6 +54,25 @@ func toEnvironmentResponse(env environments.Environment, online bool) environmen
 		r.LastSeenAt = &ls
 	}
 	return r
+}
+
+// withLink adds a connected agent's address (for an admin only, as a user isn't told the
+// host's name either) and last round trip, in milliseconds to 0.1, to r.
+func (s *server) withLink(r *environmentResponse, admin bool) {
+	if r.Agent == nil {
+		return
+	}
+	link, ok := s.envs.Link(r.ID)
+	if !ok {
+		return
+	}
+	if admin {
+		r.Agent.Address = link.Addr
+	}
+	if !link.PingedAt.IsZero() {
+		ms := math.Round(float64(link.RTT)/float64(100*time.Microsecond)) / 10
+		r.Agent.RTTMs = &ms
+	}
 }
 
 // environmentDetailResponse picks fields from Docker's info and version: the full
@@ -85,7 +109,9 @@ func (s *server) listEnvironments(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, "list environments", err)
 		return
 	}
-	if u, ok := userFrom(r.Context()); ok && !isAdmin(u) {
+	u, ok := userFrom(r.Context())
+	admin := ok && isAdmin(u)
+	if ok && !admin {
 		ids, err := s.envs.Access(r.Context(), u.ID)
 		if err != nil {
 			s.internalError(w, "list environments", err)
@@ -102,6 +128,7 @@ func (s *server) listEnvironments(w http.ResponseWriter, r *http.Request) {
 			defer func() { <-sem }()
 			online := s.envs.Online(r.Context(), &envs[i])
 			resp[i] = toEnvironmentResponse(envs[i], online)
+			s.withLink(&resp[i], admin)
 		})
 	}
 	wg.Wait()
@@ -154,8 +181,10 @@ func (s *server) getEnvironment(w http.ResponseWriter, r *http.Request) {
 		i.Name, i.DockerRootDir = "", ""
 	}
 	s.envs.Seen(r.Context(), &env)
+	resp := toEnvironmentResponse(env, true)
+	s.withLink(&resp, sc.all)
 	s.writeJSON(w, http.StatusOK, environmentDetailResponse{
-		environmentResponse: toEnvironmentResponse(env, true),
+		environmentResponse: resp,
 		Docker: dockerResponse{
 			Name:              i.Name,
 			Version:           version.Version,
@@ -196,7 +225,9 @@ func (s *server) environment(w http.ResponseWriter, r *http.Request) (environmen
 		return environments.Environment{}, nil, false
 	}
 	// A user sees only the environments an admin gave them; any other is missing.
-	if u, ok := userFrom(r.Context()); ok && !isAdmin(u) {
+	u, ok := userFrom(r.Context())
+	admin := ok && isAdmin(u)
+	if ok && !admin {
 		allowed, err := s.envs.HasAccess(r.Context(), u.ID, env.ID)
 		if err != nil {
 			s.internalError(w, "environment access", err)

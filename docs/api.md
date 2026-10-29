@@ -241,7 +241,11 @@ An environment is a Docker host; `{env}` in paths is its numeric `id`.
 `[{"id": 1, "name": "local", "kind": "local", "online": true, "created_at": "...", "last_seen_at": "..."}]`.
 `kind` is `local` (the server's own Docker socket) or `agent` (a remote host running
 `nudge agent`). Agent environments also carry `"agent": {"enrolled": true, "version":
-"..."}`: whether an agent holds credentials, and the version it reported. `online` comes
+"..."}`: whether an agent holds credentials, and the version it reported. While its tunnel
+is up, `agent` also has `address` (the IP the tunnel came from; behind
+`NUDGE_TRUSTED_PROXIES` the forwarded client IP; answered to admins only) and `rtt_ms`
+(round trip of the last yamux ping, taken at connect and every 30 s, in ms to 0.1; kept
+in memory only, absent until the first ping answers). `online` comes
 from pinging each host (3 s timeout) during the request; `last_seen_at` is the last time
 the host answered (updated at most once a minute, `null` if it never did).
 

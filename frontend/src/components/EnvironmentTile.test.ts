@@ -19,6 +19,7 @@ const base: Environment = {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   currentUser.value = null;
 });
 
@@ -44,6 +45,29 @@ const docker = {
 };
 
 describe('EnvironmentTile', () => {
+  it.each([
+    {
+      name: 'address and ping',
+      agent: { address: '203.0.113.9', rtt_ms: 48.3 },
+      text: 'agent 0.9.0 · 203.0.113.9 · 48.3 ms',
+      tone: 'good',
+    },
+    { name: 'ping only (a user)', agent: { rtt_ms: 160 }, text: 'agent 0.9.0 · 160 ms', tone: 'bad' },
+    {
+      name: 'address before the first ping',
+      agent: { address: '203.0.113.9' },
+      text: 'agent 0.9.0 · 203.0.113.9',
+    },
+    { name: 'nothing known', agent: {}, text: 'agent 0.9.0' },
+  ])("shows the agent's link: $name", async ({ agent, text, tone }) => {
+    const env = { ...base, agent: { enrolled: true, version: '0.9.0', ...agent } };
+    stubApi({ 'GET /environments/3': { body: { ...env, docker } } });
+    const wrapper = await mountTile(env);
+    expect(wrapper.find('.address').text().replace(/\s+/g, ' ')).toBe(text);
+    if (tone) expect(wrapper.find('.ping').classes()).toContain(tone);
+    else expect(wrapper.find('.ping').exists()).toBe(false);
+  });
+
   it('shows the Docker host of an online environment', async () => {
     const env = { ...base, agent: { enrolled: true, version: '0.9.0' } };
     stubApi({ 'GET /environments/3': { body: { ...env, docker } } });
@@ -78,14 +102,42 @@ describe('EnvironmentTile', () => {
     expect(fetch.mock.calls.map(([url]) => url)).not.toContain('/api/v1/environments/3/stacks');
   });
 
-  it('opens the environment from anywhere on the tile but the settings button', async () => {
+  it('opens the environment from anywhere on the tile but the settings', async () => {
+    currentUser.value = admin;
     stubApi({ 'GET /environments/3': { body: { ...base, docker } } });
     const wrapper = await mountTile(base);
     const push = vi.spyOn(wrapper.router, 'push');
     await wrapper.find('.gear').trigger('click');
     expect(push).not.toHaveBeenCalled();
+    // A click in the settings dialog stays there.
+    await wrapper.find('dialog .facts').trigger('click');
+    expect(push).not.toHaveBeenCalled();
     await wrapper.find('.stats').trigger('click');
     expect(push).toHaveBeenCalledWith({ name: 'env', params: { env: '3' } });
+  });
+
+  it('opens the settings from the gear and passes on changes', async () => {
+    currentUser.value = admin;
+    const env = { ...base, online: false, agent: { enrolled: true, version: '0.9.0' } };
+    stubApi({ 'DELETE /environments/3/credentials': { status: 204 } });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const wrapper = await mountTile(env);
+    expect(wrapper.find('dialog').exists()).toBe(false);
+    await wrapper.find('.gear').trigger('click');
+    expect(wrapper.find('dialog').attributes('aria-label')).toBe('Environment prod');
+    const revoke = wrapper.findAll('dialog button').find((b) => b.text() === 'Revoke agent');
+    await revoke?.trigger('click');
+    await flushPromises();
+    expect(wrapper.emitted('changed')).toHaveLength(1);
+    await wrapper.find('dialog .close').trigger('click');
+    expect(wrapper.find('dialog').exists()).toBe(false);
+  });
+
+  it('has no settings for other users', async () => {
+    currentUser.value = { ...admin, admin: false };
+    stubApi({});
+    const wrapper = await mountTile({ ...base, online: false });
+    expect(wrapper.find('.gear').exists()).toBe(false);
   });
 
   // CPU is against every CPU (200% of one CPU on 4 is half), memory against the host's.

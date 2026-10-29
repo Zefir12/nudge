@@ -215,7 +215,7 @@ func (s *server) connectAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	peer := sess.Peer()
 	s.log.Info("agent connected", "env", env.ID, "agent", agentID, "hostname", peer.Hostname, "version", peer.Version, "ip", clientIP(r))
-	if err := s.envs.ServeAgent(r.Context(), env, agentID, sess); err != nil {
+	if err := s.envs.ServeAgent(r.Context(), env, agentID, clientIP(r), sess); err != nil {
 		s.log.Warn("agent tunnel refused", "env", env.ID, "err", err)
 		return
 	}

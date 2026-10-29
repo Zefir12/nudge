@@ -21,7 +21,17 @@ const MiB = 1024 ** 2;
 
 const me = { id: 1, username: 'zefir', created_at: ago(60 * 24 * 30), role: 'admin', admin: true };
 
-const environments = [
+type MockEnv = {
+  id: number;
+  name: string;
+  kind: string;
+  online: boolean;
+  created_at: string;
+  last_seen_at: string | null;
+  agent?: { enrolled: boolean; version: string; address?: string; rtt_ms?: number };
+};
+
+const environments: MockEnv[] = [
   { id: 1, name: 'local', kind: 'local', online: true, created_at: ago(60 * 24 * 30), last_seen_at: ago(0) },
   {
     id: 2,
@@ -30,7 +40,7 @@ const environments = [
     online: true,
     created_at: ago(60 * 24 * 20),
     last_seen_at: ago(0),
-    agent: { enrolled: true, version: 'v0.9.0' },
+    agent: { enrolled: true, version: 'v0.9.0', address: '192.168.1.22', rtt_ms: 48.3 },
   },
   {
     id: 3,
@@ -445,6 +455,18 @@ const runs = Array.from({ length: 6 }, (_, i) => ({
 
 type Route = [method: string, pattern: RegExp, handle: (m: string[], body: unknown, url: URL) => unknown];
 
+// mockJoinToken is a join token with the agent's command and compose file, like the server's.
+const mockJoinToken = (name: string) => {
+  const token = `nudge_join_${hex(name).slice(0, 24)}`;
+  const image = 'registrydedic.zefirlabs.net/nudge-agent:latest';
+  return {
+    token,
+    expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+    docker_run: `docker run -d --name nudge-agent --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock -e NUDGE_SERVER=https://nudge.example.net -e NUDGE_JOIN_TOKEN=${token} ${image} agent`,
+    compose: `services:\n  nudge-agent:\n    image: ${image}\n    command: agent\n    restart: unless-stopped\n    environment:\n      NUDGE_SERVER: https://nudge.example.net\n      NUDGE_JOIN_TOKEN: "${token}"\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock\n`,
+  };
+};
+
 const envRe = '/environments/([^/]+)';
 const envOf = (key: string) => environments.find((e) => String(e.id) === key || e.name === key);
 
@@ -637,6 +659,51 @@ const routes: Route[] = [
     ],
   ],
   ['GET', /^\/environments$/, () => environments],
+  // Adding, a new join token, revoking and removing change the list until the dev server restarts.
+  [
+    'POST',
+    /^\/environments$/,
+    (_m, body) => {
+      const name = String((body as { name?: unknown } | undefined)?.name ?? '').trim();
+      if (!name) throw new HttpError(400, 'name is required');
+      if (envOf(name)) throw new HttpError(409, 'an environment with that name already exists');
+      const env = {
+        id: Math.max(0, ...environments.map((e) => e.id)) + 1,
+        name,
+        kind: 'agent',
+        online: false,
+        created_at: ago(0),
+        last_seen_at: null,
+        agent: { enrolled: false, version: '' },
+      };
+      environments.push(env);
+      return { ...env, join_token: mockJoinToken(name) };
+    },
+  ],
+  [
+    'POST',
+    new RegExp(`^${envRe}/join-tokens$`),
+    (m) => mockJoinToken(found(envOf(decodeURIComponent(m[1] ?? '')), 'environment').name),
+  ],
+  [
+    'DELETE',
+    new RegExp(`^${envRe}/credentials$`),
+    (m) => {
+      const env = found(envOf(decodeURIComponent(m[1] ?? '')), 'environment');
+      if (!env.agent) throw new HttpError(409, 'not an agent environment');
+      env.agent.enrolled = false;
+      env.online = false;
+    },
+  ],
+  [
+    'DELETE',
+    new RegExp(`^${envRe}$`),
+    (m) => {
+      const env = found(envOf(decodeURIComponent(m[1] ?? '')), 'environment');
+      if (env.kind === 'local') throw new HttpError(409, 'the local environment cannot be removed');
+      environments.splice(environments.indexOf(env), 1);
+    },
+  ],
   [
     'GET',
     new RegExp(`^${envRe}$`),

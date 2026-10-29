@@ -1,15 +1,18 @@
 <script setup lang="ts">
-import { computed } from 'vue';
-import { RouterLink } from 'vue-router';
+import { computed, ref } from 'vue';
 
+import AddEnvironment from '../components/AddEnvironment.vue';
 import EnvironmentTile from '../components/EnvironmentTile.vue';
 import LoadState from '../components/LoadState.vue';
+import SettingsDialog from '../components/SettingsDialog.vue';
 import { useLoad } from '../composables/useLoad';
 import { loadEnvironments } from '../environments';
 import { currentUser } from '../session';
 
-// The global dashboard: one tile per environment, each opening that environment.
+// The global dashboard: one tile per environment, each opening that environment. Admins
+// add environments in a dialog and manage each one from its tile's gear.
 const { data, error, reload } = useLoad(() => true, loadEnvironments);
+const adding = ref(false);
 
 const summary = computed(() => {
   const envs = data.value ?? [];
@@ -25,10 +28,13 @@ const summary = computed(() => {
       <h1>Environments</h1>
       <p v-if="data" class="muted">{{ summary }}</p>
     </div>
-    <RouterLink v-if="currentUser?.admin" class="button primary" to="/environments"
-      >Add environment</RouterLink
-    >
+    <button v-if="currentUser?.admin" type="button" class="primary" @click="adding = true">
+      Add environment
+    </button>
   </div>
+  <SettingsDialog v-if="adding" title="Add environment" @close="adding = false">
+    <AddEnvironment @created="reload" @done="adding = false" />
+  </SettingsDialog>
   <LoadState
     :loading="!data"
     :error="error ? `Could not load the environments: ${error}` : ''"
@@ -38,12 +44,12 @@ const summary = computed(() => {
     @retry="reload"
   >
     <div class="tiles">
-      <EnvironmentTile v-for="env in data" :key="env.id" :env="env" />
-      <RouterLink v-if="currentUser?.admin" to="/environments" class="add">
+      <EnvironmentTile v-for="env in data" :key="env.id" :env="env" @changed="reload" />
+      <button v-if="currentUser?.admin" type="button" class="add" @click="adding = true">
         <span class="plus" aria-hidden="true">+</span>
         <strong>Add environment</strong>
         <span class="muted">Connect a remote host with the nudge agent</span>
-      </RouterLink>
+      </button>
     </div>
   </LoadState>
 </template>
@@ -81,17 +87,19 @@ h1 {
   min-height: 260px;
   padding: 1.5rem;
   font-size: 13px;
+  font-weight: 400;
   color: var(--text);
   text-align: center;
-  text-decoration: none;
+  background: transparent;
   border: 1px dashed var(--border-strong);
   border-radius: var(--radius-lg);
   transition: border-color 0.15s ease;
 }
 
-.add:hover {
+.add:hover:not(:disabled) {
   transition-duration: var(--hover-in);
   color: var(--text);
+  background: transparent;
   border-color: var(--accent-border);
 }
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
 
 import {
@@ -15,8 +15,10 @@ import { currentUser } from '../session';
 import ActivityHeatmap from './ActivityHeatmap.vue';
 import ConnPlug from './ConnPlug.vue';
 import DiskUsage from './DiskUsage.vue';
+import EnvironmentSettings from './EnvironmentSettings.vue';
 import GearButton from './GearButton.vue';
-import { mockActivity, mockAgentLink, mockDisk } from './tileMock';
+import SettingsDialog from './SettingsDialog.vue';
+import { mockActivity, mockDisk } from './tileMock';
 import UsageGauges, { type Gauge } from './UsageGauges.vue';
 import UsageHistory from './UsageHistory.vue';
 import { formatBytes, formatDate } from '../format';
@@ -24,9 +26,13 @@ import { formatBytes, formatDate } from '../format';
 // EnvironmentTile is one environment on the global dashboard; it opens that environment.
 // An online environment's Docker info fills in the counts once it arrives, its usage
 // summary the CPU and memory gauges and its stored usage history the 24h charts. Disk and
-// activity are mock data for now (tileMock.ts says what each needs).
+// activity are mock data for now (tileMock.ts says what each needs). An admin's gear opens
+// the environment's settings; changed fires after one of them ran, so the dashboard
+// reloads the list.
 const props = defineProps<{ env: Environment }>();
+const emit = defineEmits<{ changed: [] }>();
 const router = useRouter();
+const settingsOpen = ref(false);
 
 // refreshMs is how often the gauges and charts are asked for again; the server collects
 // every minute by default, so asking more often would repeat the same numbers.
@@ -114,12 +120,13 @@ const address = computed(() =>
       ? 'agent not enrolled'
       : `agent ${props.env.agent?.version ?? ''}`,
 );
-// TODO: mock until the server reports the agent's address and round trip (tileMock.ts).
-const link = computed(() =>
-  props.env.kind === 'agent' && props.env.online ? mockAgentLink(props.env.id) : null,
-);
+// The agent's address (admins only) and last ping, while its tunnel is up.
+const link = computed(() => {
+  const a = props.env.agent;
+  return props.env.online && a && (a.address || a.rtt_ms !== undefined) ? a : null;
+});
 const pingTone = computed(() => {
-  const ms = link.value?.pingMs ?? 0;
+  const ms = link.value?.rtt_ms ?? 0;
   return ms < 50 ? 'good' : ms < 150 ? 'warn' : 'bad';
 });
 
@@ -132,10 +139,10 @@ const status = computed(() => {
 const to = computed(() => ({ name: 'env', params: { env: String(props.env.id) } }));
 
 // The whole tile opens the environment; the name is its link for the keyboard and for
-// opening in a new tab. The tile's own buttons and links do their own thing, and a click
-// with a modifier or one that ends a text selection does nothing.
+// opening in a new tab. The tile's own buttons, links and settings dialog do their own
+// thing, and a click with a modifier or one that ends a text selection does nothing.
 function open(e: MouseEvent) {
-  if ((e.target as Element).closest('a, button')) return;
+  if ((e.target as Element).closest('a, button, dialog')) return;
   if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
   if (window.getSelection()?.toString()) return;
   void router.push(to.value);
@@ -152,20 +159,25 @@ function open(e: MouseEvent) {
         </h2>
         <span class="address">
           {{ address }}
-          <span
-            v-if="link"
-            class="link"
-            title="TODO: mock data until the server reports the agent's address and ping"
-          >
-            · {{ link.ip }} · <span class="ping" :class="pingTone">{{ link.pingMs }} ms</span>
-            <span class="mock-tag">mock</span>
+          <span v-if="link" class="link">
+            <template v-if="link.address">· {{ link.address }}</template>
+            <template v-if="link.rtt_ms !== undefined">
+              · <span class="ping" :class="pingTone" title="last ping">{{ link.rtt_ms }} ms</span>
+            </template>
           </span>
         </span>
       </div>
       <span class="chip">{{ env.kind === 'local' ? 'socket' : 'agent' }}</span>
-      <!-- TODO: open the environment's settings from here; disabled until it does. -->
-      <GearButton label="Environment settings" class="gear" disabled />
+      <GearButton
+        v-if="currentUser?.admin"
+        label="Environment settings"
+        class="gear"
+        @click="settingsOpen = true"
+      />
     </div>
+    <SettingsDialog v-if="settingsOpen" :title="`Environment ${env.name}`" @close="settingsOpen = false">
+      <EnvironmentSettings :env="env" @changed="emit('changed')" />
+    </SettingsDialog>
 
     <template v-if="env.online">
       <div v-if="docker" class="body">
@@ -211,7 +223,9 @@ function open(e: MouseEvent) {
     <div v-else class="away">
       <template v-if="waiting">
         <strong>Waiting for the agent</strong>
-        <span class="muted">Start the agent on the host with the join command from Environments.</span>
+        <span class="muted"
+          >Start the agent on the host with the join command from this environment's settings.</span
+        >
       </template>
       <template v-else>
         <strong>{{ env.kind === 'agent' ? 'Agent not connected' : 'Docker is not answering' }}</strong>
@@ -301,6 +315,11 @@ h2 a {
   margin: -0.35rem -0.6rem -0.35rem -0.3rem;
 }
 
+/* The settings dialog sits in the tile's DOM, but clicks in it don't open the tile. */
+.tile dialog {
+  cursor: auto;
+}
+
 .address,
 .engine {
   font-family: var(--mono);
@@ -373,7 +392,6 @@ dd {
   position: relative;
 }
 
-.mock-tag,
 .mock::after {
   padding: 0 0.35rem;
   font-family: var(--font);
@@ -384,11 +402,6 @@ dd {
   letter-spacing: 0.08em;
   background: var(--warn-soft);
   border-radius: var(--radius-sm);
-}
-
-.mock-tag {
-  margin-left: 0.3rem;
-  vertical-align: 1px;
 }
 
 .mock::after {
