@@ -356,6 +356,18 @@ function usage(env: number) {
   };
 }
 
+// hostUsage is the whole machine's load, CPU of every CPU; the second environment's agent
+// is too old to tell, so its tile falls back to the containers' usage.
+function hostUsage(env: number, wave = 0) {
+  if (env === 2) return undefined;
+  const total = (env === 1 ? 32 : 8) * GiB;
+  return {
+    cpu_percent: Math.round((18 + 10 * Math.sin(wave + env) + Math.random() * 4) * 10) / 10,
+    memory_usage: Math.round(total * (0.45 + 0.05 * Math.sin(wave / 2 + env))),
+    memory_total: total,
+  };
+}
+
 const users = [
   {
     id: 1,
@@ -516,6 +528,7 @@ function history(env: number, url: URL, scale = 1) {
       network_tx: Math.round((t.network_tx * scale * (i + 1)) / n),
       block_read: Math.round((t.block_read * scale * (i + 1)) / n),
       block_write: Math.round((t.block_write * scale * (i + 1)) / n),
+      host: scale === 1 ? hostUsage(env, i / 9) : undefined,
     };
   });
   return { source: span > 48 * 3600 ? 'hourly' : 'raw', step, points };
@@ -867,6 +880,7 @@ const routes: Route[] = [
         cpu_percent: u.total.cpu_percent,
         memory_usage: u.total.memory_usage,
         containers: u.containers.length,
+        host: hostUsage(env),
       };
     }),
   ],
@@ -994,7 +1008,10 @@ function streamLive(req: IncomingMessage, socket: Duplex, env: number) {
   socket.write(
     `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
   );
-  const send = () => socket.write(wsFrame(JSON.stringify({ time: new Date().toISOString(), ...usage(env) })));
+  const send = () =>
+    socket.write(
+      wsFrame(JSON.stringify({ time: new Date().toISOString(), ...usage(env), host: hostUsage(env) })),
+    );
   send();
   const timer = setInterval(send, 5000);
   const stop = () => {

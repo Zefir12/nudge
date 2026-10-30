@@ -34,6 +34,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/events"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/hostdisk"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/hostload"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/metrics"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/notify"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/oidc"
@@ -254,6 +255,13 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 	}
 	metricsSvc := metrics.New(metrics.Options{
 		DB: metricsDB, Log: log, Envs: envs, Owners: api.ContainerOwners,
+		// /proc shows the host's CPU and memory inside the container too.
+		Host: func(ctx context.Context, env environments.Environment) (hostload.Reading, error) {
+			if env.Kind == environments.KindLocal {
+				return hostload.Read("/proc")
+			}
+			return hostload.Remote(ctx, envs.ControlDialer(env.ID))
+		},
 		Interval: cfg.MetricsInterval, Retention: cfg.MetricsRetention,
 		LiveInterval: cfg.MetricsLiveInterval,
 	})

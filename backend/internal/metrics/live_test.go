@@ -41,7 +41,7 @@ func TestLiveView(t *testing.T) {
 	tk := newTick(t0,
 		[]container.Summary{{ID: "w1"}, {ID: "d1"}, {ID: "b2"}, {ID: "g1"}, {ID: "g2"}},
 		[]Container{{ID: "w1", Name: "web", Sample: s}, {ID: "d1", Name: "db", Sample: s}, {ID: "b2", Name: "api", Sample: s}},
-		map[string]string{"w1": "bob", "b2": "bob", "g2": "bob"})
+		map[string]string{"w1": "bob", "b2": "bob", "g2": "bob"}, &Host{CPUPercent: 50})
 	tests := []struct {
 		name    string
 		sc      Scope
@@ -63,6 +63,9 @@ func TestLiveView(t *testing.T) {
 			n := float64(len(tt.want))
 			if l.Total.CPUPercent != 10*n || l.Total.MemoryUsage != uint64(100*n) || l.Total.BlockWrite != uint64(4*n) {
 				t.Errorf("total = %+v for %v containers", l.Total, n)
+			}
+			if (l.Host != nil) != tt.sc.All {
+				t.Errorf("host = %+v, want it only for every container", l.Host)
 			}
 			if !l.Time.Equal(t0) {
 				t.Errorf("time = %v, want %v", l.Time, t0)

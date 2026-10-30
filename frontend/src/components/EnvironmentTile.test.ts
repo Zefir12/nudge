@@ -275,6 +275,25 @@ describe('EnvironmentTile', () => {
     expect(details[1]).toContain('/');
   });
 
+  // The whole machine's load wins over the containers' when the server could read it.
+  it('shows the host-wide load when the summary has it', async () => {
+    stubApi({
+      'GET /environments/3': { body: { ...base, docker } },
+      'GET /environments/3/stats/summary': {
+        body: {
+          sampled_at: '',
+          cpu_percent: 200,
+          memory_usage: 256 * 1024 ** 2,
+          containers: 3,
+          host: { cpu_percent: 80, memory_usage: 1024 ** 3, memory_total: 2 * 1024 ** 3 },
+        },
+      },
+    });
+    const wrapper = await mountTile(base);
+    expect(gaugeLabels(wrapper).slice(0, 2)).toEqual(['CPU 80%', 'Memory 50%']);
+    expect(wrapper.findAll('.gauge .detail').map((d) => d.text())[1]).toContain('2');
+  });
+
   // The live stream takes over from the stored summary with every sample.
   it('updates the gauges from the live usage stream', async () => {
     stubApi({
@@ -301,6 +320,22 @@ describe('EnvironmentTile', () => {
     });
     await flushPromises();
     expect(gaugeLabels(wrapper).slice(0, 2)).toEqual(['CPU 25%', 'Memory 50%']);
+    ws.message({
+      time: '2026-10-27T12:00:10Z',
+      containers: [],
+      skipped: 0,
+      total: {
+        cpu_percent: 100,
+        memory_usage: 0,
+        network_rx: 0,
+        network_tx: 0,
+        block_read: 0,
+        block_write: 0,
+      },
+      host: { cpu_percent: 90, memory_usage: 768 * 1024 ** 2, memory_total: 1024 ** 3 },
+    });
+    await flushPromises();
+    expect(gaugeLabels(wrapper).slice(0, 2)).toEqual(['CPU 90%', 'Memory 75%']);
     wrapper.unmount();
     expect(ws.closed).toBe(true);
   });
@@ -330,6 +365,38 @@ describe('EnvironmentTile', () => {
     );
     const lines = wrapper.findAll('.charts path.line').map((p) => p.attributes('d'));
     // 400% of one CPU on 4 and all the memory are both 100%: from the bottom to the top.
+    expect(lines).toEqual(['M0.00,29.00 L100.00,2.00', 'M0.00,29.00 L100.00,2.00']);
+  });
+
+  // A point with the host's load is charted from it, one without from the containers'.
+  it('charts the host-wide history where it has it', async () => {
+    const point = (host?: { cpu_percent: number; memory_usage: number; memory_total: number }) => ({
+      time: '',
+      cpu_percent: 0,
+      cpu_max: 0,
+      memory_usage: 0,
+      memory_max: 0,
+      network_rx: 0,
+      network_tx: 0,
+      block_read: 0,
+      block_write: 0,
+      host,
+    });
+    stubApi({
+      'GET /environments/3': { body: { ...base, docker } },
+      'GET /environments/3/metrics?since=24h&resolution=15m': {
+        body: {
+          source: 'raw',
+          step: 900,
+          points: [
+            point(),
+            point({ cpu_percent: 100, memory_usage: 4 * 1024 ** 3, memory_total: 4 * 1024 ** 3 }),
+          ],
+        },
+      },
+    });
+    const wrapper = await mountTile(base);
+    const lines = wrapper.findAll('.charts path.line').map((p) => p.attributes('d'));
     expect(lines).toEqual(['M0.00,29.00 L100.00,2.00', 'M0.00,29.00 L100.00,2.00']);
   });
 

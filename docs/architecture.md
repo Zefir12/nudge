@@ -400,6 +400,10 @@ to the UI as they are.
   - `GET /v1/disk`: `{"total", "free"}`, statfs on the agent's read-only mount of the
     host's Docker root dir (`hostdisk`), for the dashboard's disk bar; `503` without the
     mount, `404` from an agent before it. Either way the size is unknown.
+  - `GET /v1/host`: `{"cpu_busy", "cpu_total", "memory_total", "memory_available"}`,
+    the host's CPU time counters and memory from /proc (`hostload`); the server's
+    metrics collector turns two readings into the host's CPU percentage. `503` without
+    /proc, `404` from an agent before it.
   - `DELETE /v1/stacks/{name}`: removes the files after `down`.
   - Not built yet: `GET /v1/stacks` with names and a SHA-256 of each project's files, so
     the server can show a stack that differs from what it last sent.

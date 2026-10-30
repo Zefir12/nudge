@@ -50,6 +50,9 @@ type Live struct {
 	Containers []Container `json:"containers"`
 	Skipped    int         `json:"skipped"`
 	Total      LiveTotal   `json:"total"`
+	// Host is the whole machine's load, for a subscriber who sees every container;
+	// absent when it can't be told.
+	Host *Host `json:"host,omitempty"`
 }
 
 // tick is one collected tick with every container's owner, so each subscriber gets its
@@ -58,12 +61,13 @@ type tick struct {
 	time    time.Time
 	sampled []Container
 	owners  map[string]string
+	host    *Host
 	// skippedOwners are the owners of the containers that could not be sampled.
 	skippedOwners []string
 }
 
-func newTick(at time.Time, items []container.Summary, sampled []Container, owners map[string]string) *tick {
-	t := &tick{time: at, sampled: sampled, owners: owners}
+func newTick(at time.Time, items []container.Summary, sampled []Container, owners map[string]string, host *Host) *tick {
+	t := &tick{time: at, sampled: sampled, owners: owners, host: host}
 	got := make(map[string]bool, len(sampled))
 	for _, c := range sampled {
 		got[c.ID] = true
@@ -84,6 +88,9 @@ func (sc Scope) in(owner string) bool {
 // view is t within sc.
 func (t *tick) view(sc Scope) Live {
 	out := Live{Time: t.time.UTC(), Containers: []Container{}}
+	if sc.All {
+		out.Host = t.host
+	}
 	for _, c := range t.sampled {
 		if !sc.in(t.owners[c.ID]) {
 			continue

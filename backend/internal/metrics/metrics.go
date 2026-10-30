@@ -28,6 +28,7 @@ import (
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/hostload"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/store"
 )
 
@@ -69,6 +70,19 @@ type Envs interface {
 // API's ownership rule (the owner label, unless the image sets one too).
 type OwnersFunc func(ctx context.Context, c docker.Client, items []container.Summary) (map[string]string, error)
 
+// HostFunc reads the host of an environment (hostload.Read locally, hostload.Remote
+// for an agent).
+type HostFunc func(ctx context.Context, env environments.Environment) (hostload.Reading, error)
+
+// Host is the whole machine's load at a tick: CPU as a percentage of every CPU (0 to
+// 100, not of one CPU like the containers'), memory in use (all but what is available)
+// and all of it.
+type Host struct {
+	CPUPercent  float64 `json:"cpu_percent"`
+	MemoryUsage uint64  `json:"memory_usage"`
+	MemoryTotal uint64  `json:"memory_total"`
+}
+
 // Clock is the time source; tests drive the waits.
 type Clock interface {
 	Now() time.Time
@@ -86,7 +100,9 @@ type Options struct {
 	Log    *slog.Logger
 	Envs   Envs
 	Owners OwnersFunc
-	Clock  Clock
+	// Host reads an environment's host each tick; nil leaves the host's load out.
+	Host  HostFunc
+	Clock Clock
 	// Interval is how often each environment is sampled; zero means collection is off
 	// (Run returns at once), and stored samples still answer.
 	Interval time.Duration
@@ -103,6 +119,7 @@ type Service struct {
 	log       *slog.Logger
 	envs      Envs
 	owners    OwnersFunc
+	host      HostFunc
 	clock     Clock
 	interval  time.Duration
 	retention time.Duration
@@ -114,7 +131,7 @@ type Service struct {
 // New returns a Service.
 func New(opts Options) *Service {
 	s := &Service{
-		db: opts.DB, log: opts.Log, envs: opts.Envs, owners: opts.Owners, clock: opts.Clock,
+		db: opts.DB, log: opts.Log, envs: opts.Envs, owners: opts.Owners, host: opts.Host, clock: opts.Clock,
 		interval: opts.Interval, retention: opts.Retention, liveInterval: opts.LiveInterval,
 		live: newLiveHub(),
 	}
@@ -200,12 +217,14 @@ func (s *Service) collectLoop(ctx context.Context, env environments.Environment)
 	defer unregister()
 	// nextSave is when the next stored tick is due; last is when the last tick started.
 	var nextSave, last time.Time
+	// The host's CPU is the change since a previous reading.
+	var prev hostReadings
 	for {
 		now := s.clock.Now()
 		save := !now.Before(nextSave)
 		watched := s.live.watched(env.ID)
 		if save || watched && !now.Before(last.Add(s.liveInterval)) {
-			s.logCollect(ctx, env, s.collect(ctx, env, save))
+			s.logCollect(ctx, env, s.collect(ctx, env, save, &prev))
 			last = now
 			if save {
 				nextSave = now.Add(s.interval)
@@ -237,18 +256,72 @@ func (s *Service) logCollect(ctx context.Context, env environments.Environment, 
 // Collect takes one sample of every running container of env and stores it as one
 // tick. A tick cut short, or one where no listed container could be sampled, is not
 // stored: its totals would look whole.
+//
+// Without a previous reading of the host, the tick leaves the host's load out.
 func (s *Service) Collect(ctx context.Context, env environments.Environment) error {
-	return s.collect(ctx, env, true)
+	return s.collect(ctx, env, true, &hostReadings{})
+}
+
+// hostReadTimeout bounds a tick's read of its host, apart from the containers' budget:
+// a slow agent leaves the host out rather than the tick.
+const hostReadTimeout = 5 * time.Second
+
+// hostReadings are a collector's previous readings of its host: of the last tick, which
+// a live tick's CPU is measured from, and of the last stored tick, which a stored tick's
+// is, so the stored CPU covers the whole interval whether or not anyone watches.
+type hostReadings struct {
+	last, saved hostload.Reading
+	// lastOK and savedOK tell whether last and saved hold a reading.
+	lastOK, savedOK bool
+	// failing is set while reads fail, so a failure is logged once, not every tick.
+	failing bool
+}
+
+// readHost reads env's host and returns its load since the last tick (live) and, when
+// save is set, since the last stored tick (stored); nil when it can't be told (no
+// reader, an older agent, no previous reading). A failed read starts over.
+func (s *Service) readHost(ctx context.Context, env environments.Environment, prev *hostReadings, save bool) (live, stored *Host) {
+	if s.host == nil {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, hostReadTimeout)
+	defer cancel()
+	r, err := s.host(ctx, env)
+	if err != nil {
+		if !errors.Is(err, hostload.ErrUnknown) && !prev.failing {
+			s.log.Warn("metrics: host load", "env", env.ID, "err", err)
+		}
+		*prev = hostReadings{failing: true}
+		return nil, nil
+	}
+	since := func(from hostload.Reading, ok bool) *Host {
+		if !ok {
+			return nil
+		}
+		cpu, ok := hostload.CPUPercent(from, r)
+		if !ok {
+			return nil
+		}
+		return &Host{CPUPercent: cpu, MemoryUsage: r.MemoryUsed(), MemoryTotal: r.MemoryTotal}
+	}
+	live = since(prev.last, prev.lastOK)
+	prev.last, prev.lastOK, prev.failing = r, true, false
+	if save {
+		stored = since(prev.saved, prev.savedOK)
+		prev.saved, prev.savedOK = r, true
+	}
+	return live, stored
 }
 
 // collect takes one tick of env, hands it to env's live subscribers, and stores it if
-// save is set.
-func (s *Service) collect(ctx context.Context, env environments.Environment, save bool) error {
+// save is set; prev are the previous readings of env's host.
+func (s *Service) collect(ctx context.Context, env environments.Environment, save bool, prev *hostReadings) error {
 	c, err := s.envs.Client(env)
 	if err != nil {
 		return fmt.Errorf("collect environment %d: %w", env.ID, err)
 	}
 	now := s.clock.Now()
+	liveHost, storedHost := s.readHost(ctx, env, prev, save)
 	tctx, cancel := context.WithTimeout(ctx, collectTimeout)
 	defer cancel()
 	list, err := c.ContainerList(tctx, client.ContainerListOptions{})
@@ -268,11 +341,11 @@ func (s *Service) collect(ctx context.Context, env environments.Environment, sav
 	if len(sampled) == 0 && skipped > 0 {
 		return fmt.Errorf("collect environment %d: %w", env.ID, errNoneSampled)
 	}
-	s.live.publish(env.ID, newTick(now, list.Items, sampled, owners))
+	s.live.publish(env.ID, newTick(now, list.Items, sampled, owners, liveHost))
 	if !save {
 		return nil
 	}
-	if err := s.save(ctx, env.ID, now, sampled, owners); err != nil {
+	if err := s.save(ctx, env.ID, now, sampled, owners, storedHost); err != nil {
 		return fmt.Errorf("save metrics of environment %d: %w", env.ID, err)
 	}
 	return nil
@@ -280,7 +353,7 @@ func (s *Service) collect(ctx context.Context, env environments.Environment, sav
 
 var errNoneSampled = errors.New("no container could be sampled")
 
-func (s *Service) save(ctx context.Context, env int64, now time.Time, sampled []Container, owners map[string]string) error {
+func (s *Service) save(ctx context.Context, env int64, now time.Time, sampled []Container, owners map[string]string, host *Host) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -303,11 +376,16 @@ func (s *Service) save(ctx context.Context, env int64, now time.Time, sampled []
 			return err
 		}
 	}
+	var hostCPU, hostMem, hostTotal any
+	if host != nil {
+		hostCPU, hostMem, hostTotal = host.CPUPercent, i64(host.MemoryUsage), i64(host.MemoryTotal)
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO environment_samples
-		(environment_id, time, cpu, memory, network_rx, network_tx, block_read, block_write, containers)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(environment_id, time, cpu, memory, network_rx, network_tx, block_read, block_write, containers,
+			host_cpu, host_memory, host_memory_total)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		env, t, total.CPUPercent, i64(total.MemoryUsage), i64(total.NetworkRx), i64(total.NetworkTx),
-		i64(total.BlockRead), i64(total.BlockWrite), len(sampled)); err != nil {
+		i64(total.BlockRead), i64(total.BlockWrite), len(sampled), hostCPU, hostMem, hostTotal); err != nil {
 		return err
 	}
 	return tx.Commit()

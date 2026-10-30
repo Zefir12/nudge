@@ -12,6 +12,7 @@ import {
   listVolumes,
   type Environment,
   type EnvironmentDisk,
+  type HostUsage,
 } from '../api/client';
 import { useLiveUsage } from '../composables/useLiveUsage';
 import { useLoad } from '../composables/useLoad';
@@ -57,6 +58,7 @@ const usage = computed(() => {
     cpu_percent: l.total.cpu_percent,
     memory_usage: l.total.memory_usage,
     containers: l.containers.length,
+    host: l.host,
   };
 });
 const { data: metrics, reload: reloadMetrics } = useLoad(id, (env) =>
@@ -80,27 +82,42 @@ onMounted(() => {
 });
 onUnmounted(() => clearInterval(timer));
 
-// load is the usage against the host: CPU against every CPU, memory against all of it.
+// hostLoad is a sample as the gauges show it: the whole machine's load when the server
+// could read it, else the containers' usage against every CPU and all of the memory
+// (an older agent, or a user, who only sees their containers).
+function hostLoad(
+  u: { cpu_percent: number; memory_usage: number; host?: HostUsage },
+  ncpu: number,
+  memTotal: number,
+) {
+  if (u.host && u.host.memory_total) {
+    return { cpu: Math.min(100, u.host.cpu_percent), used: u.host.memory_usage, total: u.host.memory_total };
+  }
+  return { cpu: Math.min(100, u.cpu_percent / ncpu), used: u.memory_usage, total: memTotal };
+}
+
+// load is the latest sample on the gauges.
 const load = computed(() => {
   const d = docker.value;
   const u = usage.value;
   if (!d || !u || !d.ncpu || !d.mem_total) return null;
+  const l = hostLoad(u, d.ncpu, d.mem_total);
   return {
-    cpu: Math.min(100, u.cpu_percent / d.ncpu),
-    mem: Math.min(100, (u.memory_usage / d.mem_total) * 100),
-    memLabel: `${formatBytes(u.memory_usage)} / ${formatBytes(d.mem_total)}`,
+    cpu: l.cpu,
+    mem: Math.min(100, (l.used / l.total) * 100),
+    memLabel: `${formatBytes(l.used)} / ${formatBytes(l.total)}`,
   };
 });
 
-// history is the stored usage as the gauges show it: CPU against every CPU, memory
-// against the host's.
+// history is the stored usage as the gauges show it.
 const history = computed(() => {
   const d = docker.value;
   const points = metrics.value?.points ?? [];
   if (!d || !d.ncpu || !d.mem_total) return { cpu: [], mem: [] };
+  const loads = points.map((p) => hostLoad(p, d.ncpu, d.mem_total));
   return {
-    cpu: points.map((p) => Math.min(100, p.cpu_percent / d.ncpu)),
-    mem: points.map((p) => Math.min(100, (p.memory_usage / d.mem_total) * 100)),
+    cpu: loads.map((l) => l.cpu),
+    mem: loads.map((l) => Math.min(100, (l.used / l.total) * 100)),
   };
 });
 
