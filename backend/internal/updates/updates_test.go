@@ -183,19 +183,26 @@ func TestCheckMovedTag(t *testing.T) {
 		{ID: "agent", Image: "77d2dfeabe34", ImageID: "sha256:old"},
 		{ID: "gone", Image: "0123456789ab", ImageID: "sha256:g1"},        // no longer inspectable
 		{ID: "byid", Image: "sha256:abcdef012345", ImageID: "sha256:b1"}, // created by ID
+		// The containerd image store drops the old image once its tag moves.
+		{ID: "web", Image: "fedcba987654", ImageID: "sha256:w1"},
 	}
 	fake.ContainerDetails = map[string]container.InspectResponse{
 		"agent": {ID: "agent", Config: &container.Config{Image: "registry.example/agent:latest"}},
+		"web":   {ID: "web", Config: &container.Config{Image: "registry.example/web:1"}},
 		"byid":  {ID: "byid", Config: &container.Config{Image: "sha256:abcdef012345"}},
 	}
 	fake.ImageDetails = map[string]image.InspectResponse{"sha256:old": pulled("registry.example/agent@sha256:old")}
-	fake.Distribution = map[string]digest.Digest{"registry.example/agent:latest": "sha256:new"}
+	fake.Distribution = map[string]digest.Digest{"registry.example/agent:latest": "sha256:new", "registry.example/web:1": "sha256:w2"}
 
 	got, err := s.Check(context.Background(), envs.envs[0])
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Result{{Image: "registry.example/agent:latest", ImageID: "sha256:old", Status: Available, LocalDigest: "sha256:old", RemoteDigest: "sha256:new", CheckedAt: start}}
+	want := []Result{
+		{Image: "registry.example/agent:latest", ImageID: "sha256:old", Status: Available, LocalDigest: "sha256:old", RemoteDigest: "sha256:new", CheckedAt: start},
+		// The tag names another image than the one running: an update changes it.
+		{Image: "registry.example/web:1", ImageID: "sha256:w1", Status: Available, RemoteDigest: "sha256:w2", CheckedAt: start},
+	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("Check =\n%+v\nwant\n%+v", got, want)
 	}

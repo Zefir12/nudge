@@ -977,7 +977,8 @@ newer version: it asks the environment's daemon for the registry's digest of the
 the local image was pulled as. Images pinned to a digest, named by ID or built locally
 aren't updatable by tag. A container whose tag has since moved to a newer image (pulled
 but not applied), which Docker lists by image ID, is checked under the reference it was
-created from. The check runs every `NUDGE_UPDATE_CHECK_INTERVAL` over every
+created from; it is `available` with no `local_digest` when its old image is gone (the
+containerd image store drops it once the tag moves). The check runs every `NUDGE_UPDATE_CHECK_INTERVAL` over every
 environment (see docs/config/server.md) and on request.
 
 - `GET /api/v1/environments/{env}/updates` answers the last check of the environment,
