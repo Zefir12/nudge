@@ -173,6 +173,34 @@ func TestCheck(t *testing.T) {
 	}
 }
 
+// TestCheckMovedTag checks containers whose tag now names a newer image: the daemon lists
+// their image by ID, and the reference they were created from is in their config.
+func TestCheckMovedTag(t *testing.T) {
+	t.Parallel()
+	s, envs, _ := newTestService(t, nil)
+	fake := envs.clients[1].(*dockertest.Fake)
+	fake.Containers = []container.Summary{
+		{ID: "agent", Image: "77d2dfeabe34", ImageID: "sha256:old"},
+		{ID: "gone", Image: "0123456789ab", ImageID: "sha256:g1"},        // no longer inspectable
+		{ID: "byid", Image: "sha256:abcdef012345", ImageID: "sha256:b1"}, // created by ID
+	}
+	fake.ContainerDetails = map[string]container.InspectResponse{
+		"agent": {ID: "agent", Config: &container.Config{Image: "registry.example/agent:latest"}},
+		"byid":  {ID: "byid", Config: &container.Config{Image: "sha256:abcdef012345"}},
+	}
+	fake.ImageDetails = map[string]image.InspectResponse{"sha256:old": pulled("registry.example/agent@sha256:old")}
+	fake.Distribution = map[string]digest.Digest{"registry.example/agent:latest": "sha256:new"}
+
+	got, err := s.Check(context.Background(), envs.envs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Result{{Image: "registry.example/agent:latest", ImageID: "sha256:old", Status: Available, LocalDigest: "sha256:old", RemoteDigest: "sha256:new", CheckedAt: start}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("Check =\n%+v\nwant\n%+v", got, want)
+	}
+}
+
 func cmpString(a, b string) int {
 	switch {
 	case a < b:

@@ -212,6 +212,9 @@ func (s *server) serveSelfStatus(w http.ResponseWriter, r *http.Request, env env
 		return
 	}
 	out.Error = "not checked yet"
+	if check || len(results) > 0 {
+		out.Error = "the last check didn't cover this image"
+	}
 	for _, res := range results {
 		if res.Image != t.Image {
 			continue
