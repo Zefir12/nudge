@@ -476,8 +476,8 @@ const mockJoinToken = (name: string) => {
   return {
     token,
     expires_at: new Date(Date.now() + 86_400_000).toISOString(),
-    docker_run: `docker run -d --name nudge-agent --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock -e NUDGE_SERVER=https://nudge.example.net -e NUDGE_JOIN_TOKEN=${token} ${image} agent`,
-    compose: `services:\n  nudge-agent:\n    image: ${image}\n    command: agent\n    restart: unless-stopped\n    environment:\n      NUDGE_SERVER: https://nudge.example.net\n      NUDGE_JOIN_TOKEN: "${token}"\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock\n`,
+    docker_run: `docker run -d --name nudge-agent --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock -v nudge-agent:/data -v /var/lib/docker:/host/docker:ro -e NUDGE_SERVER_URL=https://nudge.example.net -e NUDGE_JOIN_TOKEN=${token} ${image} agent`,
+    compose: `services:\n  nudge-agent:\n    image: ${image}\n    command: agent\n    container_name: nudge-agent\n    restart: unless-stopped\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock\n      - nudge-agent:/data\n      - /var/lib/docker:/host/docker:ro\n    environment:\n      NUDGE_SERVER_URL: https://nudge.example.net\n      NUDGE_JOIN_TOKEN: ${token}\n\nvolumes:\n  nudge-agent:\n`,
   };
 };
 

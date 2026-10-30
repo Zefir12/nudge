@@ -21,6 +21,9 @@ them, change its image and keep the same `/data` volume (the agent's credentials
 `agent.json` there), no new join token needed. Keep the server and the agents on the same tag; the tunnel's protocol version
 refuses an agent the server can't talk to.
 
+The `/var/lib/docker` mount gives the disk's size (docs/config/server.md, Disk usage);
+agents installed without it get it on their next self-update.
+
 It also shows the same agent as a compose file:
 [deploy/agent.compose.yml](../../deploy/agent.compose.yml) with the values filled in.
 
