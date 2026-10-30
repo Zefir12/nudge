@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
 import type { Environment } from '../api/client';
 import { stubApi } from '../test-utils';
 import EnvironmentSettings from './EnvironmentSettings.vue';
+import SelfUpdatePanel from './SelfUpdatePanel.vue';
 
 const local: Environment = {
   id: 1,
@@ -57,6 +58,27 @@ describe('EnvironmentSettings', () => {
       'Revoke agent',
       'Remove',
     ]);
+  });
+
+  it.each([
+    { name: 'an online enrolled agent', env: { ...nas, online: true }, shown: true },
+    { name: 'an offline agent', env: nas, shown: false },
+    {
+      name: 'an agent not enrolled',
+      env: { ...nas, online: true, agent: { enrolled: false, version: '' } },
+      shown: false,
+    },
+  ])('offers the version and update for $name: $shown', async ({ env, shown }) => {
+    stubApi({
+      'GET /environments/2/agent/update': {
+        body: { version: 'v0.3.0', image: 'nudge-agent:latest', status: 'current', can_update: true },
+      },
+    });
+    const wrapper = mountSettings(env);
+    await flushPromises();
+    const panel = wrapper.findComponent(SelfUpdatePanel);
+    expect(panel.exists()).toBe(shown);
+    if (shown) expect(panel.props('env')).toBe('2');
   });
 
   it('has nothing to revoke before an agent enrolled', () => {
