@@ -5,13 +5,14 @@ import {
   checkAgentUpdate,
   checkSystemUpdate,
   getAgentUpdate,
-  getHealth,
   getSystemUpdate,
   startAgentUpdate,
   startSystemUpdate,
   type SelfUpdate,
 } from '../api/client';
 import { formatDate } from '../format';
+import { page, POLL_MS, waitForServerRestart } from '../reconnect';
+import AppSpinner from './AppSpinner.vue';
 
 // SelfUpdatePanel shows the version of nudge's own container and updates it: the
 // server's, or with env the agent's of that environment.
@@ -69,25 +70,37 @@ async function update() {
     return;
   }
   busy.value = 'restart';
-  await waitForRestart();
   if (!props.env) {
-    // The new server may serve a new UI.
-    window.location.reload();
+    await serverRestarted(state.value?.version ?? '');
     return;
   }
+  await waitForAgentRestart();
   await check();
   note.value = 'The agent restarted.';
 }
 
-// waitForRestart waits until the old container stopped answering and the new one
-// answers, or gives up after about three minutes (a failed update brings the old one back).
-async function waitForRestart() {
-  const probe = props.env ? () => getAgentUpdate(props.env as string) : getHealth;
+// serverRestarted waits, behind App's overlay, for the server to come back. A new version
+// reloads the page for its UI; the same one means the update rolled back.
+async function serverRestarted(fromVersion: string) {
+  const health = await waitForServerRestart(fromVersion);
+  if (health.version !== fromVersion) {
+    page.reload();
+    return;
+  }
+  busy.value = '';
+  await load();
+  note.value = `nudge is back on ${health.version || 'the same version'}: the update didn’t change the version, or it rolled back.`;
+}
+
+// waitForAgentRestart waits until the agent stopped answering and answers again, or gives
+// up after about three minutes (a failed update brings the old one back).
+async function waitForAgentRestart() {
+  const env = props.env as string;
   let down = false;
   for (let i = 0; i < 90; i++) {
-    await sleep(2000);
+    await sleep(POLL_MS);
     try {
-      await probe();
+      await getAgentUpdate(env);
       if (down || i >= 15) return;
     } catch {
       down = true;
@@ -126,8 +139,9 @@ const statusText: Record<SelfUpdate['status'], string> = {
     </dl>
     <p v-if="state && !state.can_update && state.reason" class="muted reason">{{ state.reason }}</p>
     <p v-if="busy === 'restart'" class="restarting" role="status">
+      <AppSpinner />
       Updating {{ what() }}… it restarts on the new image{{
-        env ? '; this panel refreshes when it is back.' : ' and this page reloads when it is back.'
+        env ? '; this panel refreshes when it is back.' : ' and this page reconnects when it is back.'
       }}
     </p>
     <p v-if="note" class="muted" role="status">{{ note }}</p>
@@ -185,6 +199,12 @@ dd {
 .reason,
 .restarting {
   margin: 0.75rem 0 0;
+}
+
+.restarting {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
 }
 
 .actions {

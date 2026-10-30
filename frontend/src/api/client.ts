@@ -68,7 +68,7 @@ export interface Health {
   version: string;
 }
 
-export const getHealth = () => apiFetch<Health>('/health');
+export const getHealth = (init?: RequestInit) => apiFetch<Health>('/health', init);
 
 export type Role = 'admin' | 'user';
 
