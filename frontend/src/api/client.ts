@@ -953,10 +953,20 @@ export interface EnvironmentStats {
 export const getEnvironmentStats = (env: string, signal?: AbortSignal) =>
   apiFetch<EnvironmentStats>(envPath(env, '/stats'), { signal });
 
+// HostUsage is the whole machine's load: CPU as a percentage of every CPU (0-100, not of
+// one CPU like the containers'), memory in use (all but what is available) and all of it.
+export interface HostUsage {
+  cpu_percent: number;
+  memory_usage: number;
+  memory_total: number;
+}
+
 // LiveUsage is one sample of an environment from its live usage stream: the overview's
-// shape (a user's: of their containers) with the sample's time.
+// shape (a user's: of their containers) with the sample's time; `host` only for an admin,
+// when the host can be read.
 export interface LiveUsage extends EnvironmentStats {
   time: string;
+  host?: HostUsage;
 }
 
 export interface LiveUsageHandlers {
@@ -984,6 +994,8 @@ export interface UsageSummary {
   cpu_percent: number;
   memory_usage: number;
   containers: number;
+  // host is the whole machine's load, for an admin when it can be read.
+  host?: HostUsage;
 }
 
 // getEnvironmentSummary answers the environment's latest collected usage totals; 404 when
@@ -1003,6 +1015,8 @@ export interface MetricsPoint {
   network_tx: number;
   block_read: number;
   block_write: number;
+  // host is the whole machine's load averaged, in an admin's environment history.
+  host?: HostUsage;
 }
 
 // MetricsHistory is a usage history, oldest point first; `source` says whether raw

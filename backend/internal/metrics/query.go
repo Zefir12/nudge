@@ -29,6 +29,9 @@ type Summary struct {
 	CPUPercent  float64   `json:"cpu_percent"`
 	MemoryUsage uint64    `json:"memory_usage"`
 	Containers  int       `json:"containers"`
+	// Host is the whole machine's load, in a summary of every container; absent when
+	// it can't be told.
+	Host *Host `json:"host,omitempty"`
 }
 
 // Latest returns env's latest tick within sc; ok is false when there is none from the
@@ -40,8 +43,11 @@ func (s *Service) Latest(ctx context.Context, env int64, sc Scope) (sum Summary,
 	var t int64
 	var cpu, mem float64
 	var n int
-	err = s.db.QueryRowContext(ctx, `SELECT time, cpu, memory, containers FROM environment_samples
-		WHERE environment_id = ? ORDER BY time DESC LIMIT 1`, env).Scan(&t, &cpu, &mem, &n)
+	var hostCPU sql.NullFloat64
+	var hostMem, hostTotal sql.NullInt64
+	err = s.db.QueryRowContext(ctx, `SELECT time, cpu, memory, containers, host_cpu, host_memory, host_memory_total
+		FROM environment_samples WHERE environment_id = ? ORDER BY time DESC LIMIT 1`, env).
+		Scan(&t, &cpu, &mem, &n, &hostCPU, &hostMem, &hostTotal)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Summary{}, false, nil
 	}
@@ -59,7 +65,11 @@ func (s *Service) Latest(ctx context.Context, env int64, sc Scope) (sum Summary,
 			return Summary{}, false, fmt.Errorf("latest metrics: %w", err)
 		}
 	}
-	return Summary{SampledAt: at, CPUPercent: cpu, MemoryUsage: uint64(mem), Containers: n}, true, nil
+	sum = Summary{SampledAt: at, CPUPercent: cpu, MemoryUsage: uint64(mem), Containers: n}
+	if sc.All && hostCPU.Valid && hostMem.Valid && hostTotal.Valid {
+		sum.Host = &Host{CPUPercent: hostCPU.Float64, MemoryUsage: u64(hostMem.Int64), MemoryTotal: u64(hostTotal.Int64)}
+	}
+	return sum, true, nil
 }
 
 // Query asks for a history: of an environment within Scope, or of one container
@@ -85,6 +95,9 @@ type Point struct {
 	NetworkTx   uint64    `json:"network_tx"`
 	BlockRead   uint64    `json:"block_read"`
 	BlockWrite  uint64    `json:"block_write"`
+	// Host is the whole machine's load averaged, in an environment's history of every
+	// container; absent where it wasn't told.
+	Host *Host `json:"host,omitempty"`
 }
 
 // History is a query's answer: Source says whether the raw samples or the hourly
@@ -142,13 +155,19 @@ func (s *Service) History(ctx context.Context, q Query) (History, error) {
 			b              int64
 			mem, memMax    float64
 			rx, tx, br, bw int64
+			hostCPU        sql.NullFloat64
+			hostMem        sql.NullFloat64
+			hostTotal      sql.NullInt64
 		)
-		if err := rows.Scan(&b, &p.CPUPercent, &p.CPUMax, &mem, &memMax, &rx, &tx, &br, &bw); err != nil {
+		if err := rows.Scan(&b, &p.CPUPercent, &p.CPUMax, &mem, &memMax, &rx, &tx, &br, &bw, &hostCPU, &hostMem, &hostTotal); err != nil {
 			return History{}, fmt.Errorf("metrics history: %w", err)
 		}
 		p.Time = time.Unix(b, 0).UTC()
 		p.MemoryUsage, p.MemoryMax = uint64(mem), uint64(memMax)
 		p.NetworkRx, p.NetworkTx, p.BlockRead, p.BlockWrite = u64(rx), u64(tx), u64(br), u64(bw)
+		if hostCPU.Valid && hostMem.Valid && hostTotal.Valid {
+			p.Host = &Host{CPUPercent: hostCPU.Float64, MemoryUsage: uint64(max(hostMem.Float64, 0)), MemoryTotal: u64(hostTotal.Int64)}
+		}
 		h.Points = append(h.Points, p)
 	}
 	if err := rows.Err(); err != nil {
@@ -166,34 +185,41 @@ func u64(v int64) uint64 {
 }
 
 // historyOuter and historyEnd wrap an inner query that selects (t, cpu, cpu_max, mem,
-// mem_max, rx, tx, br, bw, n), n weighing the averages by the samples behind each row,
-// into buckets of ?1 seconds. The queries below are built from constants only.
+// mem_max, rx, tx, br, bw, n, hcpu, hmem, htotal, hn), n weighing the averages by the
+// samples behind each row and hn the host's (NULL host columns and hn 0 where there is
+// none), into buckets of ?1 seconds. The queries below are built from constants only.
 const (
 	historyOuter = `SELECT t / ?1 * ?1 AS b, SUM(cpu * n) / SUM(n), MAX(cpu_max), SUM(mem * n) / SUM(n), MAX(mem_max),
-			MAX(rx), MAX(tx), MAX(br), MAX(bw) FROM (`
+			MAX(rx), MAX(tx), MAX(br), MAX(bw),
+			SUM(hcpu * hn) / NULLIF(SUM(hn), 0), SUM(hmem * hn) / NULLIF(SUM(hn), 0), MAX(htotal) FROM (`
 	historyEnd = `) GROUP BY b ORDER BY b`
+
+	// noHost are the host columns of the queries of containers, which have none.
+	noHost = `, NULL AS hcpu, NULL AS hmem, NULL AS htotal, 0 AS hn`
 
 	rawColumns = `SELECT time AS t, cpu, cpu AS cpu_max, memory AS mem, memory AS mem_max, network_rx AS rx, network_tx AS tx,
 			block_read AS br, block_write AS bw, 1 AS n`
 	hourColumns = `SELECT hour AS t, cpu_avg AS cpu, cpu_max, memory_avg AS mem, memory_max AS mem_max, network_rx AS rx, network_tx AS tx,
 			block_read AS br, block_write AS bw, samples AS n`
+	envRawHost  = `, host_cpu AS hcpu, host_memory AS hmem, host_memory_total AS htotal, host_cpu IS NOT NULL AS hn`
+	envHourHost = `, host_cpu AS hcpu, host_memory AS hmem, host_memory_total AS htotal, host_samples AS hn`
 
-	containerRawQuery = historyOuter + rawColumns +
+	containerRawQuery = historyOuter + rawColumns + noHost +
 		` FROM container_samples WHERE environment_id = ?2 AND container_id = ?3 AND time >= ?4` + historyEnd
-	containerHourQuery = historyOuter + hourColumns +
+	containerHourQuery = historyOuter + hourColumns + noHost +
 		` FROM container_hours WHERE environment_id = ?2 AND container_id = ?3 AND hour >= ?4` + historyEnd
-	envRawQuery = historyOuter + rawColumns +
+	envRawQuery = historyOuter + rawColumns + envRawHost +
 		` FROM environment_samples WHERE environment_id = ?2 AND time >= ?3` + historyEnd
-	envHourQuery = historyOuter + hourColumns +
+	envHourQuery = historyOuter + hourColumns + envHourHost +
 		` FROM environment_hours WHERE environment_id = ?2 AND hour >= ?3` + historyEnd
 	// A user's tick is the sum of their containers' rows of that tick.
 	ownerRawQuery = historyOuter + `SELECT time AS t, SUM(cpu) AS cpu, SUM(cpu) AS cpu_max, SUM(memory) AS mem, SUM(memory) AS mem_max,
-			SUM(network_rx) AS rx, SUM(network_tx) AS tx, SUM(block_read) AS br, SUM(block_write) AS bw, 1 AS n
+			SUM(network_rx) AS rx, SUM(network_tx) AS tx, SUM(block_read) AS br, SUM(block_write) AS bw, 1 AS n` + noHost + `
 		FROM container_samples WHERE environment_id = ?2 AND owner = ?3 AND owner <> '' AND time >= ?4
 		GROUP BY time` + historyEnd
 	// Summed maximums are an upper bound: the containers peaked at different times.
 	ownerHourQuery = historyOuter + `SELECT hour AS t, SUM(cpu_avg) AS cpu, SUM(cpu_max) AS cpu_max, SUM(memory_avg) AS mem, SUM(memory_max) AS mem_max,
-			SUM(network_rx) AS rx, SUM(network_tx) AS tx, SUM(block_read) AS br, SUM(block_write) AS bw, MAX(samples) AS n
+			SUM(network_rx) AS rx, SUM(network_tx) AS tx, SUM(block_read) AS br, SUM(block_write) AS bw, MAX(samples) AS n` + noHost + `
 		FROM container_hours WHERE environment_id = ?2 AND owner = ?3 AND owner <> '' AND hour >= ?4
 		GROUP BY hour` + historyEnd
 )

@@ -633,9 +633,14 @@ reading) and samples 8 containers at a time, for at most a minute; a container t
 meanwhile, or isn't sampled in time, is left out and counted in `skipped`.
 
 `GET /api/v1/environments/{env}/stats/summary` answers `{"sampled_at": "...", "cpu_percent":
-200, "memory_usage": 536870912, "containers": 2}`: the totals of the metrics collector's
-latest tick (see Metrics) and how many containers it sampled; for a user, of their own
-containers. It reads the database only, so it is cheap to ask for often (the global
+200, "memory_usage": 536870912, "containers": 2, "host": {"cpu_percent": 23.5,
+"memory_usage": 3221225472, "memory_total": 8589934592}}`: the totals of the metrics
+collector's latest tick (see Metrics) and how many containers it sampled; for a user, of
+their own containers. `host` is the whole machine's load at that tick, for an admin only:
+CPU as a percentage of every CPU (0-100, unlike the containers' percentage of one CPU),
+memory in use (MemTotal minus MemAvailable) and all of it, read from /proc on the server
+for the local environment and from the agent otherwise. It is left out when it can't be
+told: an agent from before it, or the first tick after the server started. It reads the database only, so it is cheap to ask for often (the global
 dashboard asks for every environment's). `404` `no recent usage sample` when there is
 none from the last three collection intervals: collection is off, it hasn't run yet, or
 the environment is offline.
@@ -665,14 +670,18 @@ over the span is coarsened. `400` for an unreadable `since` or `resolution`. The
 ```json
 {"source": "raw", "step": 900, "points": [{"time": "2026-10-27T11:45:00Z",
   "cpu_percent": 12.5, "cpu_max": 30.1, "memory_usage": 268435456, "memory_max": 301989888,
-  "network_rx": 1024, "network_tx": 256, "block_read": 8192, "block_write": 512}]}
+  "network_rx": 1024, "network_tx": 256, "block_read": 8192, "block_write": 512,
+  "host": {"cpu_percent": 23.5, "memory_usage": 3221225472, "memory_total": 8589934592}}]}
 ```
 
 `source` is `raw` or `hourly`, `step` the bucket size in seconds; points are oldest first,
 each `time` the start of its bucket. CPU (a percentage of one CPU) and memory are averaged
 over the bucket and at their maximum (`cpu_max`, `memory_max`; for a user's rollups the
 sum of their containers' maximums, an upper bound). Network and block I/O are byte
-counters since each container started, at their largest in the bucket.
+counters since each container started, at their largest in the bucket. `host` (an
+admin's environment history only, as in the summary) is the whole machine's load averaged
+over the samples in the bucket that had it, the memory total at its largest; left out of
+a bucket with none.
 
 `GET /api/v1/environments/{env}/metrics/live` upgrades to a WebSocket like the event
 stream (same auth, keep-alive pings) and sends a frame per sample of the environment:
@@ -688,8 +697,11 @@ environment overview's shape with the sample's time, containers sorted by name:
   "memory_limit": 1073741824, "memory_percent": 25, "network_rx": 1024, "network_tx": 256,
   "block_read": 8192, "block_write": 512, "pids": 7}], "skipped": 0,
   "total": {"cpu_percent": 12.5, "memory_usage": 268435456, "network_rx": 1024,
-  "network_tx": 256, "block_read": 8192, "block_write": 512}}
+  "network_tx": 256, "block_read": 8192, "block_write": 512},
+  "host": {"cpu_percent": 23.5, "memory_usage": 3221225472, "memory_total": 8589934592}}
 ```
+
+`host` is as in the summary: for an admin, when it can be told.
 
 Before the upgrade: `404` when collection is off (`-metrics-interval 0`) or for an
 unknown environment, `503` past 100 live streams of one environment. A client that falls

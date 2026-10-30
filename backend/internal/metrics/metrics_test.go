@@ -398,7 +398,7 @@ func (mt metricsTest) insert(t *testing.T, env int64, at time.Time, containers .
 			owners[c.ID] = c.Name
 		}
 	}
-	if err := mt.svc.save(t.Context(), env, at, containers, owners); err != nil {
+	if err := mt.svc.save(t.Context(), env, at, containers, owners, nil); err != nil {
 		t.Fatal(err)
 	}
 }
