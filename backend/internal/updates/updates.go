@@ -297,6 +297,11 @@ func (s *Service) images(ctx context.Context, c docker.Client) ([]use, error) {
 	var out []use
 	for _, ctr := range list.Items {
 		img := use{ref: ctr.Image, id: ctr.ImageID}
+		if imageID.MatchString(img.ref) && ctr.ID != "" {
+			// The daemon lists the image by ID once its tag names a newer one (pulled,
+			// not applied); the container's config still has the reference.
+			img.ref = s.createdFrom(lctx, c, ctr.ID, img.ref)
+		}
 		if seen[img] || !byTag(img.ref) || img.id == "" {
 			continue
 		}
@@ -308,6 +313,17 @@ func (s *Service) images(ctx context.Context, c docker.Client) ([]use, error) {
 		out = append(out, img)
 	}
 	return out, nil
+}
+
+// createdFrom returns the reference container id was created from, or ref when it can't
+// be inspected.
+func (s *Service) createdFrom(ctx context.Context, c docker.Client, id, ref string) string {
+	res, err := c.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
+	if err != nil || res.Container.Config == nil {
+		s.log.Debug("update check: inspect container", "container", id, "err", err)
+		return ref
+	}
+	return res.Container.Config.Image
 }
 
 // localDigest is the digest the image was pulled as from the reference's repository.

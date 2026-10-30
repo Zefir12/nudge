@@ -98,6 +98,7 @@ func TestSelfUpdateStatus(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name, path string
+		setup      func(local *dockertest.Fake)
 		want       selfUpdateJSON
 	}{
 		{
@@ -108,11 +109,25 @@ func TestSelfUpdateStatus(t *testing.T) {
 			name: "server checked", path: "/api/v1/system/update/check",
 			want: selfUpdateJSON{Version: "v1.0.0", Image: selfTestRef, Status: "available", LocalDigest: "sha256:aaa", RemoteDigest: "sha256:bbb", CanUpdate: true},
 		},
+		{
+			// The tag names a newer image, so the daemon lists the running one by ID.
+			name: "server tag moved", path: "/api/v1/system/update/check",
+			setup: func(f *dockertest.Fake) { f.Containers[0].Image = "0123456789ab" },
+			want:  selfUpdateJSON{Version: "v1.0.0", Image: selfTestRef, Status: "available", LocalDigest: "sha256:aaa", RemoteDigest: "sha256:bbb", CanUpdate: true},
+		},
+		{
+			name: "server not covered", path: "/api/v1/system/update/check",
+			setup: func(f *dockertest.Fake) { f.Containers[0].ImageID = "" },
+			want:  selfUpdateJSON{Version: "v1.0.0", Image: selfTestRef, Status: "unknown", Error: "the last check didn't cover this image", CanUpdate: true},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			st := newSelfTest(t, nil)
+			if tt.setup != nil {
+				tt.setup(st.local)
+			}
 			method := "GET"
 			if strings.HasSuffix(tt.path, "/check") {
 				method = "POST"

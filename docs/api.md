@@ -975,7 +975,9 @@ nudge checks the images that containers run by tag (an implicit `latest` include
 newer version: it asks the environment's daemon for the registry's digest of the tag
 (with the stored registry credentials, as a pull would) and compares it with the digests
 the local image was pulled as. Images pinned to a digest, named by ID or built locally
-aren't updatable by tag. The check runs every `NUDGE_UPDATE_CHECK_INTERVAL` over every
+aren't updatable by tag. A container whose tag has since moved to a newer image (pulled
+but not applied), which Docker lists by image ID, is checked under the reference it was
+created from. The check runs every `NUDGE_UPDATE_CHECK_INTERVAL` over every
 environment (see docs/config/server.md) and on request.
 
 - `GET /api/v1/environments/{env}/updates` answers the last check of the environment,
@@ -1031,7 +1033,8 @@ tag it runs (docs/architecture.md, Self-update). Admins only.
   "local_digest": "sha256:…", "remote_digest": "sha256:…", "checked_at": "...", "error":
   "", "can_update": true, "reason": ""}`. `status` and the digests are the last image
   update check of `image` on that environment (Image updates); `error` says why it is
-  `unknown` (`not checked yet`, `checked before the last update; check again`, …).
+  `unknown` (`not checked yet`, `checked before the last update; check again`, `the last
+  check didn't cover this image`, …).
   `can_update` is false, with `reason`, when nudge can't replace the container itself:
   it doesn't run in a container on that host, the Docker socket isn't bind-mounted, the
   image is pinned by ID or digest, or the agent is too old (update it by hand once).
