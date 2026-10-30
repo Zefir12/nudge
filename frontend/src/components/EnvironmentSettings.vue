@@ -10,9 +10,11 @@ import {
 } from '../api/client';
 import { formatDate } from '../format';
 import JoinTokenCard from './JoinTokenCard.vue';
+import SelfUpdatePanel from './SelfUpdatePanel.vue';
 
 // EnvironmentSettings manages one environment in its tile's dialog: a new join token,
-// revoking the agent and removing the environment, each after a confirm. changed fires
+// revoking the agent and removing the environment, each after a confirm; an online
+// agent's version can be checked and updated too. changed fires
 // after every action, failed or not, so the dashboard reloads the list.
 const props = defineProps<{ env: Environment }>();
 const emit = defineEmits<{ changed: [] }>();
@@ -95,6 +97,7 @@ function onRemove() {
       </button>
       <button type="button" class="danger" :disabled="busy" @click="onRemove">Remove</button>
     </div>
+    <SelfUpdatePanel v-if="env.online && env.agent?.enrolled" class="update" :env="String(env.id)" />
   </template>
   <p v-if="error" class="error" role="alert">{{ error }}</p>
 </template>
@@ -117,6 +120,10 @@ function onRemove() {
 
 .facts dd {
   margin: 0;
+}
+
+.update {
+  margin-top: 1.5rem;
 }
 
 .actions {
