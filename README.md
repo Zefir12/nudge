@@ -23,6 +23,7 @@ docker run -d --name nudge --restart unless-stopped \
   -p 8080:8080 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v nudge-data:/data \
+  -v /var/lib/docker:/host/docker:ro \
   registrydedic.zefirlabs.net/nudge:latest
 ```
 

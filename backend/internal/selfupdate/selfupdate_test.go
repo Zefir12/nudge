@@ -14,6 +14,7 @@ import (
 	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/image"
+	"github.com/moby/moby/api/types/system"
 	"github.com/moby/moby/client"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
@@ -334,5 +335,70 @@ func TestSwapRetriesTheOldStart(t *testing.T) {
 	}
 	if got := f.Actions(); got[len(got)-1].Name != "start" || got[len(got)-1].ID != selfID || starts != 3 {
 		t.Errorf("old container started after %d tries, last action %+v", starts, got[len(got)-1])
+	}
+}
+
+// Containers installed before the disk size get Docker's root dir mounted where they
+// look for it; existing mounts and a turned-off disk size are left alone.
+func TestSwapMountsDockerRoot(t *testing.T) {
+	t.Parallel()
+	base := []string{"/run/docker.sock:/var/run/docker.sock"}
+	tests := []struct {
+		name    string
+		old     func(*container.InspectResponse)
+		root    string
+		infoErr error
+		want    []string
+	}{
+		{"added", nil, "/var/lib/docker", nil, append(slices.Clone(base), "/var/lib/docker:/host/docker:ro")},
+		{"other data-root", nil, "/srv/docker", nil, append(slices.Clone(base), "/srv/docker:/host/docker:ro")},
+		{"env target", func(c *container.InspectResponse) { c.Config.Env = []string{"NUDGE_DOCKER_ROOT=/mnt/docker/"} },
+			"/var/lib/docker", nil, append(slices.Clone(base), "/var/lib/docker:/mnt/docker:ro")},
+		{"flag target", func(c *container.InspectResponse) {
+			c.Config.Env = []string{"NUDGE_DOCKER_ROOT=/mnt/docker"}
+			c.Config.Cmd = []string{"agent", "--docker-root", "/srv/root"}
+		}, "/var/lib/docker", nil, append(slices.Clone(base), "/var/lib/docker:/srv/root:ro")},
+		{"flag with =", func(c *container.InspectResponse) { c.Config.Cmd = []string{"-docker-root=/srv/root"} },
+			"/var/lib/docker", nil, append(slices.Clone(base), "/var/lib/docker:/srv/root:ro")},
+		{"last env wins", func(c *container.InspectResponse) {
+			c.Config.Env = []string{"NUDGE_DOCKER_ROOT=/a", "NUDGE_DOCKER_ROOT=/b"}
+		}, "/var/lib/docker", nil, append(slices.Clone(base), "/var/lib/docker:/b:ro")},
+		{"entrypoint flag", func(c *container.InspectResponse) {
+			c.Config.Entrypoint = []string{"nudge", "serve", "-docker-root=/srv/root"}
+		}, "/var/lib/docker", nil, append(slices.Clone(base), "/var/lib/docker:/srv/root:ro")},
+		{"turned off", func(c *container.InspectResponse) { c.Config.Env = []string{"NUDGE_DOCKER_ROOT="} }, "/var/lib/docker", nil, base},
+		{"already mounted", func(c *container.InspectResponse) {
+			c.Mounts = append(c.Mounts, container.MountPoint{Type: "bind", Source: "/data/docker", Destination: "/host/docker"})
+		}, "/var/lib/docker", nil, base},
+		{"parent mounted", func(c *container.InspectResponse) {
+			c.Mounts = append(c.Mounts, container.MountPoint{Type: "bind", Source: "/", Destination: "/host"})
+		}, "/var/lib/docker", nil, base},
+		{"root unknown", nil, "", nil, base},
+		{"info fails", nil, "", cerrdefs.ErrUnavailable, base},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			old := self()
+			old.HostConfig.Binds = slices.Clone(base)
+			if tt.old != nil {
+				tt.old(&old)
+			}
+			f := newFake(old)
+			f.InfoResult = client.SystemInfoResult{Info: system.Info{DockerRootDir: tt.root}}
+			f.InfoErr = tt.infoErr
+			f.ContainerDetails["new-1"] = container.InspectResponse{ID: "new-1", State: &container.State{Running: true, Status: container.StateRunning}}
+			const limit = time.Hour
+			if err := Swap(t.Context(), f, selfID, SwapOptions{After: instant(limit), Limit: limit, Settle: time.Second, Poll: time.Second}); err != nil {
+				t.Fatal(err)
+			}
+			for _, a := range f.Actions() {
+				if a.Name == "create" {
+					if got := a.Options.(client.ContainerCreateOptions).HostConfig.Binds; !slices.Equal(got, tt.want) {
+						t.Errorf("binds = %q, want %q", got, tt.want)
+					}
+				}
+			}
+		})
 	}
 }

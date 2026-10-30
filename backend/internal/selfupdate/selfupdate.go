@@ -9,12 +9,15 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 
+	"git.zefirlabs.net/zefir/nudge/backend/internal/config"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/stacks"
 )
@@ -49,6 +52,7 @@ type Docker interface {
 	ContainerRename(ctx context.Context, id string, opts client.ContainerRenameOptions) (client.ContainerRenameResult, error)
 	ContainerRemove(ctx context.Context, id string, opts client.ContainerRemoveOptions) (client.ContainerRemoveResult, error)
 	ImageInspect(ctx context.Context, id string, opts ...client.ImageInspectOption) (client.ImageInspectResult, error)
+	Info(ctx context.Context, opts client.InfoOptions) (client.SystemInfoResult, error)
 }
 
 // Target is nudge's own container.
@@ -212,6 +216,7 @@ func Swap(ctx context.Context, d Docker, id string, opts SwapOptions) error {
 		docker.DropImageDefaults(cfg, oldImg.Config)
 	}
 	docker.KeepAnonymousVolumes(old, hc)
+	mountDockerRoot(ctx, d, old, hc, opts.Log)
 
 	name := strings.TrimPrefix(old.Name, "/")
 	if err := clearAside(ctx, d, name+oldSuffix, opts.Log); err != nil {
@@ -249,6 +254,64 @@ func Swap(ctx context.Context, d Docker, id string, opts SwapOptions) error {
 	}
 	log.Info("self-update: done", "new", created.ID)
 	return nil
+}
+
+// mountDockerRoot adds a read-only bind of the daemon's root dir (/var/lib/docker) where
+// the container looks for it, for containers created before the install commands mounted
+// it. Anything already mounted there, or above it, is left alone; so is a container that
+// turned the disk size off with an empty NUDGE_DOCKER_ROOT.
+func mountDockerRoot(ctx context.Context, d Docker, old container.InspectResponse, hc *container.HostConfig, log *slog.Logger) {
+	target := dockerRootTarget(old.Config)
+	if target == "" || !path.IsAbs(target) {
+		return
+	}
+	target = path.Clean(target)
+	for _, m := range old.Mounts {
+		if dst := path.Clean(m.Destination); dst == target || dst == "/" || strings.HasPrefix(target, dst+"/") {
+			return
+		}
+	}
+	info, err := d.Info(ctx, client.InfoOptions{})
+	if err != nil {
+		log.Warn("self-update: Docker's root dir is unknown, not mounting it", "err", err)
+		return
+	}
+	if info.Info.DockerRootDir == "" {
+		log.Warn("self-update: Docker's root dir is unknown, not mounting it")
+		return
+	}
+	hc.Binds = append(hc.Binds, info.Info.DockerRootDir+":"+target+":ro")
+	log.Info("self-update: mounting Docker's root dir", "source", info.Info.DockerRootDir, "target", target)
+}
+
+// dockerRootTarget is where the container's nudge looks for Docker's root dir: its
+// -docker-root flag, else NUDGE_DOCKER_ROOT, else the default. As for flag and Docker,
+// the last of repeated ones counts.
+func dockerRootTarget(cfg *container.Config) string {
+	args := slices.Concat(cfg.Entrypoint, cfg.Cmd)
+	flagSet, target := false, ""
+	for i, a := range args {
+		name, value, ok := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(a, "-"), "-"), "=")
+		if name != "docker-root" || a == name {
+			continue
+		}
+		switch {
+		case ok:
+			flagSet, target = true, value
+		case i+1 < len(args):
+			flagSet, target = true, args[i+1]
+		}
+	}
+	if flagSet {
+		return target
+	}
+	target = config.DefaultDockerRoot
+	for _, e := range cfg.Env {
+		if v, ok := strings.CutPrefix(e, "NUDGE_DOCKER_ROOT="); ok {
+			target = v
+		}
+	}
+	return target
 }
 
 // settle waits until container id has run (and been healthy, if it has a health check)

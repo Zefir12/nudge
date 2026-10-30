@@ -322,6 +322,11 @@ prints it) mount that directory instead, at the same `/host/docker`, or point
 `NUDGE_DOCKER_ROOT=""`), and for agents older than the disk size, the tile shows Docker's
 usage without a total.
 
+Containers installed before the mount get it on their next self-update (server or
+agent): the new container mounts the daemon's `DockerRootDir` read-only at
+`-docker-root` / `NUDGE_DOCKER_ROOT` (default `/host/docker`) when nothing is mounted
+there or above it yet. Existing mounts stay as they are, and `NUDGE_DOCKER_ROOT=""` skips it.
+
 ## Hosting other users
 Users (non-admins) share the host's kernel with everyone else. nudge already builds their
 containers without privileges, host namespaces, binds or added capabilities, and checks
