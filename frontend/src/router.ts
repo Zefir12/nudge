@@ -8,7 +8,7 @@ import {
 } from 'vue-router';
 
 import { getSetupStatus, setUnauthorizedHandler } from './api/client';
-import { apiError, currentUser, loadUser } from './session';
+import { apiError, apiErrorPath, currentUser, loadUser } from './session';
 import AccountView from './views/AccountView.vue';
 import AuditView from './views/AuditView.vue';
 import BackupView from './views/BackupView.vue';
@@ -114,6 +114,7 @@ export function createAppRouter(history: RouterHistory) {
       return await guard(to);
     } catch (e) {
       apiError.value = e instanceof Error ? e.message : String(e);
+      apiErrorPath.value = to.fullPath;
       return false;
     }
   });

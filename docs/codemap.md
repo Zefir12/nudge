@@ -62,7 +62,8 @@ lets patterns in `publicRoutes` through without either credential, refuses token
 |---|---|
 | `main.ts`, `App.vue` | app setup, layout (top bar with `AppBreadcrumbs`, `AppSidebar`, `RouterView`; public routes render without it); look and layout in docs/design.md |
 | `router.ts` | routes (add one per view; `meta.public` for no-login pages, `meta.users` for pages open to non-admin users (their environment's overview, containers, volumes, networks, events and the tenant form), else App shows them "Not allowed"; a user's `/` goes to deployments), `createAppRouter` with the auth guard, `redirectOnUnauthorized` |
-| `session.ts` | `currentUser`, `loadUser`, `safeRedirect` |
+| `session.ts` | `currentUser`, `loadUser`, `safeRedirect`, `apiError` (the guard couldn't reach the API) |
+| `reconnect.ts` | waiting for a restarting server: `waitForServerRestart` (self-update, drives `RestartOverlay`), `waitForServer` (the unreachable screen polls and reloads) |
 | `environments.ts` | `environments`, `loadEnvironments`, last used environment (localStorage), `defaultEnvironment` |
 | `composables/` | `useLoad(source, fetch)` (data/error/loading/reload, refetch on route change), `useParams()` (`:env`, `:id`), `useStream(env, open, onItem, ended)` (a WebSocket stream reopened with backoff and on env change), `useEvents(env, types, onEvent)` (the event stream on it), `useLiveUsage(env)` (latest sample of the live usage stream, closed while the tab is hidden; the dashboard tiles and `EnvironmentUsage` use it), `useLiveReload(env, types, reload)` (debounced reload on events; the list views use it), `useUpdates(env)` (last update check, `updateFor(container)`, `check()`) |
 | `eventLinks.ts` | `eventPage` (route name of an event's object, if it still exists), `eventLabel` |

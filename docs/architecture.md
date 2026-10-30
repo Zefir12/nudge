@@ -466,8 +466,11 @@ old container first), so `internal/selfupdate` hands the swap to a helper.
    dropped, anonymous volumes kept), start it and wait until it has run, or been healthy
    if it has a health check, for 15 s (at most 3 min). Then the old one is removed. If
    any step fails, the new one is removed and the old one renamed back and started.
-5. The UI waits for the server (health) or the agent to stop answering and come back,
-   then reloads (server) or checks again (agent).
+5. The UI waits for the server (health) or the agent to stop answering and come back.
+   For the server a modal overlay with a spinner covers the page; once health answers
+   twice in a row, a new version reloads the page for its UI, the same version (a
+   rollback) closes the overlay and says so. For the agent it checks again. The
+   "nudge is unreachable" screen polls health too and loads the page once it answers.
 
 Limits: the rollback needs the helper to live. If it is killed or the host reboots
 between the stop and the end of the settle wait, the old container is left stopped as

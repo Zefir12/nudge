@@ -1,16 +1,19 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onUnmounted, ref, watch } from 'vue';
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router';
 
 import { logout } from './api/client';
 import AppBreadcrumbs from './components/AppBreadcrumbs.vue';
 import AppSidebar from './components/AppSidebar.vue';
+import AppSpinner from './components/AppSpinner.vue';
 import BrandLogo from './components/BrandLogo.vue';
 import GearButton from './components/GearButton.vue';
+import RestartOverlay from './components/RestartOverlay.vue';
 import SelfUpdatePanel from './components/SelfUpdatePanel.vue';
 import SettingsDialog from './components/SettingsDialog.vue';
 import { lastEnvironment, rememberEnvironment } from './environments';
-import { apiError, currentUser } from './session';
+import { page, waitForServer } from './reconnect';
+import { apiError, apiErrorPath, currentUser } from './session';
 
 const route = useRoute();
 const router = useRouter();
@@ -26,6 +29,23 @@ watch(
   { immediate: true },
 );
 
+// While the API is unreachable, poll it and load the page again once it answers: a
+// restarted server may serve a new UI.
+let reconnect: AbortController | null = null;
+watch(
+  apiError,
+  async (err) => {
+    reconnect?.abort();
+    reconnect = null;
+    if (!err) return;
+    const ctl = new AbortController();
+    reconnect = ctl;
+    if ((await waitForServer(ctl.signal)) && !ctl.signal.aborted) page.load(apiErrorPath.value || '/');
+  },
+  { immediate: true },
+);
+onUnmounted(() => reconnect?.abort());
+
 async function onLogout() {
   let providerLogout = '';
   try {
@@ -40,12 +60,13 @@ async function onLogout() {
 </script>
 
 <template>
+  <RestartOverlay />
   <div v-if="apiError" class="auth-page">
     <BrandLogo class="auth-logo" />
     <section class="card auth-card" role="alert">
       <h1>nudge is unreachable</h1>
       <p class="error">{{ apiError }}</p>
-      <p class="muted">Check that the server is running, then reload the page.</p>
+      <p class="muted reconnecting"><AppSpinner /> Reconnecting… this page loads once the server answers.</p>
     </section>
   </div>
   <!-- Nothing until the first navigation resolves, so the guard decides the layout. -->
@@ -76,6 +97,12 @@ async function onLogout() {
 <style scoped>
 .shell {
   min-height: 100vh;
+}
+
+.reconnecting {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
 }
 
 .topbar {

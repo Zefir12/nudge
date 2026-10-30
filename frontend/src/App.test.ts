@@ -1,15 +1,21 @@
-import { flushPromises, mount } from '@vue/test-utils';
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils';
 import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
 import { createMemoryHistory } from 'vue-router';
 
 import App from './App.vue';
+import { page, POLL_MS } from './reconnect';
 import { createAppRouter } from './router';
-import { currentUser } from './session';
+import { apiError, currentUser } from './session';
 import { admin, stubApi, user } from './test-utils';
+
+enableAutoUnmount(afterEach);
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
   currentUser.value = null;
+  apiError.value = '';
 });
 
 async function mountApp(path: string) {
@@ -56,5 +62,27 @@ describe('App', () => {
     expect(wrapper.find('dialog').text()).toContain('v1.2.0');
     await wrapper.find('dialog [aria-label="Close"]').trigger('click');
     expect(wrapper.find('dialog').exists()).toBe(false);
+  });
+
+  it('reconnects by itself when the API was unreachable', async () => {
+    vi.useFakeTimers();
+    const load = vi.spyOn(page, 'load').mockImplementation(() => {});
+    let up = false;
+    stubApi({
+      'GET /auth/me': { status: 502, raw: 'Bad Gateway' },
+      'GET /health': () => (up ? { body: { status: 'ok', version: 'v1.3.0' } } : { status: 502, raw: '' }),
+    });
+    // As in a browser, the failed page stays the history's location.
+    const history = createMemoryHistory();
+    history.replace('/tokens?x=1');
+    const wrapper = mount(App, { global: { plugins: [createAppRouter(history)] } });
+    await flushPromises();
+    expect(wrapper.text()).toContain('nudge is unreachable');
+    expect(wrapper.text()).toContain('Reconnecting');
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    expect(load).not.toHaveBeenCalled();
+    up = true;
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    expect(load).toHaveBeenCalledWith('/tokens?x=1');
   });
 });

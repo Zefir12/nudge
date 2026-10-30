@@ -2,6 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils';
 import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
 
 import type { SelfUpdate } from '../api/client';
+import { page, restarting } from '../reconnect';
 import { stubApi } from '../test-utils';
 import SelfUpdatePanel from './SelfUpdatePanel.vue';
 
@@ -90,6 +91,36 @@ describe('SelfUpdatePanel', () => {
     );
     expect(wrapper.text()).toContain('v1.3.0');
     expect(wrapper.text()).toContain('The agent restarted.');
+  });
+
+  it.each([
+    { name: 'reloads on a new version', version: 'v1.3.0', reloads: true, note: '' },
+    { name: 'stays on a rollback', version: 'v1.2.0', reloads: false, note: 'nudge is back on v1.2.0' },
+  ])('waits for the server to restart and $name', async ({ version, reloads, note }) => {
+    vi.useFakeTimers();
+    vi.stubGlobal('confirm', () => true);
+    const reload = vi.spyOn(page, 'reload').mockImplementation(() => {});
+    let up = true;
+    stubApi({
+      'GET /system/update': { body: state() },
+      'POST /system/update': { body: { started: true } },
+      'GET /health': () => (up ? { body: { status: 'ok', version } } : { status: 502, raw: 'Bad Gateway' }),
+    });
+    const wrapper = mount(SelfUpdatePanel);
+    await flushPromises();
+    up = false;
+    await button(wrapper, 'Update')!.trigger('click');
+    await flushPromises();
+    expect(wrapper.text()).toContain('reconnects when it is back');
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(restarting.value).not.toBeNull();
+    up = true;
+    await vi.advanceTimersByTimeAsync(4000);
+    await flushPromises();
+    expect(restarting.value).toBeNull();
+    expect(reload).toHaveBeenCalledTimes(reloads ? 1 : 0);
+    if (note) expect(wrapper.text()).toContain(note);
+    reload.mockRestore();
   });
 
   it('does nothing when the update is not confirmed', async () => {
