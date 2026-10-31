@@ -1,4 +1,4 @@
-import { flushPromises, mount } from '@vue/test-utils';
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import { createMemoryHistory } from 'vue-router';
 
@@ -50,6 +50,9 @@ async function mountHome() {
 const addButtons = (wrapper: Awaited<ReturnType<typeof mountHome>>['wrapper']) =>
   wrapper.findAll('button').filter((b) => b.text().includes('Add environment'));
 
+// Unmounting stops each dashboard's refresh, so one test's listeners don't count in the next.
+enableAutoUnmount(afterEach);
+
 beforeEach(() => {
   currentUser.value = admin;
   environments.value = null;
@@ -57,6 +60,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -152,5 +156,91 @@ describe('HomeView', () => {
     stubApi({ 'GET /environments': { status: 500, body: { error: 'boom' } } });
     const { wrapper } = await mountHome();
     expect(wrapper.find('[role=alert]').text()).toContain('boom');
+  });
+
+  describe('refreshes the list by itself', () => {
+    const refreshMs = 30_000;
+    const listCalls = (fetch: ReturnType<typeof stubApi>) =>
+      fetch.mock.calls.filter(([url, init]) => url === '/api/v1/environments' && !init?.method).length;
+
+    it('shows status, version and added or removed environments without remounting', async () => {
+      vi.useFakeTimers();
+      const backup = {
+        id: 7,
+        name: 'backup',
+        kind: 'local',
+        online: true,
+        created_at: '',
+        last_seen_at: null,
+      };
+      let list: unknown[] = envs;
+      stubApi({
+        'GET /environments': () => ({ body: list }),
+        'GET /environments/1': { body: { ...envs[0], docker } },
+      });
+      const { wrapper } = await mountHome();
+      expect(wrapper.text()).toContain('2 hosts · 1 online');
+      expect(wrapper.findAll('.tile')[1]?.text()).toContain('agent 0.9.0');
+      // A dialog open on a tile stays open through a refresh.
+      const local = wrapper.findAll('.tile')[0];
+      await local?.find('.gear').trigger('click');
+      expect(wrapper.find('dialog').exists()).toBe(true);
+
+      list = [envs[0], { ...envs[1], online: true, agent: { enrolled: true, version: '1.0.0' } }, backup];
+      await vi.advanceTimersByTimeAsync(refreshMs);
+      expect(wrapper.text()).toContain('3 hosts · 3 online');
+      const tiles = wrapper.findAll('.tile');
+      expect(tiles.map((t) => t.find('h2').text())).toEqual(['local', 'nas', 'backup']);
+      expect(tiles[1]?.text()).toContain('agent 1.0.0');
+      expect(tiles[1]?.text()).not.toContain('Agent not connected');
+      expect(tiles[0]?.element).toBe(local?.element);
+      expect(wrapper.find('dialog').exists()).toBe(true);
+
+      list = [envs[0]];
+      await vi.advanceTimersByTimeAsync(refreshMs);
+      expect(wrapper.findAll('.tile').map((t) => t.find('h2').text())).toEqual(['local']);
+      expect(wrapper.find('dialog').exists()).toBe(true);
+    });
+
+    it('keeps the tiles when a refresh fails', async () => {
+      vi.useFakeTimers();
+      let fail = false;
+      stubApi({
+        'GET /environments': () => (fail ? { status: 500, body: { error: 'boom' } } : { body: envs }),
+        'GET /environments/1': { body: { ...envs[0], docker } },
+      });
+      const { wrapper } = await mountHome();
+      fail = true;
+      await vi.advanceTimersByTimeAsync(refreshMs);
+      expect(wrapper.findAll('.tile')).toHaveLength(2);
+      expect(wrapper.find('[role=alert]').exists()).toBe(false);
+    });
+
+    it('skips hidden tabs, refreshes on becoming visible and stops on unmount', async () => {
+      vi.useFakeTimers();
+      const fetch = stubApi({
+        'GET /environments': { body: envs },
+        'GET /environments/1': { body: { ...envs[0], docker } },
+      });
+      const state = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+      const { wrapper } = await mountHome();
+      expect(listCalls(fetch)).toBe(1);
+      await vi.advanceTimersByTimeAsync(refreshMs);
+      expect(listCalls(fetch)).toBe(2);
+
+      state.mockReturnValue('hidden');
+      await vi.advanceTimersByTimeAsync(refreshMs * 3);
+      expect(listCalls(fetch)).toBe(2);
+      state.mockReturnValue('visible');
+      document.dispatchEvent(new Event('visibilitychange'));
+      await flushPromises();
+      expect(listCalls(fetch)).toBe(3);
+
+      wrapper.unmount();
+      await vi.advanceTimersByTimeAsync(refreshMs * 3);
+      document.dispatchEvent(new Event('visibilitychange'));
+      await flushPromises();
+      expect(listCalls(fetch)).toBe(3);
+    });
   });
 });
