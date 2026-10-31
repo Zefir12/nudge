@@ -102,7 +102,8 @@ refuses `ws://` unless `NUDGE_INSECURE=1`.
   while the provider is down) and retried at most every 30 s. Started logins live
   server-side in a bounded map (10 minutes, keyed by state) and are bound to the browser
   by a `SameSite=Lax` cookie; each state is used once. Every provider call has a timeout
-  and a capped body. Users are matched by issuer + `sub`, never by name or email; they
+  and a capped body. Users are matched by issuer + `sub`, never by name or email (after a
+  provider change an admin re-links the new identity to the old user explicitly); they
   have no password, and their sessions are nudge sessions capped by
   `NUDGE_OIDC_SESSION_TTL`. With SSO, setup is off; `NUDGE_PASSWORD_LOGIN=false` keeps
   password login only for the local break-glass `admin`.

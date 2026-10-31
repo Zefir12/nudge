@@ -297,6 +297,7 @@ func TestUserManagementNeedsASession(t *testing.T) {
 	for _, req := range []request{
 		{method: "POST", path: "/api/v1/users", body: `{"username":"carol","password":"longenough","role":"admin"}`},
 		{method: "PATCH", path: "/api/v1/users/1", body: `{"password":"evenlonger"}`},
+		{method: "POST", path: "/api/v1/users/1/relink", body: `{"duplicate":2}`},
 	} {
 		req.headers = bearer(token)
 		if rec := do(t, h, req); rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "API tokens can't") {
@@ -305,5 +306,69 @@ func TestUserManagementNeedsASession(t *testing.T) {
 	}
 	if rec := do(t, h, request{method: "GET", path: "/api/v1/users", headers: bearer(token)}); rec.Code != http.StatusOK {
 		t.Errorf("list with an admin token = %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestRelinkUser(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	h, svc, admin := usersTest(t)
+	addUser(t, h, admin, "bob", auth.RoleUser)
+	login := func(issuer, subject string) int64 {
+		t.Helper()
+		sess, err := svc.SSOLogin(ctx, auth.Identity{Issuer: issuer, Subject: subject, Username: "carol", Email: "carol@" + subject, Role: auth.RoleUser})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sess.User.ID
+	}
+	orig, dup := login("https://old.example.net", "s-1"), login("https://new.example.net", "x-1")
+	bob := listUsers(t, h, admin)[1].ID
+	relink := func(id int64, body string) (int, string) {
+		t.Helper()
+		rec := do(t, h, request{method: "POST", path: fmt.Sprintf("/api/v1/users/%d/relink", id), cookie: admin, body: body})
+		return rec.Code, rec.Body.String()
+	}
+	tok, _, err := svc.CreateToken(ctx, dup, "ci")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name     string
+		id       int64
+		body     string
+		wantCode int
+		wantBody string
+	}{
+		{"no duplicate", orig, `{}`, http.StatusBadRequest, "duplicate must be"},
+		{"unknown duplicate", orig, `{"duplicate":999}`, http.StatusBadRequest, "doesn't exist"},
+		{"unknown original", 999, fmt.Sprintf(`{"duplicate":%d}`, dup), http.StatusNotFound, "user not found"},
+		{"itself", orig, fmt.Sprintf(`{"duplicate":%d}`, orig), http.StatusBadRequest, "itself"},
+		{"local original", bob, fmt.Sprintf(`{"duplicate":%d}`, dup), http.StatusBadRequest, "SSO users"},
+		{"local duplicate", orig, fmt.Sprintf(`{"duplicate":%d}`, bob), http.StatusBadRequest, "SSO users"},
+		{"duplicate owns a token", orig, fmt.Sprintf(`{"duplicate":%d}`, dup), http.StatusConflict, "API tokens"},
+	}
+	for _, tt := range tests {
+		if code, body := relink(tt.id, tt.body); code != tt.wantCode || !strings.Contains(body, tt.wantBody) {
+			t.Errorf("%s: relink = %d %s, want %d %q", tt.name, code, body, tt.wantCode, tt.wantBody)
+		}
+	}
+
+	if err := svc.DeleteToken(ctx, dup, tok.ID); err != nil {
+		t.Fatal(err)
+	}
+	code, body := relink(orig, fmt.Sprintf(`{"duplicate":%d}`, dup))
+	if a := accountOf(t, body); code != http.StatusOK || a.ID != orig || a.Username != "carol" || a.Email != "carol@x-1" {
+		t.Fatalf("relink = %d %s", code, body)
+	}
+	for _, u := range listUsers(t, h, admin) {
+		if u.ID == dup {
+			t.Errorf("duplicate still listed: %+v", u)
+		}
+	}
+	entries := keys(auditEntries(t, h, admin, "?q=relink").Entries)
+	if len(entries) == 0 || entries[0].Target != "carol-2 into carol" || entries[0].Status != http.StatusOK {
+		t.Errorf("audit = %+v", entries)
 	}
 }

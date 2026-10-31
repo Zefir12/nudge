@@ -251,7 +251,9 @@ redirect URI to register is `<public URL>/api/v1/auth/oidc/callback`; the scopes
 - **Users** are matched by issuer and subject (`sub`) only. A local user with the same
   name or email is never linked: the SSO user gets a name of its own (its preferred
   username, else its email, with `-2`… on a clash; never `admin`). Display name and email
-  are refreshed on each login.
+  are refreshed on each login. Changing the provider (its issuer, or the users'
+  subjects) makes the next login a new user; an admin merges it into the old one with
+  "Re-link SSO identity" on the Users page (`POST /api/v1/users/{id}/relink`, docs/api.md).
 - **Setup** is off with SSO: `POST /api/v1/setup` is refused, and the first admin is
   whoever the provider gives the admin role. `NUDGE_ADMIN_PASSWORD` still creates a local
   `admin` on a fresh install: the break-glass user.
