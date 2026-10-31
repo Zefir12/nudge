@@ -49,4 +49,23 @@ describe('CodeEditor', () => {
     const pre = wrapper.find('pre').element;
     expect([pre.scrollTop, pre.scrollLeft]).toEqual([120, 7]);
   });
+
+  it('gives the highlight the same scrollbars as the textarea', async () => {
+    const wrapper = mountEditor('a: 1\n', 'yaml');
+    const area = wrapper.find('textarea').element;
+    // jsdom has no layout: fake a 10px vertical bar inside 1px borders.
+    const box = {
+      offsetWidth: 200,
+      clientWidth: 188,
+      clientLeft: 1,
+      offsetHeight: 100,
+      clientHeight: 98,
+      clientTop: 1,
+    };
+    for (const [k, v] of Object.entries(box))
+      Object.defineProperty(area, k, { configurable: true, value: v });
+    await wrapper.find('textarea').setValue('a: 1\n'.repeat(100));
+    expect(wrapper.classes()).toContain('vbar');
+    expect(wrapper.classes()).not.toContain('hbar');
+  });
 });

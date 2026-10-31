@@ -45,6 +45,12 @@ describe('highlightYaml', () => {
     expect(of(t, 'comment')).toEqual([]);
   });
 
+  it('ends a block scalar under a list dash at the key column', () => {
+    const t = highlightYaml('- cmd: |\n    echo\n  env: x');
+    expect(of(t, 'string')).toEqual(['    echo', 'x']);
+    expect(of(t, 'key')).toEqual(['cmd', 'env']);
+  });
+
   it.each(['', 'services:\n  web:\n    image: x\n', 'a: [b, {c: d}]\n\n# end\n', 'x: "unterminated\n- - y'])(
     'gives back the input %j unchanged',
     (src) => {

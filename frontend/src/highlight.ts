@@ -104,7 +104,9 @@ const yamlKey = /^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s#"'?:,[\]{}&*!|>%@`][^#]
 // gives back the input unchanged.
 export function highlightYaml(src: string): Token[] {
   const out: Token[] = [];
-  let block = -1; // indent of the line that opened a block scalar, -1 outside one
+  // Column a block scalar's lines must be indented past (the key's, after any list
+  // dashes), -1 outside one.
+  let block = -1;
   src.split('\n').forEach((line, i) => {
     if (i) push(out, '\n', '');
     const indent = line.length - line.trimStart().length;
@@ -131,13 +133,15 @@ export function highlightYaml(src: string): Token[] {
       push(out, m[1]!, '');
       rest = rest.slice(m[0].length);
     }
+    let col = indent;
     if ((m = yamlKey.exec(rest))) {
+      col = line.length - rest.length;
       push(out, m[1]!, 'key');
       push(out, m[2]!, '');
       push(out, m[3]!, 'punct');
       rest = rest.slice(m[0].length);
     }
-    if (yamlValue(out, rest)) block = indent;
+    if (yamlValue(out, rest)) block = col;
   });
   return out;
 }
