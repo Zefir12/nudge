@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -256,6 +257,7 @@ func (in *Input) validate() error {
 		return err
 	}
 	in.Variables = vars
+	in.Health.HTTPChecks = slices.Clone(in.Health.HTTPChecks)
 	return in.Health.clean()
 }
 
@@ -408,10 +410,7 @@ func (s *Service) Change(ctx context.Context, actor Actor, name string, u Update
 	}
 	if u.Health != nil {
 		h := *u.Health
-		if h.HTTP != nil {
-			c := *h.HTTP
-			h.HTTP = &c
-		}
+		h.HTTPChecks = slices.Clone(h.HTTPChecks)
 		if err := h.clean(); err != nil {
 			return Deployment{}, err
 		}

@@ -174,8 +174,36 @@ func TestDeployHealth(t *testing.T) {
 			},
 		},
 		{
+			name: "every http check passes", health: `{"http_checks":[{"service":"app","port":8080,"path":"/health"},{"service":"app","port":8081,"path":"/healthz","status":204}]}`,
+			code: 200, status: "succeeded", calls: []string{"up web pull=true"}, env: envV2,
+			check: func(t *testing.T, ht *healthTest, _ deploymentRunJSON) {
+				want := []probe.Request{
+					{Container: "a2", Port: 8080, Path: "/health", Status: 200, Timeout: 5 * time.Second},
+					{Container: "a2", Port: 8081, Path: "/healthz", Status: 204, Timeout: 5 * time.Second},
+				}
+				if !slices.Equal(ht.runner.probes, want) {
+					t.Errorf("probes = %+v, want %+v", ht.runner.probes, want)
+				}
+			},
+		},
+		{
+			name: "the second http check fails and rolls back", health: `{"http_checks":[{"service":"app","port":8080},{"service":"app","port":8081,"path":"/healthz"},{"service":"app","port":8082}],"rollback":true}`,
+			setup: func(ht *healthTest) {
+				ht.runner.probePortErr = map[int]error{8081: &probe.FailedError{Msg: "answered another status than 200"}}
+			},
+			code: 502, status: "rolled_back", err: "checking: service app: HTTP check of port 8081/healthz: answered another status than 200; rolled back to the previous values",
+			calls: []string{"up web pull=true", "up web pull=true"}, env: envV1,
+			check: func(t *testing.T, ht *healthTest, _ deploymentRunJSON) {
+				ht.runner.mu.Lock()
+				defer ht.runner.mu.Unlock()
+				if len(ht.runner.probes) != 2 {
+					t.Errorf("probes = %+v, want the first two only", ht.runner.probes)
+				}
+			},
+		},
+		{
 			name: "http check on a service without a container", health: `{"http":{"service":"worker","port":8080}}`,
-			code: 502, status: "failed", err: "checking: service worker has no running container for the HTTP check",
+			code: 502, status: "failed", err: "checking: service worker has no running container for the HTTP check of port 8080/",
 			calls: []string{"up web pull=true"}, env: envV1,
 		},
 		{
@@ -191,13 +219,13 @@ func TestDeployHealth(t *testing.T) {
 		{
 			name: "http check fails without rollback", health: `{"http":{"service":"app","port":8080}}`,
 			setup: func(ht *healthTest) { ht.runner.probeErr = &probe.FailedError{Msg: "answered another status than 200"} },
-			code:  502, status: "failed", err: "checking: service app: HTTP check: answered another status than 200",
+			code:  502, status: "failed", err: "checking: service app: HTTP check of port 8080/: answered another status than 200",
 			calls: []string{"up web pull=true"}, env: envV1,
 		},
 		{
 			name: "http check fails and rolls back", health: `{"http":{"service":"app","port":8080},"rollback":true}`,
 			setup: func(ht *healthTest) { ht.runner.probeErr = &probe.FailedError{Msg: "answered another status than 200"} },
-			code:  502, status: "rolled_back", err: "checking: service app: HTTP check: answered another status than 200; rolled back to the previous values",
+			code:  502, status: "rolled_back", err: "checking: service app: HTTP check of port 8080/: answered another status than 200; rolled back to the previous values",
 			calls: []string{"up web pull=true", "up web pull=true"}, env: envV1,
 			check: func(t *testing.T, ht *healthTest, run deploymentRunJSON) {
 				if run.Step != "rolling_back" {
@@ -350,13 +378,30 @@ func TestDeployHealthSettings(t *testing.T) {
 	st := newDeploymentTest(t)
 	rec := do(t, st.h, request{method: "PATCH", path: "/api/v1/deployments/shop", cookie: st.cookie,
 		body: `{"health":{"wait_seconds":90,"http":{"service":"app","port":80},"rollback":true,"remove_oneoffs":true}}`})
-	want := `"health":{"wait_seconds":90,"stable_seconds":0,"http":{"service":"app","port":80,"path":"/","status":200,"timeout_seconds":5},"rollback":true,"remove_oneoffs":true}`
+	// The old single http check is read as a one-item list.
+	want := `"health":{"wait_seconds":90,"stable_seconds":0,"http_checks":[{"service":"app","port":80,"path":"/","status":200,"timeout_seconds":5}],"rollback":true,"remove_oneoffs":true}`
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), want) {
 		t.Errorf("set health = %d %s", rec.Code, rec.Body)
 	}
-	rec = do(t, st.h, request{method: "PATCH", path: "/api/v1/deployments/shop", cookie: st.cookie, body: `{"health":{"http":{"service":"app","port":0}}}`})
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "http.port") {
-		t.Errorf("bad port = %d %s", rec.Code, rec.Body)
+	rec = do(t, st.h, request{method: "PATCH", path: "/api/v1/deployments/shop", cookie: st.cookie,
+		body: `{"health":{"http_checks":[{"service":"app","port":80},{"service":"admin-ui","port":8080,"path":"/healthz"}]}}`})
+	want = `"http_checks":[{"service":"app","port":80,"path":"/","status":200,"timeout_seconds":5},{"service":"admin-ui","port":8080,"path":"/healthz","status":200,"timeout_seconds":5}]`
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), want) {
+		t.Errorf("set two checks = %d %s", rec.Code, rec.Body)
+	}
+	rec = do(t, st.h, request{method: "PATCH", path: "/api/v1/deployments/shop", cookie: st.cookie, body: `{"health":{}}`})
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"http_checks":[]`) {
+		t.Errorf("no checks = %d %s", rec.Code, rec.Body)
+	}
+	for name, tt := range map[string]struct{ body, msg string }{
+		"bad port":    {`{"http_checks":[{"service":"app","port":80},{"service":"app","port":0}]}`, "http_checks[1].port"},
+		"old and new": {`{"http":{"service":"app","port":80},"http_checks":[{"service":"app","port":80}]}`, "not both"},
+		"too many":    {`{"http_checks":[` + strings.Repeat(`{"service":"app","port":80},`, 10) + `{"service":"app","port":80}]}`, "at most 10"},
+	} {
+		rec = do(t, st.h, request{method: "PATCH", path: "/api/v1/deployments/shop", cookie: st.cookie, body: `{"health":` + tt.body + `}`})
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), tt.msg) {
+			t.Errorf("%s = %d %s", name, rec.Code, rec.Body)
+		}
 	}
 }
 

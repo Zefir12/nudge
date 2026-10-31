@@ -422,7 +422,10 @@ const deployments = [
     health: {
       wait_seconds: 60,
       stable_seconds: 10,
-      http: { service: 'web', port: 80, path: '/healthz', status: 200, timeout_seconds: 5 },
+      http_checks: [
+        { service: 'web', port: 80, path: '/healthz', status: 200, timeout_seconds: 5 },
+        { service: 'api', port: 8080, path: '/healthz', status: 200, timeout_seconds: 5 },
+      ],
       rollback: true,
       remove_oneoffs: true,
     },
@@ -437,7 +440,7 @@ const deployments = [
     stack: 'monitoring',
     description: '',
     variables: ['GRAFANA_TAG'],
-    health: { wait_seconds: 30, stable_seconds: 0, rollback: false, remove_oneoffs: false },
+    health: { wait_seconds: 30, stable_seconds: 0, http_checks: [], rollback: false, remove_oneoffs: false },
     created_at: ago(60 * 24 * 4),
     updated_at: ago(60 * 24 * 4),
     role: 'owner',
