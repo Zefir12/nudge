@@ -52,6 +52,8 @@ only the variables, never raw colours.
 | `--accent-soft` / `--accent-border` | accent at 14% / 35% | selected backgrounds / accent borders, hover |
 | `--series-2`, `--series-3` | `#9aa4b8`, `#a51d3b` | chart series after the accent: memory (grey-blue), disk (crimson) |
 | `--ok`, `--danger`, `--warn` | `#56d364`, `#f0605a`, `#d4a72c` | lamps; `*-text` and `*-soft` (`--warn-soft`) for badges |
+| `--field-bg` | `rgb(0 0 0 / 30%)` | input, select and textarea backgrounds |
+| `--code-*` (key, string, number, literal, comment, punct, anchor, variable) | blue, green, amber, violet, muted | syntax colours in `CodeEditor` (compose.yaml, .env) |
 | `--radius-sm` / `--radius` / `--radius-lg` | 2 / 3 / 6px | tags / controls / panels |
 | `--shadow` | `0 4px 24px rgb(0 0 0 / 40%)` | panels |
 

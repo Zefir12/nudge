@@ -55,6 +55,16 @@
   --ok-soft: rgb(86 211 100 / 10%);
   --warn: #d4a72c;
   --warn-soft: rgb(212 167 44 / 12%);
+  --field-bg: rgb(0 0 0 / 30%);
+  /* Syntax colours in the code editors (compose.yaml, .env). */
+  --code-key: #7fb8f0;
+  --code-string: #a8d39a;
+  --code-number: #e3b462;
+  --code-literal: #d19ced;
+  --code-comment: var(--muted);
+  --code-punct: var(--muted);
+  --code-anchor: #d19ced;
+  --code-variable: var(--accent-strong);
   --radius-sm: 2px;
   --radius: 3px;
   /* Hover transitions: quick in; the base rule's slower duration plays on leave. */
@@ -213,7 +223,7 @@ textarea {
   font: inherit;
   font-size: 13px;
   color: var(--text);
-  background: rgb(0 0 0 / 30%);
+  background: var(--field-bg);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
 }
