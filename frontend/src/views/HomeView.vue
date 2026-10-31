@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 
 import AddEnvironment from '../components/AddEnvironment.vue';
 import EnvironmentTile from '../components/EnvironmentTile.vue';
@@ -13,6 +13,30 @@ import { currentUser } from '../session';
 // add environments in a dialog and manage each one from its tile's gear.
 const { data, error, reload } = useLoad(() => true, loadEnvironments);
 const adding = ref(false);
+
+// refreshMs is how often the list is asked for again, so an agent coming online or going
+// offline, a new agent version and added or removed environments show without a reload.
+// The tiles are keyed by ID, so they (and any dialog open on one) stay mounted. A failed
+// refresh keeps the tiles as they were; the next one tries again.
+const refreshMs = 30_000;
+async function refresh() {
+  if (data.value === null || document.visibilityState === 'hidden') return;
+  try {
+    data.value = await loadEnvironments();
+  } catch {
+    // Keep the last list.
+  }
+}
+const onVisibility = () => void refresh();
+let timer: ReturnType<typeof setInterval> | undefined;
+onMounted(() => {
+  timer = setInterval(() => void refresh(), refreshMs);
+  document.addEventListener('visibilitychange', onVisibility);
+});
+onUnmounted(() => {
+  clearInterval(timer);
+  document.removeEventListener('visibilitychange', onVisibility);
+});
 
 const summary = computed(() => {
   const envs = data.value ?? [];
