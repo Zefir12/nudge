@@ -14,7 +14,7 @@ const shop = (can: string[] = all, role = 'owner') => ({
   stack: 'web',
   description: '',
   variables: ['API_IMAGE'],
-  health: { wait_seconds: 0, stable_seconds: 0, rollback: false, remove_oneoffs: false },
+  health: { wait_seconds: 0, stable_seconds: 0, http_checks: [], rollback: false, remove_oneoffs: false },
   created_at: '2026-10-26T12:00:00Z',
   updated_at: '2026-10-26T12:00:00Z',
   role,
@@ -161,10 +161,20 @@ describe('DeploymentView', () => {
     });
     const { wrapper } = await mountView();
     await wrapper.find('input[name="wait"]').setValue('60');
-    await wrapper.find('input[name="http"]').setValue(true);
-    await wrapper.find('input[name="http-service"]').setValue('web');
-    await wrapper.find('input[name="http-port"]').setValue('8080');
-    await wrapper.find('input[name="http-path"]').setValue('/health');
+    for (let i = 0; i < 3; i++) await button(wrapper, 'Add HTTP check')?.trigger('click');
+    let rows = wrapper.findAll('.http-check');
+    expect(rows).toHaveLength(3);
+    await rows[0]?.find('input[name="http-service"]').setValue('web');
+    await rows[0]?.find('input[name="http-port"]').setValue('8080');
+    await rows[0]?.find('input[name="http-path"]').setValue('/health');
+    await rows[1]?.find('input[name="http-service"]').setValue('gone');
+    await rows[2]?.find('input[name="http-service"]').setValue('admin-ui');
+    await rows[2]?.find('input[name="http-status"]').setValue('204');
+    await rows[1]?.find('button.remove').trigger('click');
+    rows = wrapper.findAll('.http-check');
+    expect(rows.map((r) => (r.find('input[name="http-service"]').element as HTMLInputElement).value)).toEqual(
+      ['web', 'admin-ui'],
+    );
     await wrapper.find('input[name="rollback"]').setValue(true);
     await wrapper.find('input[name="remove-oneoffs"]').setValue(true);
     await wrapper.find('form.health').trigger('submit');
@@ -174,11 +184,44 @@ describe('DeploymentView', () => {
       health: {
         wait_seconds: 60,
         stable_seconds: 0,
-        http: { service: 'web', port: 8080, path: '/health', status: 200, timeout_seconds: 5 },
+        http_checks: [
+          { service: 'web', port: 8080, path: '/health', status: 200, timeout_seconds: 5 },
+          { service: 'admin-ui', port: 80, path: '/', status: 204, timeout_seconds: 5 },
+        ],
         rollback: true,
         remove_oneoffs: true,
       },
     });
+  });
+
+  it('edits the stored health checks and caps them at ten', async () => {
+    const checks = [
+      { service: 'authestra', port: 8081, path: '/healthz', status: 200, timeout_seconds: 5 },
+      { service: 'admin-ui', port: 8080, path: '/healthz', status: 200, timeout_seconds: 5 },
+    ];
+    const stored = { ...shop(), health: { ...shop().health, http_checks: checks } };
+    const fetch = stubApi({
+      'GET /deployments/shop': { body: stored },
+      'GET /deployments/shop/deploys': { body: [] },
+      'GET /deployments/shop/members': { body: [member] },
+      'GET /deployments/shop/tokens': { body: [] },
+      'PATCH /deployments/shop': { body: stored },
+    });
+    const { wrapper } = await mountView();
+    const rows = wrapper.findAll('.http-check');
+    expect(rows).toHaveLength(2);
+    await rows[1]?.find('input[name="http-path"]').setValue('/ready');
+    await wrapper.find('form.health').trigger('submit');
+    await flushPromises();
+    const patch = fetch.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH');
+    const sent = JSON.parse(String((patch?.[1] as RequestInit | undefined)?.body)) as {
+      health: { http_checks: unknown[] };
+    };
+    expect(sent.health.http_checks).toEqual([checks[0], { ...checks[1], path: '/ready' }]);
+
+    for (let i = 0; i < 9; i++) await button(wrapper, 'Add HTTP check')?.trigger('click');
+    expect(wrapper.findAll('.http-check')).toHaveLength(10);
+    expect(button(wrapper, 'Add HTTP check')?.attributes('disabled')).toBeDefined();
   });
 
   it('shows a viewer only what a viewer may do', async () => {

@@ -247,7 +247,7 @@ func (s *server) composeFailure(ctx context.Context, c docker.Client, stack stri
 }
 
 // checkDeployment runs d's checks after compose up: every service's containers keep
-// running for the stability window, then the HTTP check. It returns what failed, or "".
+// running for the stability window, then the HTTP checks in order. It returns what failed, or "".
 func (s *server) checkDeployment(ctx context.Context, runner stacks.Runner, c docker.Client, d deployments.Deployment, report deployments.Report) string {
 	h := d.Health
 	if h.StableSeconds > 0 {
@@ -275,40 +275,53 @@ func (s *server) checkDeployment(ctx context.Context, runner stacks.Runner, c do
 		}
 		report(deployments.Progress{Message: "the services stayed up"})
 	}
-	if h.HTTP == nil {
+	if len(h.HTTPChecks) == 0 {
 		return ""
-	}
-	svc := h.HTTP.Service
-	id, err := s.serviceContainer(ctx, c, d.Stack, svc)
-	if err != nil {
-		s.log.Warn("deployment check: list containers", "deployment", d.Name, "err", err)
-		return "the stack's containers could not be listed"
-	}
-	if id == "" {
-		return fmt.Sprintf("service %s has no running container for the HTTP check", svc)
 	}
 	p, ok := runner.(stacks.Prober)
 	if !ok {
-		report(deployments.Progress{Service: svc, Message: "this environment can't run HTTP checks; the check was skipped", Warning: true})
+		report(deployments.Progress{Message: "this environment can't run HTTP checks; the checks were skipped", Warning: true})
 		return ""
 	}
-	report(deployments.Progress{Service: svc, Message: fmt.Sprintf("HTTP check of port %d%s", h.HTTP.Port, h.HTTP.Path)})
-	err = p.Probe(ctx, d.Stack, h.HTTP.Request(id))
+	for _, check := range h.HTTPChecks {
+		problem, skipped := s.httpCheck(ctx, p, c, d, check, report)
+		if problem != "" || skipped {
+			return problem
+		}
+	}
+	return ""
+}
+
+// httpCheck runs one of d's HTTP checks. It returns what failed, or "", and whether the
+// agent is too old for HTTP checks (so the rest are skipped too).
+func (s *server) httpCheck(ctx context.Context, p stacks.Prober, c docker.Client, d deployments.Deployment, check deployments.HTTPCheck, report deployments.Report) (string, bool) {
+	svc := check.Service
+	name := fmt.Sprintf("HTTP check of port %d%s", check.Port, check.Path)
+	id, err := s.serviceContainer(ctx, c, d.Stack, svc)
+	if err != nil {
+		s.log.Warn("deployment check: list containers", "deployment", d.Name, "err", err)
+		return "the stack's containers could not be listed", false
+	}
+	if id == "" {
+		return fmt.Sprintf("service %s has no running container for the %s", svc, name), false
+	}
+	report(deployments.Progress{Service: svc, Message: name})
+	err = p.Probe(ctx, d.Stack, check.Request(id))
 	var fe *probe.FailedError
 	switch {
 	case err == nil:
-		report(deployments.Progress{Service: svc, Message: "HTTP check passed"})
-		return ""
+		report(deployments.Progress{Service: svc, Message: name + " passed"})
+		return "", false
 	case errors.Is(err, stacks.ErrNoProbe):
-		report(deployments.Progress{Service: svc, Message: "the agent is too old for HTTP checks; the check was skipped", Warning: true})
-		return ""
+		report(deployments.Progress{Service: svc, Message: "the agent is too old for HTTP checks; the checks were skipped", Warning: true})
+		return "", true
 	case errors.As(err, &fe):
-		return fmt.Sprintf("service %s: HTTP check: %s", svc, fe.Msg)
+		return fmt.Sprintf("service %s: %s: %s", svc, name, fe.Msg), false
 	case errors.Is(err, probe.ErrNoSelf):
-		return fmt.Sprintf("service %s: HTTP check: %s", svc, probe.ErrNoSelf.Error())
+		return fmt.Sprintf("service %s: %s: %s", svc, name, probe.ErrNoSelf.Error()), false
 	default:
-		s.log.Warn("deployment check: http", "deployment", d.Name, "service", svc, "err", err)
-		return fmt.Sprintf("service %s: the HTTP check could not run (see the server log)", svc)
+		s.log.Warn("deployment check: http", "deployment", d.Name, "service", svc, "port", check.Port, "err", err)
+		return fmt.Sprintf("service %s: the %s could not run (see the server log)", svc, name), false
 	}
 }
 

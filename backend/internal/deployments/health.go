@@ -1,6 +1,7 @@
 package deployments
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"time"
@@ -12,6 +13,8 @@ import (
 const (
 	MaxWaitSeconds   = 30 * 60
 	MaxStableSeconds = 10 * 60
+	// MaxHTTPChecks bounds a deployment's HTTP checks.
+	MaxHTTPChecks = 10
 	// defaultCheckTimeout is an HTTP check's timeout when none is set.
 	defaultCheckTimeout = 5
 )
@@ -28,13 +31,47 @@ type Health struct {
 	// StableSeconds, if set, is how long every service's containers must then keep
 	// running without a restart.
 	StableSeconds int `json:"stable_seconds"`
-	// HTTP, if set, is a request a service must answer as expected.
-	HTTP *HTTPCheck `json:"http,omitempty"`
+	// HTTPChecks are requests services must answer as expected, run in order.
+	HTTPChecks []HTTPCheck `json:"http_checks"`
 	// Rollback redeploys the replaced variable values when a check fails.
 	Rollback bool `json:"rollback"`
 	// RemoveOneOffs removes the stack's finished one-off containers (exited with 0,
 	// restart policy no) once a run has succeeded.
 	RemoveOneOffs bool `json:"remove_oneoffs"`
+
+	// bothHTTP is set when a decoded document had both http_checks and the old http.
+	bothHTTP bool
+}
+
+// UnmarshalJSON also reads the old single "http" check (stored health and older
+// clients) as a one-item HTTPChecks.
+func (h *Health) UnmarshalJSON(b []byte) error {
+	type plain Health
+	var v struct {
+		plain
+		HTTP *HTTPCheck `json:"http"`
+	}
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	*h = Health(v.plain)
+	if v.HTTP != nil {
+		if len(h.HTTPChecks) > 0 {
+			h.bothHTTP = true
+		} else {
+			h.HTTPChecks = []HTTPCheck{*v.HTTP}
+		}
+	}
+	return nil
+}
+
+// MarshalJSON writes http_checks as a list, never null.
+func (h Health) MarshalJSON() ([]byte, error) {
+	type plain Health
+	if h.HTTPChecks == nil {
+		h.HTTPChecks = []HTTPCheck{}
+	}
+	return json.Marshal(plain(h))
 }
 
 // HTTPCheck is a GET of http://127.0.0.1:Port/Path inside a container of Service.
@@ -65,10 +102,22 @@ func (h *Health) clean() error {
 	if h.StableSeconds < 0 || h.StableSeconds > MaxStableSeconds {
 		return &InputError{Msg: fmt.Sprintf("stable_seconds must be 0 to %d", MaxStableSeconds)}
 	}
-	c := h.HTTP
-	if c == nil {
-		return nil
+	if h.bothHTTP {
+		return &InputError{Msg: "send http_checks or the old http, not both"}
 	}
+	if len(h.HTTPChecks) > MaxHTTPChecks {
+		return &InputError{Msg: fmt.Sprintf("at most %d http_checks", MaxHTTPChecks)}
+	}
+	for i := range h.HTTPChecks {
+		if msg := h.HTTPChecks[i].clean(); msg != "" {
+			return &InputError{Msg: fmt.Sprintf("http_checks[%d].%s", i, msg)}
+		}
+	}
+	return nil
+}
+
+// clean fills in c's defaults and checks its bounds; it returns what is wrong, or "".
+func (c *HTTPCheck) clean() string {
 	if c.Path == "" {
 		c.Path = "/"
 	}
@@ -80,15 +129,15 @@ func (h *Health) clean() error {
 	}
 	switch {
 	case !servicePattern.MatchString(c.Service):
-		return &InputError{Msg: "http.service must name a compose service"}
+		return "service must name a compose service"
 	case c.Port < 1 || c.Port > 65535:
-		return &InputError{Msg: "http.port must be 1 to 65535"}
+		return "port must be 1 to 65535"
 	case !probe.ValidPath(c.Path):
-		return &InputError{Msg: "http.path must start with / and hold only URL characters"}
+		return "path must start with / and hold only URL characters"
 	case c.Status < 100 || c.Status > 599:
-		return &InputError{Msg: "http.status must be 100 to 599"}
+		return "status must be 100 to 599"
 	case c.TimeoutSeconds < 1 || time.Duration(c.TimeoutSeconds)*time.Second > probe.MaxTimeout:
-		return &InputError{Msg: fmt.Sprintf("http.timeout_seconds must be 1 to %d", int(probe.MaxTimeout/time.Second))}
+		return fmt.Sprintf("timeout_seconds must be 1 to %d", int(probe.MaxTimeout/time.Second))
 	}
-	return nil
+	return ""
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -559,20 +560,28 @@ func TestHealthSettings(t *testing.T) {
 	dt := newDepTest(t)
 	ctx := context.Background()
 	d, err := dt.s.Create(ctx, dt.alice, Input{Name: "shop", Environment: dt.env, Stack: "shop",
-		Health: Health{WaitSeconds: 60, HTTP: &HTTPCheck{Service: "web", Port: 8080}}})
+		Health: Health{WaitSeconds: 60, HTTPChecks: []HTTPCheck{{Service: "web", Port: 8080}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := HTTPCheck{Service: "web", Port: 8080, Path: "/", Status: 200, TimeoutSeconds: 5}
-	if d.Health.WaitSeconds != 60 || d.Health.HTTP == nil || *d.Health.HTTP != want || d.Health.Rollback {
-		t.Errorf("created health = %+v %+v", d.Health, d.Health.HTTP)
+	if d.Health.WaitSeconds != 60 || !slices.Equal(d.Health.HTTPChecks, []HTTPCheck{want}) || d.Health.Rollback {
+		t.Errorf("created health = %+v", d.Health)
+	}
+	// Health stored before the list of checks holds one "http" check.
+	if _, err := dt.s.db.ExecContext(ctx, `UPDATE deployments SET health = ? WHERE name = 'shop'`,
+		`{"wait_seconds":60,"stable_seconds":0,"http":{"service":"web","port":8080,"path":"/","status":200,"timeout_seconds":5},"rollback":false}`); err != nil {
+		t.Fatal(err)
+	}
+	if d, err = dt.s.Authorize(ctx, dt.alice, "shop", ActionView); err != nil || !slices.Equal(d.Health.HTTPChecks, []HTTPCheck{want}) || d.Health.WaitSeconds != 60 {
+		t.Errorf("old stored health = %+v, %v", d.Health, err)
 	}
 
 	d, err = dt.s.Change(ctx, dt.alice, "shop", Update{Health: &Health{StableSeconds: 30, Rollback: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.Health.HTTP != nil || d.Health.StableSeconds != 30 || !d.Health.Rollback || d.Health.WaitSeconds != 0 {
+	if len(d.Health.HTTPChecks) != 0 || d.Health.StableSeconds != 30 || !d.Health.Rollback || d.Health.WaitSeconds != 0 {
 		t.Errorf("changed health = %+v", d.Health)
 	}
 	desc := "kept"
@@ -580,7 +589,7 @@ func TestHealthSettings(t *testing.T) {
 		t.Errorf("health after a change without it = %+v, %v", d.Health, err)
 	}
 
-	check := func(c HTTPCheck) *Health { return &Health{HTTP: &c} }
+	check := func(c HTTPCheck) *Health { return &Health{HTTPChecks: []HTTPCheck{{Service: "ok", Port: 80}, c}} }
 	for name, h := range map[string]*Health{
 		"wait":         {WaitSeconds: MaxWaitSeconds + 1},
 		"stable":       {StableSeconds: -1},
@@ -590,6 +599,7 @@ func TestHealthSettings(t *testing.T) {
 		"status":       check(HTTPCheck{Service: "web", Port: 80, Status: 700}),
 		"timeout":      check(HTTPCheck{Service: "web", Port: 80, TimeoutSeconds: 61}),
 		"path newline": check(HTTPCheck{Service: "web", Port: 80, Path: "/a\nb"}),
+		"too many":     {HTTPChecks: make([]HTTPCheck, MaxHTTPChecks+1)},
 	} {
 		var inputErr *InputError
 		if _, err := dt.s.Change(ctx, dt.alice, "shop", Update{Health: h}); !errors.As(err, &inputErr) {
