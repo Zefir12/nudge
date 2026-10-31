@@ -44,9 +44,11 @@ type fakeRunner struct {
 	onRun func()
 	// upErrs, if set, are the errors of the next ups before they run (nil runs it).
 	upErrs []error
-	// probes are the HTTP checks asked for; probeErr is their answer.
-	probes   []probe.Request
-	probeErr error
+	// probes are the HTTP checks asked for; probeErr is their answer, unless
+	// probePortErr has one for the check's port.
+	probes       []probe.Request
+	probeErr     error
+	probePortErr map[int]error
 	// syncErr, if set, fails every sync after recording it.
 	syncErr error
 }
@@ -105,11 +107,14 @@ func (f *fakeRunner) Up(ctx context.Context, name string, opts stacks.UpOptions,
 	return f.run(ctx, call, out)
 }
 
-// Probe records the check and answers probeErr.
+// Probe records the check and answers probePortErr[r.Port] or probeErr.
 func (f *fakeRunner) Probe(_ context.Context, _ string, r probe.Request) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.probes = append(f.probes, r)
+	if err, ok := f.probePortErr[r.Port]; ok {
+		return err
+	}
 	return f.probeErr
 }
 

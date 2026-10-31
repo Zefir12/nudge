@@ -1271,14 +1271,20 @@ even when you can't see that deployment); at most 1000 deployments.
   reached (`pulling`, `deploying`, `checking`, `rolling_back`) and `warnings` what it
   skipped or worked around (say, a check an older agent can't run).
 - **Health.** `health` (on create and `PATCH`; a `PATCH` replaces all of it) says when a
-  run succeeded: `{"wait_seconds": 0-1800, "stable_seconds": 0-600, "http": {"service",
-  "port", "path": "/", "status": 200, "timeout_seconds": 5}, "rollback": false, "remove_oneoffs": false}`, `http`
-  optional, the defaults shown. `wait_seconds` has compose wait for the services to run
+  run succeeded: `{"wait_seconds": 0-1800, "stable_seconds": 0-600, "http_checks": [{"service",
+  "port", "path": "/", "status": 200, "timeout_seconds": 5}], "rollback": false, "remove_oneoffs": false}`,
+  the defaults shown; `http_checks` holds at most 10 checks and is always a list in
+  responses (`[]` for none). `wait_seconds` has compose wait for the services to run
   and pass their healthchecks (`up --wait`). `stable_seconds` then requires every
   container to keep running without a restart (a container that exited with 0 is a
-  finished one-off job). `http` then GETs `http://127.0.0.1:port/path` inside a running
-  container of `service`, without following redirects, and expects `status`. A failure
-  ends the run `failed` with an `error` naming the step and the service, and puts the
+  finished one-off job). Each of `http_checks`, in order, then GETs
+  `http://127.0.0.1:port/path` inside a running container of its `service`, without
+  following redirects, and expects `status`; the first one that fails stops the run.
+  Validation errors name the check (`http_checks[1].port must be 1 to 65535`). The old
+  single `"http": {...}` object (before nudge kept a list) is still accepted on input and
+  read as a one-item `http_checks`; sending both is a `400`. A failure
+  ends the run `failed` with an `error` naming the step, the service and, for an HTTP
+  check, its port and path (`service web: HTTP check of port 8080/healthz: ...`), and puts the
   `.env` back; with `rollback` the replaced values are also deployed again (recorded in
   the update history) and the run ends `rolled_back` (`502` like a failure). Agents built
   before a check skip it with a warning. With `remove_oneoffs`, a run that ended

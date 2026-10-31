@@ -30,8 +30,11 @@ Under the deployment's Settings → Health checks:
 - **Stability window:** after that, every container must keep running for this many
   seconds without a restart. This catches a crash loop that starts after a few seconds.
   One-off containers that exit with 0 (migrations) are fine.
-- **HTTP check:** a GET of `http://127.0.0.1:<port><path>` inside a running container of
-  the service, which must answer the status (default 200; redirects aren't followed).
+- **HTTP checks:** up to 10, added, edited and removed in the list (say one per service:
+  `authestra` on 8081 `/healthz` and `admin-ui` on 8080 `/healthz`). Each is a GET of
+  `http://127.0.0.1:<port><path>` inside a running container of its service, which must
+  answer the status (default 200; redirects aren't followed). They run in order after the
+  stability window; the first that fails fails the run, and the run's error names it.
   The request comes from inside the environment, not from the nudge server's network, so
   no port has to be published. nudge starts a short-lived helper container from its own
   image in the service container's network namespace, so the service's image needs no
