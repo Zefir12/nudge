@@ -252,3 +252,123 @@ func TestRevokeSSO(t *testing.T) {
 		t.Errorf("login after revoke = %+v, %v", sess.User, err)
 	}
 }
+
+func TestRelinkSSO(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, _ := newSSOService(t, Options{})
+	local, err := s.CreateFirstUser(ctx, "admin", "longenough")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := Identity{Issuer: "https://old.example.net", Subject: "u-1", Username: "zefir", DisplayName: "Zefir", Email: "z@old.example.net", Role: RoleUser}
+	moved := Identity{Issuer: "https://new.example.net", Subject: "x-9", Username: "zefir", DisplayName: "Zefir L.", Email: "z@new.example.net", Role: RoleAdmin}
+	login := func(id Identity) Session {
+		t.Helper()
+		sess, err := s.SSOLogin(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sess
+	}
+	orig, dup, other := login(old), login(moved), login(Identity{Issuer: old.Issuer, Subject: "u-2", Username: "bob", Role: RoleUser})
+	if dup.User.Username != "zefir-2" {
+		t.Fatalf("duplicate = %q", dup.User.Username)
+	}
+	// What the original has stays with it.
+	origTok, origSecret, err := s.CreateToken(ctx, orig.User.ID, "ci")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The duplicate owns a token and environment access: refused until they are gone.
+	tok, _, err := s.CreateToken(ctx, dup.User.ID, "ci")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO environments (name, kind, created_at) VALUES ('local', 'local', 0)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO user_environments (user_id, environment_id) SELECT ?, id FROM environments`, dup.User.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	refusals := []struct {
+		name            string
+		original, dupID int64
+		want            func(error) bool
+	}{
+		{"itself", orig.User.ID, orig.User.ID, isInput},
+		{"local original", local.ID, dup.User.ID, isInput},
+		{"local duplicate", orig.User.ID, local.ID, isInput},
+		{"unknown original", 999, dup.User.ID, func(err error) bool { return errors.Is(err, ErrUserNotFound) }},
+		{"unknown duplicate", orig.User.ID, 999, isInput},
+		{"duplicate owns things", orig.User.ID, dup.User.ID, func(err error) bool {
+			var r *RelinkRefusedError
+			return errors.As(err, &r) && strings.Join(r.Owns, ",") == "API tokens,environment access"
+		}},
+	}
+	for _, tt := range refusals {
+		if _, err := s.RelinkSSO(ctx, tt.original, tt.dupID); !tt.want(err) {
+			t.Errorf("%s: RelinkSSO = %v", tt.name, err)
+		}
+	}
+	if got, err := s.SessionUser(ctx, dup.Token); err != nil || got.ID != dup.User.ID {
+		t.Fatalf("a refused relink changed the duplicate: %+v, %v", got, err)
+	}
+
+	if err := s.DeleteToken(ctx, dup.User.ID, tok.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM user_environments`); err != nil {
+		t.Fatal(err)
+	}
+	a, err := s.RelinkSSO(ctx, orig.User.ID, dup.User.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.ID != orig.User.ID || a.Username != "zefir" || a.Email != moved.Email || a.DisplayName != moved.DisplayName || a.Role != RoleAdmin || !a.SSO {
+		t.Errorf("relinked = %+v", a)
+	}
+	if _, err := s.GetUser(ctx, dup.User.ID); !errors.Is(err, ErrUserNotFound) {
+		t.Errorf("duplicate after relink: %v", err)
+	}
+	if _, err := s.SessionUser(ctx, dup.Token); !errors.Is(err, ErrNoSession) {
+		t.Errorf("duplicate's session after relink: %v", err)
+	}
+	if got, err := s.SessionUser(ctx, orig.Token); err != nil || got.ID != orig.User.ID {
+		t.Errorf("original's session after relink = %+v, %v", got, err)
+	}
+	if got, err := s.TokenUser(ctx, origSecret); err != nil || got.ID != orig.User.ID {
+		t.Errorf("original's token after relink = %+v, %v", got, err)
+	}
+	// The new provider's login is the original now; the old one makes a new user.
+	if sess := login(moved); sess.User.ID != orig.User.ID {
+		t.Errorf("login after relink = %+v, want the original", sess.User)
+	}
+	if sess := login(old); sess.User.ID == orig.User.ID {
+		t.Errorf("old identity still signs in as the original")
+	}
+
+	// Merging the last enabled admin into a disabled user is refused.
+	if err := s.DeleteToken(ctx, orig.User.ID, origTok.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateUser(ctx, local.ID, Change{Disabled: ptr(true)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateUser(ctx, other.User.ID, Change{Disabled: ptr(true)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RelinkSSO(ctx, other.User.ID, orig.User.ID); !errors.Is(err, ErrLastAdmin) {
+		t.Errorf("relink of the last admin into a disabled user = %v, want ErrLastAdmin", err)
+	}
+	if _, err := s.GetUser(ctx, orig.User.ID); err != nil {
+		t.Errorf("last admin after the refused relink: %v", err)
+	}
+}
+
+func isInput(err error) bool {
+	var in *InputError
+	return errors.As(err, &in)
+}

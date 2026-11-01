@@ -41,6 +41,7 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | POST | `/api/v1/users` | admin, session only | create a local user `{"username", "password", "role"}`; `201` |
 | PATCH | `/api/v1/users/{id}` | admin, session only | change `{"role", "disabled", "password"}` (each optional); `200` with the user |
 | DELETE | `/api/v1/users/{id}` | admin | delete a user with their sessions, tokens and webhooks; `204` |
+| POST | `/api/v1/users/{id}/relink` | admin, session only | re-link SSO identity: merge `{"duplicate": <id>}` into this SSO user; `200` with the user (see Users) |
 | GET | `/api/v1/users/{id}/environments` | admin | the environments a user may use `{"environments": [1, 3]}`; see Ownership |
 | PUT | `/api/v1/users/{id}/environments` | admin | replace them `{"environments": [1, 3]}`; `200` with the stored list |
 | GET | `/api/v1/audit` | session | the audit log, newest first, paged and filtered; see Audit log |
@@ -237,6 +238,22 @@ nudge stores its SHA-256 hash. `GET /api/v1/tokens` lists the same objects witho
   token, creating a deploy webhook or rotating its secret, and creating a deploy token.
 - `DELETE /api/v1/users/{id}` removes the user and everything they own: sessions, API
   tokens, deploy tokens, deploy webhooks and deployment memberships.
+- `POST /api/v1/users/{id}/relink` `{"duplicate": 7}` re-links an SSO identity: when
+  the provider's issuer or subject changed (a new provider), the next login created a
+  duplicate (`name-2`). In one transaction the duplicate is deleted (its sessions end,
+  so an admin signed in as the duplicate logs in again) and `{id}` takes its issuer,
+  subject, display name, email and role; `{id}` keeps its name, disabled flag and
+  everything it owns. The admin picks both users; nudge never matches them by email.
+  - Both must be SSO users and different (else `400`; an unknown `{id}` is `404`, an
+    unknown duplicate `400`).
+  - Nothing the duplicate owns is moved: a duplicate with API tokens, environment
+    access, allowances, pulled images, deployment memberships, deploy tokens or deploy
+    webhooks is `409` naming them; remove them first. (Containers, volumes and networks
+    carry their creator's owner key and can't be moved; a user only creates them while it
+    has environment access.)
+  - A merge that leaves no enabled admin is `409`.
+  - Session-only: it decides whose login signs in as the user. Audited with the target
+    `<duplicate> into <user>`.
 - Every change is in the audit log with the username as the target.
 
 ### Environments

@@ -205,4 +205,58 @@ describe('UsersView', () => {
     await button(wrapper.find('form.allowance'), 'Close')!.trigger('click');
     expect(wrapper.find('form.allowance').exists()).toBe(false);
   });
+
+  it('re-links an SSO identity: merges the duplicate into the original', async () => {
+    const dup = account({
+      id: 4,
+      username: 'carol-2',
+      role: 'user',
+      sso: true,
+      email: 'carol@new.example.net',
+    });
+    let list = [adminAccount, bob, carol, dup];
+    const confirm = vi.fn(() => true);
+    vi.stubGlobal('confirm', confirm);
+    stubApi({
+      'GET /users': () => ({ body: list }),
+      'POST /users/3/relink': (init) => {
+        expect(JSON.parse(String(init?.body))).toEqual({ duplicate: 4 });
+        list = [adminAccount, bob, { ...carol, email: dup.email }];
+        return { body: list[2] };
+      },
+    });
+    const wrapper = mountView();
+    await flushPromises();
+    // Only SSO users can be re-linked.
+    expect(button(rowOf(wrapper, 'bob'), 'Re-link SSO identity')).toBeUndefined();
+    await button(rowOf(wrapper, 'carol@example.net'), 'Re-link SSO identity')!.trigger('click');
+    const options = wrapper.findAll('select[name="duplicate"] option').map((o) => o.text());
+    expect(options).toEqual(['Pick the duplicate', 'carol-2 (carol@new.example.net)']);
+    await wrapper.find('select[name="duplicate"]').setValue(4);
+    await wrapper.find('form.relink').trigger('submit');
+    await flushPromises();
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(wrapper.find('form.relink').exists()).toBe(false);
+    expect(wrapper.find('tbody').text()).not.toContain('carol-2');
+  });
+
+  it('shows a refused re-link', async () => {
+    const dup = account({ id: 4, username: 'carol-2', role: 'user', sso: true });
+    vi.stubGlobal('confirm', () => true);
+    stubApi({
+      'GET /users': { body: [adminAccount, carol, dup] },
+      'POST /users/3/relink': {
+        status: 409,
+        body: { error: 'the duplicate still has API tokens; remove them first' },
+      },
+    });
+    const wrapper = mountView();
+    await flushPromises();
+    await button(rowOf(wrapper, 'carol@example.net'), 'Re-link SSO identity')!.trigger('click');
+    await wrapper.find('select[name="duplicate"]').setValue(4);
+    await wrapper.find('form.relink').trigger('submit');
+    await flushPromises();
+    expect(wrapper.find('[role="alert"]').text()).toContain('API tokens');
+    expect(wrapper.find('form.relink').exists()).toBe(true);
+  });
 });

@@ -7,6 +7,7 @@ import {
   getUserEnvironments,
   listEnvironments,
   listUsers,
+  relinkUser,
   setUserEnvironments,
   updateUser,
   type Account,
@@ -33,6 +34,9 @@ const allEnvironments = ref<Environment[]>([]);
 const granted = ref<number[]>([]);
 // allowing is the user whose allowances the allowance form edits, null when it is closed.
 const allowing = ref<Account | null>(null);
+// relinking is the SSO user the re-link form merges a duplicate into, null when it is closed.
+const relinking = ref<Account | null>(null);
+const duplicate = ref<number | null>(null);
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -142,6 +146,40 @@ async function onAllowance(u: Account) {
   }
 }
 
+// otherSSO are the SSO users other than u: the duplicates u can take over.
+const otherSSO = (u: Account) => (users.value ?? []).filter((d) => d.sso && d.id !== u.id);
+
+function onRelink(u: Account) {
+  relinking.value = u;
+  duplicate.value = null;
+  error.value = '';
+}
+
+async function onRelinkSubmit() {
+  const u = relinking.value;
+  if (!u) return;
+  const d = otherSSO(u).find((x) => x.id === duplicate.value);
+  if (!d) return;
+  if (
+    !window.confirm(
+      `Merge ${d.username} into ${u.username}? ${u.username} takes over ${d.username}'s SSO identity and ${d.username} is deleted.`,
+    )
+  ) {
+    return;
+  }
+  busy.value = true;
+  error.value = '';
+  try {
+    await relinkUser(u.id, d.id);
+    relinking.value = null;
+    await load();
+  } catch (e) {
+    error.value = message(e);
+  } finally {
+    busy.value = false;
+  }
+}
+
 async function onDelete(u: Account) {
   if (!window.confirm(`Delete ${u.username}? Their sessions, tokens and webhooks go with them.`)) return;
   error.value = '';
@@ -150,6 +188,7 @@ async function onDelete(u: Account) {
     if (resetting.value?.id === u.id) resetting.value = null;
     if (granting.value?.id === u.id) granting.value = null;
     if (allowing.value?.id === u.id) allowing.value = null;
+    if (relinking.value?.id === u.id) relinking.value = null;
     await load();
   } catch (e) {
     error.value = message(e);
@@ -222,6 +261,25 @@ onMounted(load);
       <button type="submit" class="primary" :disabled="busy">Save</button>
       <button type="button" @click="granting = null">Cancel</button>
     </form>
+    <form v-if="relinking" class="user relink" @submit.prevent="onRelinkSubmit">
+      <label>
+        Re-link SSO identity: merge into {{ relinking.username }} the duplicate
+        <select v-model="duplicate" name="duplicate" required>
+          <option :value="null" disabled>Pick the duplicate</option>
+          <option v-for="d in otherSSO(relinking)" :key="d.id" :value="d.id">
+            {{ d.username }}{{ d.email ? ` (${d.email})` : '' }}
+          </option>
+        </select>
+      </label>
+      <button type="submit" class="primary" :disabled="busy || duplicate === null">Re-link</button>
+      <button type="button" @click="relinking = null">Cancel</button>
+      <p class="muted hint">
+        For a user the SSO provider's change (new issuer or subject) signed in as a new user:
+        {{ relinking.username }}
+        takes over the duplicate's identity and keeps everything it has; the duplicate is deleted. A duplicate
+        that owns tokens, environment access or other things is refused until they are removed.
+      </p>
+    </form>
     <AllowanceForm
       v-if="allowing"
       :key="allowing.id"
@@ -273,6 +331,9 @@ onMounted(load);
               <button v-if="u.role === 'user'" type="button" @click="onEnvironments(u)">Environments</button>
               <button v-if="u.role === 'user'" type="button" @click="onAllowance(u)">Allowance</button>
               <button v-if="!u.sso" type="button" @click="onReset(u)">Reset password</button>
+              <button v-if="u.sso && otherSSO(u).length > 0" type="button" @click="onRelink(u)">
+                Re-link SSO identity
+              </button>
               <button type="button" @click="onDisable(u)">{{ u.disabled ? 'Enable' : 'Disable' }}</button>
               <button type="button" class="danger" @click="onDelete(u)">Delete</button>
             </td>
@@ -311,6 +372,11 @@ onMounted(load);
 .user legend {
   font-weight: 500;
   margin-bottom: 0.25rem;
+}
+
+.user .hint {
+  flex-basis: 100%;
+  margin: 0;
 }
 
 .user label.check {

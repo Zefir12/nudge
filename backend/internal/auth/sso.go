@@ -202,3 +202,108 @@ func (s *Service) RevokeSSO(ctx context.Context, issuer, subject string) (Revoke
 	}
 	return r, nil
 }
+
+// RelinkRefusedError means the duplicate of a RelinkSSO still owns something; Owns names
+// what, so the admin can remove it first. Its message is safe to show.
+type RelinkRefusedError struct{ Owns []string }
+
+func (e *RelinkRefusedError) Error() string {
+	return "the duplicate still has " + strings.Join(e.Owns, ", ") + "; remove them first"
+}
+
+// duplicateOwns are what RelinkSSO refuses to throw away with the duplicate, by name and
+// the query counting the duplicate's rows (its id in ?). Sessions are not here: they end.
+var duplicateOwns = []struct{ name, query string }{
+	{"API tokens", `SELECT COUNT(*) FROM api_tokens WHERE user_id = ?`},
+	{"environment access", `SELECT COUNT(*) FROM user_environments WHERE user_id = ?`},
+	{"allowances", `SELECT COUNT(*) FROM allowances WHERE user_id = ?`},
+	{"pulled images", `SELECT COUNT(*) FROM image_pulls WHERE user_id = ?`},
+	{"deployment memberships", `SELECT COUNT(*) FROM deployment_members WHERE user_id = ?`},
+	{"deployment tokens", `SELECT COUNT(*) FROM deployment_tokens WHERE created_by = ?`},
+	{"deploy webhooks", `SELECT COUNT(*) FROM deploy_hooks WHERE created_by = ?`},
+}
+
+// RelinkSSO merges the SSO user duplicate into the SSO user original, as when the
+// provider changed and the next login created a new user: in one transaction the
+// duplicate is deleted (its sessions end) and the original takes its issuer and subject,
+// display name, email and role (the provider's latest), so the next login signs in as the
+// original with everything it has. The original's disabled flag stays as it is.
+//
+// Nothing the duplicate owns is moved: a duplicate with API tokens, environment access,
+// allowances, pulled images, deployment memberships or tokens, or deploy webhooks is a
+// RelinkRefusedError. (Docker objects carry the owner key of the user who made them and
+// can't be relabelled; a user only labels them while it has environment access.)
+// Merging a user into itself, or a local user either way, is an InputError; a merge that
+// leaves no enabled admin is ErrLastAdmin. It returns the original as it is now.
+func (s *Service) RelinkSSO(ctx context.Context, original, duplicate int64) (Account, error) {
+	if original == duplicate {
+		return Account{}, &InputError{Msg: "a user can't be merged into itself"}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Account{}, fmt.Errorf("relink sso user: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	orig, err := scanAccount(tx.QueryRowContext(ctx, `SELECT `+accountColumns+` FROM users WHERE id = ?`, original))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Account{}, ErrUserNotFound
+	}
+	if err != nil {
+		return Account{}, fmt.Errorf("relink sso user: %w", err)
+	}
+	var dup struct {
+		username, issuer, subject, display, email string
+		role                                      Role
+	}
+	err = tx.QueryRowContext(ctx, `SELECT username, oidc_issuer, oidc_subject, display_name, email, role FROM users WHERE id = ?`,
+		duplicate).Scan(&dup.username, &dup.issuer, &dup.subject, &dup.display, &dup.email, &dup.role)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Account{}, &InputError{Msg: "the duplicate user doesn't exist"}
+	}
+	if err != nil {
+		return Account{}, fmt.Errorf("relink sso user: %w", err)
+	}
+	if !orig.SSO || dup.subject == "" {
+		return Account{}, &InputError{Msg: "only SSO users can be re-linked; both must be SSO users"}
+	}
+	var owns []string
+	for _, o := range duplicateOwns {
+		var n int64
+		if err := tx.QueryRowContext(ctx, o.query, duplicate).Scan(&n); err != nil {
+			return Account{}, fmt.Errorf("relink sso user: count %s: %w", o.name, err)
+		}
+		if n > 0 {
+			owns = append(owns, o.name)
+		}
+	}
+	if len(owns) > 0 {
+		return Account{}, &RelinkRefusedError{Owns: owns}
+	}
+	// The duplicate goes first: issuer and subject are unique.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, duplicate); err != nil {
+		return Account{}, fmt.Errorf("relink sso user: delete duplicate: %w", err)
+	}
+	a, err := scanAccount(tx.QueryRowContext(ctx, `
+		UPDATE users SET oidc_issuer = ?, oidc_subject = ?, display_name = ?, email = ?, role = ?, updated_at = ?
+		WHERE id = ?
+		RETURNING `+accountColumns,
+		dup.issuer, dup.subject, dup.display, dup.email, dup.role, s.now().Unix(), original))
+	if err != nil {
+		return Account{}, fmt.Errorf("relink sso user: update original: %w", err)
+	}
+	var admins bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM users WHERE role = 'admin' AND NOT disabled)`).Scan(&admins); err != nil {
+		return Account{}, fmt.Errorf("relink sso user: %w", err)
+	}
+	if !admins {
+		return Account{}, ErrLastAdmin
+	}
+	if err := tx.Commit(); err != nil {
+		return Account{}, fmt.Errorf("relink sso user: %w", err)
+	}
+	if orig.Role != a.Role {
+		s.log.Warn("re-linked sso user took the provider's role", "username", a.Username, "from", orig.Role, "to", a.Role)
+	}
+	s.log.Info("sso user re-linked", "username", a.Username, "duplicate", dup.username, "subject", dup.subject)
+	return a, nil
+}

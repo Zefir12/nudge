@@ -31,9 +31,12 @@ func toAccountResponse(a auth.Account) accountResponse {
 
 func (s *server) userError(w http.ResponseWriter, msg string, err error) {
 	var inputErr *auth.InputError
+	var relinkErr *auth.RelinkRefusedError
 	switch {
 	case errors.As(err, &inputErr):
 		s.writeError(w, http.StatusBadRequest, inputErr.Msg)
+	case errors.As(err, &relinkErr):
+		s.writeError(w, http.StatusConflict, relinkErr.Error())
 	case errors.Is(err, auth.ErrUserNotFound):
 		s.writeError(w, http.StatusNotFound, "user not found")
 	case errors.Is(err, auth.ErrUserExists), errors.Is(err, auth.ErrLastAdmin), errors.Is(err, auth.ErrBreakGlass):
@@ -119,6 +122,44 @@ func (s *server) deleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("user deleted", "username", a.Username, "by", s.username(r), "ip", clientIP(r))
 	w.WriteHeader(http.StatusNoContent)
+}
+
+type relinkUserRequest struct {
+	Duplicate int64 `json:"duplicate"`
+}
+
+// relinkUser merges the duplicate SSO user, created when the provider's issuer or subject
+// changed, into the {id} SSO user, which takes over the duplicate's identity.
+func (s *server) relinkUser(w http.ResponseWriter, r *http.Request) {
+	a, ok := s.pathUser(w, r)
+	if !ok {
+		return
+	}
+	var req relinkUserRequest
+	if !s.decodeJSON(w, r, &req) {
+		return
+	}
+	if req.Duplicate <= 0 {
+		s.writeError(w, http.StatusBadRequest, "duplicate must be a user id")
+		return
+	}
+	dup, err := s.auth.GetUser(r.Context(), req.Duplicate)
+	if errors.Is(err, auth.ErrUserNotFound) {
+		s.writeError(w, http.StatusBadRequest, "the duplicate user doesn't exist")
+		return
+	}
+	if err != nil {
+		s.userError(w, "relink user", err)
+		return
+	}
+	auditTarget(r, dup.Username+" into "+a.Username)
+	merged, err := s.auth.RelinkSSO(r.Context(), a.ID, dup.ID)
+	if err != nil {
+		s.userError(w, "relink user", err)
+		return
+	}
+	s.log.Info("user re-linked", "username", merged.Username, "duplicate", dup.Username, "by", s.username(r), "ip", clientIP(r))
+	s.writeJSON(w, http.StatusOK, toAccountResponse(merged))
 }
 
 // pathUser returns the {id} user, naming them in the audit entry, or answers 404.

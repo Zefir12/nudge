@@ -157,6 +157,8 @@ var sessionOnlyRoutes = map[string]bool{
 	"POST /api/v1/auth/password": true,
 	"POST /api/v1/users":         true,
 	"PATCH /api/v1/users/{id}":   true,
+	// Re-linking decides whose login signs in as a user, admins included.
+	"POST /api/v1/users/{id}/relink": true,
 	// A backup holds the key to the stored registry passwords and every credential hash.
 	"POST /api/v1/backup": true,
 	// A join token enrolls an agent, whose credentials stay valid until revoked.
@@ -263,6 +265,7 @@ var routes = []route{
 	{"POST /api/v1/users", (*server).createUser},
 	{"PATCH /api/v1/users/{id}", (*server).changeUser},
 	{"DELETE /api/v1/users/{id}", (*server).deleteUser},
+	{"POST /api/v1/users/{id}/relink", (*server).relinkUser},
 	{"GET /api/v1/users/{id}/environments", (*server).getUserEnvironments},
 	{"PUT /api/v1/users/{id}/environments", (*server).setUserEnvironments},
 	{"GET /api/v1/registries", (*server).listRegistries},

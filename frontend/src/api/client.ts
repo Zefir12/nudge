@@ -230,6 +230,10 @@ export const createUser = (u: { username: string; password: string; role: Role }
 export const updateUser = (id: number, change: AccountChange) =>
   apiFetch<Account>(`/users/${id}`, { method: 'PATCH', body: JSON.stringify(change) });
 export const deleteUser = (id: number) => apiFetch<void>(`/users/${id}`, { method: 'DELETE' });
+// Re-link SSO identity: merges the duplicate SSO user into user id, which takes over its
+// issuer and subject; the duplicate is deleted.
+export const relinkUser = (id: number, duplicate: number) =>
+  apiFetch<Account>(`/users/${id}/relink`, post({ duplicate }));
 // The environments a user may use, by id (admins use every one).
 export const getUserEnvironments = (id: number) =>
   apiFetch<{ environments: number[] }>(`/users/${id}/environments`);
