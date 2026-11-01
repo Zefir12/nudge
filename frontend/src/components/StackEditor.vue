@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue';
 
 import { checkStack } from '../api/client';
 import { readCompose } from '../compose';
+import CodeEditor from './CodeEditor.vue';
 
 // StackEditor edits a stack's compose.yaml and .env. Syntax errors show while typing;
 // compose's own check runs on demand and from validate(), which the views call before
@@ -55,31 +56,20 @@ defineExpose({ validate });
   <div class="editor">
     <label class="field">
       <span>compose.yaml</span>
-      <textarea
+      <CodeEditor
         v-model="compose"
-        class="code"
-        rows="18"
-        spellcheck="false"
-        autocapitalize="off"
-        autocomplete="off"
+        language="yaml"
+        size="tall"
         :disabled="disabled"
         :aria-invalid="syntax.errors.length > 0"
-      ></textarea>
+      />
     </label>
     <ul v-if="syntax.errors.length" class="errors" role="alert" aria-label="YAML errors">
       <li v-for="e in syntax.errors" :key="e">{{ e }}</li>
     </ul>
     <label class="field">
       <span>.env <span class="muted">(variables compose substitutes, one KEY=value per line)</span></span>
-      <textarea
-        v-model="env"
-        class="code"
-        rows="4"
-        spellcheck="false"
-        autocapitalize="off"
-        autocomplete="off"
-        :disabled="disabled"
-      ></textarea>
+      <CodeEditor v-model="env" language="env" size="short" :disabled="disabled" />
     </label>
     <div class="check">
       <button type="button" :disabled="disabled || checking || syntax.errors.length > 0" @click="check">
@@ -103,14 +93,6 @@ defineExpose({ validate });
 .field {
   display: grid;
   gap: 0.3rem;
-}
-
-.code {
-  width: 100%;
-  font-family: var(--mono);
-  font-size: 0.85rem;
-  tab-size: 2;
-  resize: vertical;
 }
 
 .errors {

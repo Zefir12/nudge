@@ -48,6 +48,7 @@ type Client interface {
 	VolumeCreate(ctx context.Context, opts client.VolumeCreateOptions) (client.VolumeCreateResult, error)
 	VolumeRemove(ctx context.Context, id string, opts client.VolumeRemoveOptions) (client.VolumeRemoveResult, error)
 	VolumePrune(ctx context.Context, opts client.VolumePruneOptions) (client.VolumePruneResult, error)
+	DiskUsage(ctx context.Context, opts client.DiskUsageOptions) (client.DiskUsageResult, error)
 	NetworkList(ctx context.Context, opts client.NetworkListOptions) (client.NetworkListResult, error)
 	NetworkInspect(ctx context.Context, id string, opts client.NetworkInspectOptions) (client.NetworkInspectResult, error)
 	NetworkCreate(ctx context.Context, name string, opts client.NetworkCreateOptions) (client.NetworkCreateResult, error)
@@ -137,3 +138,6 @@ func InvalidArgument(err error) bool {
 func Unauthorized(err error) bool {
 	return cerrdefs.IsUnauthorized(err) || cerrdefs.IsPermissionDenied(err)
 }
+
+// ErrNotFound is a not-found error for callers that hide an object from someone.
+var ErrNotFound = cerrdefs.ErrNotFound

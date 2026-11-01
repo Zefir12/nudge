@@ -2,11 +2,13 @@
 
 A self-hosted Docker manager (like Portainer/Dockhand): one container with the Docker
 socket mounted serves a REST API and a Vue web UI, and remote hosts join through an agent
-mode of the same binary. Read PLAN.md for the roadmap and docs/ for decisions.
+with its own image. Read PLAN.md for the roadmap and docs/ for decisions.
 
 ## How it works
-- One Go binary, one image. `nudge serve` (default) runs the API under `/api/v1` and the
-  embedded web UI; `nudge agent` (phase 2) runs on a remote host and dials out to a server.
+- Two binaries, two images from one Dockerfile and one tag: `nudge` (`nudge serve`,
+  default) runs the API under `/api/v1` and the embedded web UI; `nudge-agent` runs on a
+  remote host and dials out to a server. Keep server packages out of the agent binary
+  (`cmd/nudge-agent` tests that); shared subcommands go in `internal/cli`.
 - Every Docker host is an "environment". The local one talks to `/var/run/docker.sock`;
   a remote one is reached through the agent's tunnel (yamux over WebSocket), on which the
   server's Docker client dials. docs/architecture.md has the design.
@@ -24,14 +26,17 @@ mode of the same binary. Read PLAN.md for the roadmap and docs/ for decisions.
 - Standard library first. Approved dependencies: `github.com/moby/moby/client` (Docker),
   `modernc.org/sqlite` (pure-Go SQLite), `github.com/coder/websocket`,
   `github.com/hashicorp/yamux`, `golang.org/x/crypto` (argon2id), `vue-router`,
-  `yaml` (compose syntax in the stack editor). Any
+  `yaml` (compose syntax in the stack editor), `github.com/coreos/go-oidc/v3` with its
+  `github.com/go-jose/go-jose/v4` and `golang.org/x/oauth2` (OIDC login). Any
   other dependency only after asking zefir.
 - Lint: golangci-lint (backend/.golangci.yml), `vp check` and `vue-tsc`. Formatting:
   gofmt + goimports, `vp check --fix`.
 - Everything runs in Docker by default; `make ... LOCAL=1` uses a host toolchain.
 
 ## Layout
-- backend/cmd/nudge          entrypoint: subcommands, wiring, graceful shutdown
+- backend/cmd/nudge          server entrypoint: subcommands, wiring, graceful shutdown
+- backend/cmd/nudge-agent    agent entrypoint (agent image)
+- backend/internal/cli       subcommands both binaries share (agent, probe)
 - backend/internal/api       HTTP handlers and routing under /api/v1
 - backend/internal/config    flags with NUDGE_* env fallbacks
 - backend/internal/web       embedded frontend build (dist/), SPA fallback
@@ -46,8 +51,10 @@ mode of the same binary. Read PLAN.md for the roadmap and docs/ for decisions.
 - `make lint`: golangci-lint, `vp check`, `vue-tsc --noEmit`
 - `make format`: gofmt/goimports and `vp check --fix`
 - `make tidy`: `go mod tidy` (after adding or removing imports)
+- `make web-mock MOCK_ADDR=<ip>`: UI preview with hot reload on <ip>:5173 and a mock API
+  (frontend/mock/); docs/codemap.md "Preview the UI"
 - `make web-build`: builds the frontend and copies it into backend/internal/web/dist
-- `make build`: builds the Docker image locally
+- `make build`: builds both Docker images (nudge, nudge-agent) locally
 Always run `make test lint` before committing. Fix failures yourself.
 
 ## Conventions
@@ -108,8 +115,12 @@ Always run `make test lint` before committing. Fix failures yourself.
   bot's stored credentials; already configured).
 - Issues and PRs go through `fj`. See the forgejo skill for exact commands. PRs
   target `develop`, the body says `Closes #N` and follows the PR template.
-- Check the bot login without printing secrets: `fj -H git.zefirlabs.net whoami` must show
-  `gitek`. If it fails, ask zefir and stop. Never print, copy or write the token anywhere.
+- Check the bot login without printing secrets: `fj api user --jq .login` must print a
+  login. Each machine's agent has its own bot account, so don't expect a particular name.
+  If it fails, ask zefir and stop. Never print, copy or write the token anywhere.
+- `fj` must be the Go fj 0.6 (gh-style, `fj version` works). If this machine has the old
+  Rust forgejo-cli (`fj whoami`, `fj issue search`), stop and ask zefir to install the Go
+  fj 0.6 here; the forgejo skill has the details.
 - zefir reviews and merges. Never merge your own PRs.
 
 ## Issue workflow

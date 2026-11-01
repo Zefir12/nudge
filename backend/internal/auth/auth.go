@@ -62,14 +62,32 @@ type RateLimitedError struct{ RetryAfter time.Duration }
 
 func (e *RateLimitedError) Error() string { return "too many failed login attempts" }
 
+// Role is what a user may do: an admin everything, a user only the routes opened to
+// users.
+type Role string
+
+// The roles.
+const (
+	// RoleAdmin may do everything.
+	RoleAdmin Role = "admin"
+	// RoleUser may use the routes opened to users.
+	RoleUser Role = "user"
+)
+
+// Valid reports whether r is a known role.
+func (r Role) Valid() bool { return r == RoleAdmin || r == RoleUser }
+
 // User is an account.
 type User struct {
 	ID        int64
 	Username  string
 	CreatedAt time.Time
+	Role      Role
 	// Token is the name of the API token that authenticated the request; empty for a
 	// session.
 	Token string
+	// SSO says the user signs in through the OIDC provider (and has no password).
+	SSO bool
 }
 
 // Session is a new login. Token is the cookie value; only its hash is stored.
@@ -88,6 +106,11 @@ type Options struct {
 	// Params are the argon2id costs of new hashes (DefaultParams by default).
 	Params     Params
 	SessionTTL time.Duration
+	// SSOSessionTTL is how long the sessions of SSO logins last (SessionTTL by default).
+	SSOSessionTTL time.Duration
+	// AdminPasswordOnly refuses password login to everyone but AdminUsername, the
+	// break-glass user, when users sign in through SSO.
+	AdminPasswordOnly bool
 }
 
 // Service manages users and sessions in the store's database.
@@ -97,6 +120,9 @@ type Service struct {
 	now    func() time.Time
 	params Params
 	ttl    time.Duration
+	ssoTTL time.Duration
+	// adminOnly is Options.AdminPasswordOnly.
+	adminOnly bool
 
 	hashes    chan struct{}
 	waiters   chan struct{}
@@ -116,6 +142,8 @@ func New(opts Options) *Service {
 		now:       opts.Now,
 		params:    opts.Params,
 		ttl:       opts.SessionTTL,
+		ssoTTL:    opts.SSOSessionTTL,
+		adminOnly: opts.AdminPasswordOnly,
 		hashes:    make(chan struct{}, maxConcurrentHashes),
 		waiters:   make(chan struct{}, maxHashWaiters),
 		ipLimit:   newLimiter(ipFailureLimit, failureWindow, maxLimiterKeys),
@@ -133,6 +161,9 @@ func New(opts Options) *Service {
 	if s.ttl == 0 {
 		s.ttl = DefaultSessionTTL
 	}
+	if s.ssoTTL == 0 {
+		s.ssoTTL = s.ttl
+	}
 	// Hash the dummy now, so the first unknown-user login isn't slower than later ones.
 	_, _ = s.dummy()
 	return s
@@ -147,7 +178,7 @@ func (s *Service) SetupNeeded(ctx context.Context) (bool, error) {
 	return !exists, nil
 }
 
-// CreateFirstUser creates the admin while no user exists. The check and the insert are
+// CreateFirstUser creates the first admin while no user exists. The check and the insert are
 // one statement, so concurrent calls create exactly one user; the others get
 // ErrSetupDone.
 func (s *Service) CreateFirstUser(ctx context.Context, username, password string) (User, error) {
@@ -168,10 +199,10 @@ func (s *Service) CreateFirstUser(ctx context.Context, username, password string
 		return User{}, err
 	}
 	now := s.now().Unix()
-	u := User{Username: username, CreatedAt: time.Unix(now, 0)}
+	u := User{Username: username, CreatedAt: time.Unix(now, 0), Role: RoleAdmin}
 	err = s.db.QueryRowContext(ctx, `
-		INSERT INTO users (username, password_hash, created_at, updated_at)
-		SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM users)
+		INSERT INTO users (username, password_hash, created_at, updated_at, role)
+		SELECT ?, ?, ?, ?, 'admin' WHERE NOT EXISTS (SELECT 1 FROM users)
 		RETURNING id`, username, hash, now, now).Scan(&u.ID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrSetupDone
@@ -208,14 +239,20 @@ func (s *Service) Login(ctx context.Context, ip, username, password string) (Ses
 		// No such user can exist; the IP keeps the failure.
 		return Session{}, ErrInvalidCredentials
 	}
+	if s.adminOnly && !strings.EqualFold(username, AdminUsername) {
+		// Password login is off; the rule is public, so skipping the hash reveals nothing.
+		return Session{}, ErrInvalidCredentials
+	}
 
 	var u User
 	var hash string
 	var created int64
+	var disabled bool
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, username, password_hash, created_at FROM users WHERE username = ?`, username,
-	).Scan(&u.ID, &u.Username, &hash, &created)
-	known := err == nil
+		`SELECT id, username, password_hash, created_at, role, disabled FROM users WHERE username = ?`, username,
+	).Scan(&u.ID, &u.Username, &hash, &created, &u.Role, &disabled)
+	// SSO users have no password: they count as unknown.
+	known := err == nil && hash != ""
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		s.ipLimit.release(ip, now)
 		return Session{}, fmt.Errorf("look up user: %w", err)
@@ -238,19 +275,95 @@ func (s *Service) Login(ctx context.Context, ip, username, password string) (Ses
 		}
 		return Session{}, err
 	}
-	if !known || !ok {
+	// A disabled user's right password still fails, without saying the account exists.
+	if !known || !ok || disabled {
 		return Session{}, ErrInvalidCredentials
 	}
 	s.ipLimit.release(ip, now)
 	s.userLimit.reset(userKey)
 	u.CreatedAt = time.Unix(created, 0)
-	return s.newSession(ctx, u)
+	return s.newSession(ctx, u, s.ttl)
 }
 
-func (s *Service) newSession(ctx context.Context, u User) (Session, error) {
+// ErrPasswordChanged means the password was changed (an admin's reset) while
+// ChangePassword checked the current one.
+var ErrPasswordChanged = errors.New("the password was changed meanwhile")
+
+// ChangePassword sets user id's password to next if current is their password, and ends
+// their other sessions (keep is the session token that asked, which stays). A wrong
+// current password counts toward the login rate limits like a failed login, and is
+// ErrInvalidCredentials; an SSO user has no password to change (InputError).
+func (s *Service) ChangePassword(ctx context.Context, ip string, id int64, keep, current, next string) error {
+	if err := validPassword(next); err != nil {
+		return err
+	}
+	now := s.now()
+	if d, ok := s.ipLimit.reserve(ip, now); !ok {
+		return &RateLimitedError{RetryAfter: d}
+	}
+	var username, hash string
+	err := s.db.QueryRowContext(ctx, `SELECT username, password_hash FROM users WHERE id = ?`, id).Scan(&username, &hash)
+	if err != nil {
+		s.ipLimit.release(ip, now)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrUserNotFound
+		}
+		return fmt.Errorf("look up user: %w", err)
+	}
+	if hash == "" {
+		s.ipLimit.release(ip, now)
+		return &InputError{Msg: "an SSO user has no password in nudge"}
+	}
+	userKey := strings.ToLower(username)
+	if d, ok := s.userLimit.reserve(userKey, now); !ok {
+		return &RateLimitedError{RetryAfter: d}
+	}
+	ok := false
+	if len(current) <= maxPasswordLen {
+		if ok, err = s.verify(ctx, hash, current); err != nil {
+			s.ipLimit.release(ip, now)
+			s.userLimit.release(userKey, now)
+			return err
+		}
+	}
+	if !ok {
+		return ErrInvalidCredentials
+	}
+	s.ipLimit.release(ip, now)
+	s.userLimit.reset(userKey)
+	newHash, err := s.hash(ctx, next)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("change password: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	// The hash it was checked against: a change made meanwhile (an admin's reset) wins.
+	res, err := tx.ExecContext(ctx, `UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ? AND password_hash = ?`,
+		newHash, now.Unix(), id, hash)
+	if err != nil {
+		return fmt.Errorf("change password: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("change password: %w", err)
+	} else if n == 0 {
+		return ErrPasswordChanged
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ? AND id_hash <> ?`, id, tokenHash(keep)); err != nil {
+		return fmt.Errorf("end other sessions: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("change password: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) newSession(ctx context.Context, u User, ttl time.Duration) (Session, error) {
 	token := rand.Text()
 	now := s.now()
-	expires := now.Add(s.ttl)
+	expires := now.Add(ttl)
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO sessions (id_hash, user_id, created_at, last_seen_at, expires_at) VALUES (?, ?, ?, ?, ?)`,
 		tokenHash(token), u.ID, now.Unix(), now.Unix(), expires.Unix())
@@ -269,9 +382,9 @@ func (s *Service) SessionUser(ctx context.Context, token string) (User, error) {
 	var u User
 	var created, lastSeen, expires int64
 	err := s.db.QueryRowContext(ctx, `
-		SELECT u.id, u.username, u.created_at, s.last_seen_at, s.expires_at
+		SELECT u.id, u.username, u.created_at, u.oidc_issuer <> '', u.role, s.last_seen_at, s.expires_at
 		FROM sessions s JOIN users u ON u.id = s.user_id
-		WHERE s.id_hash = ?`, id).Scan(&u.ID, &u.Username, &created, &lastSeen, &expires)
+		WHERE s.id_hash = ? AND NOT u.disabled`, id).Scan(&u.ID, &u.Username, &created, &u.SSO, &u.Role, &lastSeen, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrNoSession
 	}
@@ -295,15 +408,22 @@ func (s *Service) SessionUser(ctx context.Context, token string) (User, error) {
 	return u, nil
 }
 
-// Logout ends the session of token, if there is one.
-func (s *Service) Logout(ctx context.Context, token string) error {
+// Logout ends the session of token, if there is one, and reports whether it was an SSO
+// user's (whose provider session the caller may end too).
+func (s *Service) Logout(ctx context.Context, token string) (sso bool, err error) {
 	if token == "" {
-		return nil
+		return false, nil
+	}
+	err = s.db.QueryRowContext(ctx, `
+		SELECT u.oidc_issuer <> '' FROM sessions s JOIN users u ON u.id = s.user_id
+		WHERE s.id_hash = ?`, tokenHash(token)).Scan(&sso)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("look up session: %w", err)
 	}
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE id_hash = ?`, tokenHash(token)); err != nil {
-		return fmt.Errorf("delete session: %w", err)
+		return false, fmt.Errorf("delete session: %w", err)
 	}
-	return nil
+	return sso, nil
 }
 
 // Cleanup deletes expired sessions and forgets finished rate-limit windows.

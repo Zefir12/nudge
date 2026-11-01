@@ -1,11 +1,11 @@
 import { flushPromises, mount } from '@vue/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
-import { createMemoryHistory } from 'vue-router';
+import { h } from 'vue';
+import { createMemoryHistory, RouterView } from 'vue-router';
 
 import { createAppRouter } from '../router';
 import { currentUser } from '../session';
 import { admin, stubApi, stubSockets, type FakeWebSocket } from '../test-utils';
-import StackView from './StackView.vue';
 
 let sockets: FakeWebSocket[];
 
@@ -51,7 +51,8 @@ const web = () => ({
 async function mountView() {
   const router = createAppRouter(createMemoryHistory());
   await router.push('/env/1/stacks/web');
-  const wrapper = mount(StackView, { global: { plugins: [router] } });
+  // Through a RouterView, as in the app: onBeforeRouteLeave needs a matched route record.
+  const wrapper = mount({ render: () => h(RouterView) }, { global: { plugins: [router] } });
   await flushPromises();
   return { wrapper, router };
 }

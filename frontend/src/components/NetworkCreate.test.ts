@@ -1,11 +1,17 @@
 import { flushPromises, mount } from '@vue/test-utils';
-import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 
-import { stubApi } from '../test-utils';
+import { currentUser } from '../session';
+import { admin, stubApi, user } from '../test-utils';
 import NetworkCreate from './NetworkCreate.vue';
+
+beforeEach(() => {
+  currentUser.value = admin;
+});
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  currentUser.value = null;
 });
 
 describe('NetworkCreate', () => {
@@ -48,5 +54,16 @@ describe('NetworkCreate', () => {
     await wrapper.find('form').trigger('submit');
     await flushPromises();
     expect(wrapper.find('[role=alert]').text()).toBe('a network with this name already exists');
+  });
+
+  it('leaves out what a user may not set', async () => {
+    currentUser.value = user;
+    const wrapper = mount(NetworkCreate, { props: { env: '1' } });
+    for (const name of ['driver', 'subnet', 'gateway', 'ip_range']) {
+      expect(wrapper.find(`input[name=${name}]`).exists()).toBe(false);
+    }
+    expect(wrapper.find('textarea[name=options]').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain('IPv6');
+    expect(wrapper.text()).toContain('Internal');
   });
 });

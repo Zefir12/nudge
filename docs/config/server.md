@@ -11,13 +11,35 @@ image without setting anything. A flag wins over its variable.
 | `-compose` | `NUDGE_COMPOSE` | `/usr/local/bin/docker-compose` | docker-compose binary that deploys stacks (shipped in the image) |
 | `-log-level` | `NUDGE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`; logs are JSON on stderr |
 | `-docker-host` | `DOCKER_HOST` | `unix:///var/run/docker.sock` | Docker API of the local environment, `unix://` or `tcp://` |
+| `-docker-root` | `NUDGE_DOCKER_ROOT` | `/host/docker` | where the host's Docker root dir is mounted (read-only) so the dashboard can show the disk's size and free space; empty or not mounted: unknown. See [Disk usage](#disk-usage) |
 | `-tls-cert` | `NUDGE_TLS_CERT` | unset | PEM certificate (chain); with `-tls-key` the server speaks HTTPS only |
 | `-tls-key` | `NUDGE_TLS_KEY` | unset | PEM private key of `-tls-cert` |
 | `-public-url` | `NUDGE_PUBLIC_URL` | unset | URL browsers and agents reach the server at, `https://host[:port]` |
 | `-trusted-proxies` | `NUDGE_TRUSTED_PROXIES` | unset | comma-separated CIDRs or IPs of reverse proxies whose `X-Forwarded-For` and `X-Forwarded-Proto` are trusted (see Reverse proxy) |
 | `-audit-retention-days` | `NUDGE_AUDIT_RETENTION_DAYS` | `90` | days the audit log keeps entries (at least 1); older ones are deleted hourly |
 | `-update-check-interval` | `NUDGE_UPDATE_CHECK_INTERVAL` | `6h` | how often every environment's images are checked for updates (a Go duration, at least `5m`; `0` turns the scheduled check off, the UI's check still works); the first check runs two minutes after start |
+| `-usage-interval` | `NUDGE_USAGE_INTERVAL` | `15m` | how often every environment's volume sizes and Docker disk usage (`docker system df`: volumes, images, build cache, containers, reclaimable) are measured (a Go duration, at least `1m`; `0` turns the scheduled measurement off, the UI's "Measure sizes" still works); the first measurement runs two minutes after start. Docker walks every volume to size it, so on hosts with large volumes a longer interval is kinder to the disks |
+| `-metrics-interval` | `NUDGE_METRICS_INTERVAL` | `60s` | how often every environment's and container's CPU, memory, network and block I/O is collected into `<data>/metrics.db` (a Go duration, at least `10s`; `0` turns collection off: the dashboard's gauges and charts go empty, stored history still answers). Each tick asks the daemon for one stats reading per running container, 8 at a time. See [Metrics database](#metrics-database) |
+| `-metrics-live-interval` | `NUDGE_METRICS_LIVE_INTERVAL` | `5s` | how often an environment is sampled while someone watches its live usage (a dashboard tile or its usage card; at least `2s`). These samples are streamed, not stored; back to `-metrics-interval` when the last viewer leaves |
+| `-metrics-retention` | `NUDGE_METRICS_RETENTION` | `720h` | how long the hourly usage rollups and event counts are kept (at least `48h`); raw samples are kept for 48 hours |
+| `-backup-interval` | `NUDGE_BACKUP_INTERVAL` | `0` | how often an encrypted backup is saved to `<data>/backups/` (a Go duration, at least `5m`; `0` turns scheduled backups off); needs `-backup-passphrase-file`. See [Backup and restore](#backup-and-restore) |
+| `-backup-keep` | `NUDGE_BACKUP_KEEP` | `7` | how many scheduled backups are kept; older ones are deleted after each new one |
+| `-backup-passphrase-file` | `NUDGE_BACKUP_PASSPHRASE_FILE` | unset | file holding the passphrase (at least 12 characters; a trailing newline is ignored) scheduled backups are encrypted with; `nudge restore` reads its passphrase from here too |
 | — | `NUDGE_ADMIN_PASSWORD` | unset | create the user `admin` with this password at start if no user exists |
+| `-oidc-issuer` | `NUDGE_OIDC_ISSUER` | unset | OpenID Connect issuer URL (`https://`); with the client ID and secret it turns on single sign-on (see Single sign-on) |
+| `-oidc-client-id` | `NUDGE_OIDC_CLIENT_ID` | unset | nudge's client ID at the provider |
+| — | `NUDGE_OIDC_CLIENT_SECRET` | unset | nudge's client secret (environment only) |
+| `-oidc-name` | `NUDGE_OIDC_NAME` | `SSO` | label of the login page's button ("Log in with …") |
+| `-oidc-admin-role` | `NUDGE_OIDC_ADMIN_ROLE` | `admin` | value of the ID token's `roles` claim that makes a user an admin |
+| `-oidc-user-role` | `NUDGE_OIDC_USER_ROLE` | `user` | value of the `roles` claim that makes a user a (non-admin) user; `-oidc-user-role=""` signs in admins only; must differ from the admin role |
+| `-oidc-require-mfa` | `NUDGE_OIDC_REQUIRE_MFA` | `false` | refuse sign-ins whose `amr` claim lacks `mfa` |
+| `-oidc-session-ttl` | `NUDGE_OIDC_SESSION_TTL` | `12h` | how long a single sign-on session lasts (at least `5m`) |
+| `-password-login` | `NUDGE_PASSWORD_LOGIN` | `true` | `false` hides the password form and refuses password login to everyone but the local `admin` (needs single sign-on) |
+| `-tenant-cgroup-parent` | `NUDGE_TENANT_CGROUP_PARENT` | | cgroup parent of every user's containers, `{id}` standing for the user's ID: a systemd slice name (`nudge-u{id}.slice`) or a cgroupfs path (`/nudge/u{id}`); see [Hosting other users](#hosting-other-users) |
+| `-tenant-runtime` | `NUDGE_TENANT_RUNTIME` | | OCI runtime of every user's container, e.g. `runsc` (gVisor); users' containers aren't created or started on a daemon that doesn't list it |
+| `-tenant-storage-size` | `NUDGE_TENANT_STORAGE_SIZE` | | disk cap of a user's container's writable layer (`10G`, `512M`; binary units, at least `64M`), where the storage driver supports it |
+| `-user-registries` | `NUDGE_USER_REGISTRIES` | see [Registries users can pull from](#registries-users-can-pull-from) | comma-separated registry hosts (with the port, if any) users' pulls may reach, `*` for any |
+| `-tenant-denied-labels` | `NUDGE_TENANT_DENIED_LABELS` | `traefik.,caddy,com.centurylinklabs.watchtower.,ofelia.,wud.,diun.` | comma-separated label prefixes users may not set on their containers, or `none`; see [Labels](#labels) |
 
 ## Data directory
 `nudge serve` creates the data directory (mode 0700) if it is missing and exits with an
@@ -25,9 +47,62 @@ error if it cannot write there. The database is `<data>/nudge.db` (SQLite in WAL
 `nudge.db-wal` and `nudge.db-shm` sit next to it); schema migrations run at start.
 `<data>/secret.key` (32 random bytes, mode 0600, created at the first start) encrypts the
 registry passwords and the notification webhooks' URLs and header values in the database.
-Back up the whole directory while the server is stopped; without its `secret.key` a
-restored database's registry passwords and webhooks must be entered again. A database migrated by a newer nudge
-is refused by an older one.
+Back it up with nudge's own backups (below) rather than by copying the files: a copy of
+`nudge.db` taken while the server runs can miss what is still in `nudge.db-wal`. A
+database migrated by a newer nudge is refused by an older one.
+
+### Metrics database
+Usage history lives apart in `<data>/metrics.db` (SQLite, WAL, its own migrations), written
+every `-metrics-interval`: one row per running container per tick and the environment's
+totals. Every 10 minutes the finished hours are rolled up (average and maximum), raw rows
+older than 48 hours and rollups older than `-metrics-retention` are deleted, and so are
+the rows of removed environments. At the default minute raw samples take roughly 2 MB per 10
+running containers and day, the rollups far less. The container events per hour for the
+dashboard's heatmap go there too (one row per environment, hour and owner), kept as long
+as the rollups. It is not part of
+backups; a restore moves it aside with the rest of the old data, so history starts over.
+
+## Backup and restore
+A backup is one file, `nudge-<UTC time>.nudgebak`, holding a consistent snapshot of the
+database (SQLite `VACUUM INTO`, taken while the server runs), `secret.key`, and every
+stack's `compose.yaml` and `.env`. It doesn't hold containers' volumes, files that stacks
+bind-mount from their directory, or the agents' own `agent.json` (agents keep theirs, and
+their credentials are in the database, so they reconnect after a restore without
+enrolling again).
+
+The file is encrypted with a passphrase of at least 12 characters: AES-256-GCM in 64 KiB
+chunks, the key derived with argon2id from the passphrase and a random salt. It holds the
+key to the stored registry passwords and webhook URLs, so keep the passphrase apart from
+the backups; without it a backup can't be restored.
+
+- **From the UI or the API**: the Backup page (admins) or `POST /api/v1/backup` downloads
+  one; see docs/api.md.
+- **On a schedule**: `-backup-interval 24h` with `-backup-passphrase-file` saves one to
+  `<data>/backups/` every interval (the first one an interval after start) and keeps the
+  newest `-backup-keep`. They sit on the same volume as the data, so copy them elsewhere
+  (a host-side job that syncs the volume's `backups/` directory) to survive losing it.
+
+**Restore** with the server stopped, on the volume the server will use (`docker volume ls`
+shows its name; compose prefixes the project's), with the server image's `restore`
+command:
+
+```sh
+docker compose stop nudge
+docker run --rm -v nudge_nudge-data:/data -v "$PWD:/backup" registrydedic.zefirlabs.net/nudge:latest \
+  restore -file /backup/nudge-20261028-120000.nudgebak -passphrase-file /backup/passphrase
+docker compose start nudge
+```
+
+`restore` takes `-data` and `-stacks-dir` (or `NUDGE_DATA`, `NUDGE_STACKS_DIR`) like
+`serve`, and `-passphrase-file` (or `NUDGE_BACKUP_PASSPHRASE_FILE`). It decrypts and checks
+the whole archive before it changes anything, so a wrong passphrase or a damaged or cut
+file leaves the data alone. It refuses a data directory that already has a database (or `metrics.db`), key
+or stacks; with `-force` it moves them to `<data>/pre-restore-<time>/` and the stacks'
+`compose.yaml` and `.env` files to `<stacks>/.pre-restore-<time>/` first. Only those files
+move: data that stacks bind-mount from their directories stays in place, and the stacks
+directory may be a mount point. If putting the files in place fails, the moves are undone. A backup from a newer nudge is refused;
+one from an older nudge is migrated when the server starts. Run it with the server stopped:
+a running server keeps writing to the database file restore moved aside.
 
 ## Stacks
 Stacks live in `<stacks dir>/<environment ID>/<name>/` (`compose.yaml`, `.env`), and the
@@ -159,6 +234,67 @@ serves TLS or `NUDGE_PUBLIC_URL` is `https://`, else only when the browser uses 
 through a trusted proxy that sets `X-Forwarded-Proto: https`. Writes from other origins are refused. Failed logins are
 rate-limited per client IP and per username (see docs/api.md).
 
+## Single sign-on
+nudge signs users in through one OpenID Connect provider (authorization code flow with
+PKCE, as a confidential client with `client_secret_basic`; ID tokens must be RS256). Set
+`NUDGE_OIDC_ISSUER`, `NUDGE_OIDC_CLIENT_ID` and `NUDGE_OIDC_CLIENT_SECRET` together (nudge
+refuses to start with only some of them) and an `https://` `NUDGE_PUBLIC_URL`. The
+redirect URI to register is `<public URL>/api/v1/auth/oidc/callback`; the scopes are
+`openid profile email`.
+
+- **Roles.** The ID token's `roles` claim (an array) must hold `NUDGE_OIDC_ADMIN_ROLE`
+  (the user is an admin) or `NUDGE_OIDC_USER_ROLE` (a user; with both, an admin). It is
+  read on every login and sets the user's role in nudge, which an admin can't change
+  there. Without either role the login is refused with a 403 page and audited, as is a
+  user an admin disabled in nudge. The provider's role wins even when it demotes the last
+  admin (logged as a warning): keep the break-glass `admin` for that case.
+- **Users** are matched by issuer and subject (`sub`) only. A local user with the same
+  name or email is never linked: the SSO user gets a name of its own (its preferred
+  username, else its email, with `-2`… on a clash; never `admin`). Display name and email
+  are refreshed on each login. Changing the provider (its issuer, or the users'
+  subjects) makes the next login a new user; an admin merges it into the old one with
+  "Re-link SSO identity" on the Users page (`POST /api/v1/users/{id}/relink`, docs/api.md).
+- **Setup** is off with SSO: `POST /api/v1/setup` is refused, and the first admin is
+  whoever the provider gives the admin role. `NUDGE_ADMIN_PASSWORD` still creates a local
+  `admin` on a fresh install: the break-glass user.
+- **Password login** stays on by default. With `NUDGE_PASSWORD_LOGIN=false` the login page
+  shows only the SSO button and the API refuses password logins except the local `admin`'s;
+  `/login?password` shows the form for it.
+- **Sessions** are nudge's own, capped by `NUDGE_OIDC_SESSION_TTL`: a user disabled at the
+  provider keeps their session until then. Logout ends the nudge session and sends the
+  browser to the provider's `end_session_endpoint`.
+- **MFA.** `NUDGE_OIDC_REQUIRE_MFA=true` refuses ID tokens whose `amr` lacks `mfa`.
+- Failed SSO logins land on the login page with a generic error, are logged with the
+  detail and count against the per-IP login limit (shared with password login).
+- **Revoking access.** Roles and MFA are checked at login only: a user whose admin role is
+  taken away keeps their session (as an admin) until `NUDGE_OIDC_SESSION_TTL` ends it or
+  they log in again, and API tokens they created keep working until then. The next SSO
+  login without either role is refused and ends all of that user's sessions and deletes
+  their API tokens (audited); a login refused only for a missing second factor revokes
+  nothing. Deploy tokens and deploy webhooks they created are not touched. Disabling the
+  user in nudge (Users page) ends their sessions and stops their tokens at once.
+- **Break-glass.** SSO users count as users, so `NUDGE_ADMIN_PASSWORD` creates the local
+  `admin` only on a fresh install: set it before the first SSO login if you want a way in
+  without the provider (or after turning SSO off).
+
+### Authestra
+1. In Authestra, register a **confidential** client for nudge with the redirect URI
+   `https://nudge.example.net/api/v1/auth/oidc/callback` and the scopes
+   `openid profile email`. Note its client ID and secret.
+2. Define the roles `admin` and `user` on that client, and grant `admin` to the people who
+   manage nudge. Authestra refuses users without a role of the client at its login page;
+   `user` signs in nowhere yet (nudge's roles are to come).
+3. Start nudge with:
+   ```sh
+   NUDGE_PUBLIC_URL=https://nudge.example.net
+   NUDGE_OIDC_ISSUER=https://auth.example.net
+   NUDGE_OIDC_CLIENT_ID=nudge
+   NUDGE_OIDC_CLIENT_SECRET=...        # from step 1
+   NUDGE_OIDC_NAME=Authestra
+   # NUDGE_OIDC_REQUIRE_MFA=true       # only users who passed a second factor
+   # NUDGE_PASSWORD_LOGIN=false        # SSO only, plus the local admin
+   ```
+
 ## Docker access
 The server manages the Docker host whose socket is mounted at `/var/run/docker.sock`
 (`-docker-host` / `DOCKER_HOST` overrides it, as `unix:///path` or `tcp://host:port`;
@@ -169,3 +305,198 @@ At start nudge pings that host (3 s timeout). If it answers and no `local` envir
 exists, nudge creates one named `local`. If it doesn't answer, nudge logs a warning and
 starts anyway; restart it once the socket is available to get the environment. Each
 Docker call made by an API request has a 10 s timeout.
+
+### Disk usage
+The dashboard's disk bar shows Docker's usage by kind (`docker system df`, measured every
+`-usage-interval`) against the size of the disk under Docker's root dir. nudge reads that
+size with statfs on the root dir, which deploy/compose.yml (and deploy/agent.compose.yml
+for an agent) mount read-only:
+
+```yaml
+    volumes:
+      - /var/lib/docker:/host/docker:ro
+```
+
+Nothing under it is read, only the filesystem's size and free space. With a non-default
+Docker root (`data-root` in `/etc/docker/daemon.json`; `docker info -f '{{.DockerRootDir}}'`
+prints it) mount that directory instead, at the same `/host/docker`, or point
+`-docker-root` / `NUDGE_DOCKER_ROOT` at where you mounted it. Without the mount (or with
+`NUDGE_DOCKER_ROOT=""`), and for agents older than the disk size, the tile shows Docker's
+usage without a total.
+
+Containers installed before the mount get it on their next self-update (server or
+agent): the new container mounts the daemon's `DockerRootDir` read-only at
+`-docker-root` / `NUDGE_DOCKER_ROOT` (default `/host/docker`) when nothing is mounted
+there or above it yet. Existing mounts stay as they are, and `NUDGE_DOCKER_ROOT=""` skips it.
+
+## Hosting other users
+Users (non-admins) share the host's kernel with everyone else. nudge already builds their
+containers without privileges, host namespaces, binds or added capabilities, and checks
+their allowance; an unprivileged container is hard to escape, but a kernel bug is root on
+the host. The settings below make an escape and resource abuse much harder. They are
+opt-in because each needs host setup nudge can't do itself, and they apply to users'
+containers only, in every environment: each host (the server's and every agent's) needs
+the same setup. Admins' containers are left as they are.
+
+nudge refuses (409) to start or restart a user's container made with other settings than
+the current ones, for example one made before a setting was added or changed: its
+runtime, cgroup parent and disk cap (where the storage driver can set one) must match.
+Recreating it (the edit form, or an update) builds it with the current settings.
+
+### Registries users can pull from
+A user's pull is anonymous (never with the stored registry credentials), but the image
+reference names the registry, and the daemon connects to whatever host it names:
+`10.0.0.5:5000/x` would probe the internal network from the Docker host. So users' pulls
+(create, recreate, image update, deploy webhooks) may only reach the registries in
+`NUDGE_USER_REGISTRIES`; any other is refused with `403` before the daemon is asked.
+Admins' pulls aren't limited.
+
+The default is Docker Hub (`docker.io`), `ghcr.io`, `quay.io`, `gcr.io`,
+`registry.k8s.io`, `mcr.microsoft.com`, `public.ecr.aws`, `registry.gitlab.com` and
+`lscr.io`. Setting the variable replaces the list, e.g.
+`NUDGE_USER_REGISTRIES=docker.io,registry.example.net:5000`; a port is part of the host,
+and Docker Hub's aliases (`index.docker.io`) count as `docker.io`. `*` allows any
+registry: only for hosts with nothing to probe. The registry is read as Docker reads it:
+the reference's first component when it has a dot or a port, is `localhost` or has an
+upper-case letter, otherwise Docker Hub. An allowance's image patterns narrow a user's
+images further.
+
+### A cgroup slice per user
+With `NUDGE_TENANT_CGROUP_PARENT=nudge-u{id}.slice` every container of user 7 goes into
+`nudge-u7.slice`, so the kernel caps the user's total even if nudge's own allowance check
+were wrong. The user's ID is on the Users page. With Docker's systemd cgroup driver (the
+default on systemd hosts) the parent is a slice name ending in `.slice`; with the
+cgroupfs driver it is a path such as `/nudge/u{id}`.
+
+Create each user's slice before they start a container: systemd makes a missing slice
+on demand, without limits. On the host, as root:
+
+```ini
+# /etc/systemd/system/nudge-u7.slice
+[Unit]
+Description=nudge user 7
+
+[Slice]
+MemoryMax=4G
+MemorySwapMax=0
+CPUQuota=200%
+TasksMax=2048
+```
+
+then `systemctl daemon-reload && systemctl start nudge-u7.slice`. Keep the limits at or
+above the user's allowance, so the allowance is what users normally meet and the slice is
+the backstop.
+
+### A sandboxed runtime
+With `NUDGE_TENANT_RUNTIME=runsc` users' containers run under gVisor, which answers their
+system calls in a user-space kernel instead of the host's: most kernel bugs are out of
+reach. Install it and register it with the daemon (`runsc install`, which adds it to
+`/etc/docker/daemon.json`, then restart Docker); `docker info` lists it under Runtimes.
+Kata Containers (`kata-runtime`, a small VM per container) works the same way.
+
+nudge refuses to create, start or restart a user's container (409) on a daemon that
+doesn't list the runtime. The trade-offs: gVisor costs some speed on system-call-heavy work (I/O,
+networking) and doesn't run everything (some `/proc` and `ioctl` uses); Kata needs
+hardware virtualisation.
+
+### Disk
+`NUDGE_TENANT_STORAGE_SIZE=10G` caps the writable layer of every user's container (what it
+writes outside its volumes; volumes and pulled images count toward the user's disk
+allowance instead). Docker supports this on overlay2 over xfs mounted with `pquota`, and
+on btrfs, zfs and devicemapper. nudge sets it where `docker info` reports such a driver
+(for overlay2, an xfs backing filesystem) and logs a warning and leaves it out elsewhere.
+On xfs without `pquota` the daemon refuses the create and the user sees why: mount the
+filesystem under `/var/lib/docker` with `pquota` (in `/etc/fstab`; for the root
+filesystem, `rootflags=pquota` on the kernel command line).
+
+### Labels
+Tools on the host that read containers' labels (reverse proxies, updaters, schedulers)
+would obey a user's container as they obey an admin's: a `traefik.http.routers.*` label
+could claim another site's hostname. `NUDGE_TENANT_DENIED_LABELS` lists the label
+prefixes users may not set, matched without case. The default covers Traefik (`traefik.`),
+caddy-docker-proxy (`caddy`, which also matches `caddy_0`), Watchtower
+(`com.centurylinklabs.watchtower.`), Ofelia (`ofelia.`, whose labels can start
+containers), What's Up Docker (`wud.`) and Diun (`diun.`). Setting it replaces the
+default, so repeat the default's prefixes you want to keep and add your own, for example
+`NUDGE_TENANT_DENIED_LABELS=traefik.,caddy,com.centurylinklabs.watchtower.,ofelia.,wud.,diun.,homepage.`;
+`none` lets users set any label.
+
+A user's create or edit with such a label is refused with a field error on `labels`, and
+so is a container whose image sets one (Docker copies an image's labels onto its
+containers). A container made before a prefix was added keeps running, but its next
+recreate or update is refused until the label is gone (edit it out in the user's form).
+nudge's own `net.zefirlabs.nudge.` and Docker's `com.docker.` labels are always refused.
+Admins' containers are not affected.
+
+### Network
+Users' bridge networks are isolated from each other, but Docker lets a container connect
+to the host's own addresses: the services listening on the host, and every port published
+on them (other users' and admins' included, since Docker publishes on all addresses by
+default). nudge can't change the host's firewall, so it makes users' traffic easy to
+match instead: every network it creates for a user, their default one included, gets a
+Linux bridge named `nudge` and ten hex digits (`nudge3f9a01c2de`; the driver option
+`com.docker.network.bridge.name`). Admins' networks keep Docker's `br-…` names, so one
+rule on `nudge+` covers users only. Add on each host, as root:
+
+```sh
+# Ports published on the host's addresses: the connection is NATed to a container and
+# forwarded, through DOCKER-USER (replies to outside clients go in the other direction).
+iptables -I DOCKER-USER -i nudge+ -m conntrack --ctdir ORIGINAL --ctstate DNAT -j DROP
+# Services on the host itself (the bridge's gateway and every other host address).
+iptables -I INPUT -i nudge+ -m conntrack --ctstate NEW -j DROP
+```
+
+Users' containers still reach the internet and their own network's containers, and the
+host can still connect to them. A user's own published ports are blocked too when they
+are reached through the host's address; containers on one network reach each other by
+name. To allow something, insert an `ACCEPT` above the rule (`-I` puts a rule first), for
+example DNS from a resolver on the host, if containers stop resolving names:
+`iptables -I INPUT -i nudge+ -p udp --dport 53 -j ACCEPT` (and the same for `tcp`).
+
+Docker creates `DOCKER-USER` when it starts and leaves its rules alone, but the rules
+don't survive a reboot: add them from a oneshot systemd unit with
+`After=docker.service` and `Requires=docker.service`, or your distribution's firewall
+tooling. With Docker's nftables backend (`"firewall-backend": "nftables"`, no
+`DOCKER-USER`) use a table of your own, in `/etc/nftables.conf`:
+
+```
+table inet nudge_users {
+  chain forward {
+    type filter hook forward priority filter - 1;
+    iifname "nudge*" ct direction original ct status dnat drop
+  }
+  chain input {
+    type filter hook input priority filter - 1;
+    iifname "nudge*" ct state new drop
+  }
+}
+```
+
+Networks made before nudge named users' bridges keep their `br-` and the first 12
+characters of the network's ID: add rules for those bridges too, or recreate the networks
+(a user's default network is created again when they are given the environment again).
+`ip link show type bridge` lists the bridges.
+
+To check, as a user, run `busybox` with `sleep 600` on the user's default network and in
+its console try a port an admin publishes and a service of the host (SSH, say), then the
+internet:
+
+```sh
+nc -z -w 3 <host address> <published port>   # fails
+nc -z -w 3 <host address> 22                  # fails
+wget -q -T 5 -O /dev/null http://example.com && echo ok   # ok
+```
+
+### The daemon
+- **`userns-remap`** (`"userns-remap": "default"` in daemon.json) maps root in every
+  container to an unprivileged range on the host, so an escape lands as nobody. It
+  applies to every container on the daemon, admins' too, and existing images and volumes
+  are re-owned or pulled again.
+- **Rootless Docker** runs the whole daemon as an ordinary user: an escape gets that
+  user, not root. nudge then talks to the rootless socket
+  (`DOCKER_HOST=unix:///run/user/<uid>/docker.sock`); ports below 1024, some network
+  drivers and cgroup limits need extra setup (cgroup v2 with delegation).
+- **One VM per user** is the strongest: give each untrusted user their own small VM
+  running `nudge-agent`, and grant them only that environment (Users, environment
+  access). A kernel bug then reaches only their own VM. It costs a VM per user, and
+  nudge doesn't provision them.

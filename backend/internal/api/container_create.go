@@ -163,6 +163,8 @@ func (sp *containerSpec) validate() map[string]string {
 	}
 	if hasEmptyKey(sp.Labels) {
 		errs["labels"] = "label names must not be empty"
+	} else if reservedLabel(sp.Labels) {
+		errs["labels"] = "labels starting with " + reservedLabels + " are reserved for nudge"
 	}
 	return errs
 }
@@ -266,42 +268,6 @@ func bindWithMode(key [2]string, opts []string, readOnly bool) string {
 	return b
 }
 
-// dropImageDefaults removes from cfg what the container's image sets (its environment,
-// command, labels, volumes, ports, …), as Docker copies them into every container. A
-// recreate then takes them from the image it runs, which may be newer, and the spec
-// shows only the container's own settings.
-func dropImageDefaults(cfg *container.Config, img *dockerspec.DockerOCIImageConfig) {
-	if img == nil {
-		return
-	}
-	cfg.Env = slices.DeleteFunc(slices.Clone(cfg.Env), func(e string) bool { return slices.Contains(img.Env, e) })
-	if slices.Equal(cfg.Cmd, img.Cmd) {
-		cfg.Cmd = nil
-	}
-	if slices.Equal(cfg.Entrypoint, img.Entrypoint) {
-		cfg.Entrypoint = nil
-	}
-	if cfg.WorkingDir == img.WorkingDir {
-		cfg.WorkingDir = ""
-	}
-	if cfg.User == img.User {
-		cfg.User = ""
-	}
-	if cfg.StopSignal == img.StopSignal {
-		cfg.StopSignal = ""
-	}
-	if hc, ihc := cfg.Healthcheck, img.Healthcheck; hc != nil && ihc != nil && slices.Equal(hc.Test, ihc.Test) &&
-		hc.Interval == ihc.Interval && hc.Timeout == ihc.Timeout && hc.Retries == ihc.Retries {
-		cfg.Healthcheck = nil
-	}
-	cfg.Labels = maps.Clone(cfg.Labels)
-	maps.DeleteFunc(cfg.Labels, func(k, v string) bool { iv, ok := img.Labels[k]; return ok && iv == v })
-	cfg.Volumes = maps.Clone(cfg.Volumes)
-	maps.DeleteFunc(cfg.Volumes, func(k string, _ struct{}) bool { _, ok := img.Volumes[k]; return ok })
-	cfg.ExposedPorts = maps.Clone(cfg.ExposedPorts)
-	maps.DeleteFunc(cfg.ExposedPorts, func(p network.Port, _ struct{}) bool { _, ok := img.ExposedPorts[p.String()]; return ok })
-}
-
 // imageConfig returns the config of the image a container was created from, or nil if
 // it is gone (then the container's settings are used as they are).
 func imageConfig(ctx context.Context, c docker.Client, id string) (*dockerspec.DockerOCIImageConfig, error) {
@@ -322,7 +288,9 @@ func toSpec(ct container.InspectResponse) containerSpec {
 		Command: []string{}, Env: []string{}, Networks: []string{}, Labels: map[string]string{},
 	}
 	if cfg := ct.Config; cfg != nil {
-		sp.Image, sp.Command, sp.Env, sp.Labels = cfg.Image, nonNil(cfg.Cmd), nonNil(cfg.Env), nonNilMap(cfg.Labels)
+		sp.Image, sp.Command, sp.Env, sp.Labels = cfg.Image, nonNil(cfg.Cmd), nonNil(cfg.Env), nonNilMap(maps.Clone(cfg.Labels))
+		// nudge's own labels (the owner) aren't settings; a recreate keeps them.
+		maps.DeleteFunc(sp.Labels, func(k, _ string) bool { return reservedKey(k) })
 	}
 	if hc := ct.HostConfig; hc != nil {
 		sp.RestartPolicy = string(hc.RestartPolicy.Name)
@@ -377,6 +345,16 @@ func (s *server) createContainer(w http.ResponseWriter, r *http.Request) {
 	resp, ok := s.runDocker(context.WithoutCancel(r.Context()), w, r, "container create", "", createTimeout, func(ctx context.Context, c docker.Client) (any, error) {
 		cfg, hc, nc := &container.Config{}, &container.HostConfig{}, &network.NetworkingConfig{}
 		req.apply(cfg, hc, nc, nil)
+		labels, err := s.ownerLabels(ctx, cfg.Labels)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Labels = labels
+		unlock, err := s.fitAllowance(ctx, pathEnv(r), c, labels[ownerLabel], cfg, hc, "", true)
+		if err != nil {
+			return nil, err
+		}
+		defer unlock()
 		res, err := c.ContainerCreate(ctx, client.ContainerCreateOptions{Name: req.Name, Config: cfg, HostConfig: hc, NetworkingConfig: nc})
 		if err != nil {
 			return nil, refusal(err, "created", req.Env)
@@ -400,18 +378,17 @@ func (s *server) getContainerSpec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.dockerCall(w, r, "container", func(ctx context.Context, c docker.Client) (any, error) {
-		res, err := c.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
+		ct, _, err := s.ownedContainer(ctx, c, id)
 		if err != nil {
 			return nil, err
 		}
-		ct := res.Container
 		if ct.Config != nil {
 			img, err := imageConfig(ctx, c, ct.Image)
 			if err != nil {
 				return nil, err
 			}
 			cfg := *ct.Config
-			dropImageDefaults(&cfg, img)
+			docker.DropImageDefaults(&cfg, img)
 			ct.Config = &cfg
 		}
 		return toSpec(ct), nil
@@ -443,6 +420,11 @@ func (s *server) recreateContainer(w http.ResponseWriter, r *http.Request) {
 	if req.Spec != nil {
 		ref = req.Spec.Image
 	}
+	if rp.owner != "" && req.Spec != nil {
+		// Refused before the pull, which would leave its image on the user's disk.
+		s.replaceError(w, r, rp.env, errAdminSpec)
+		return
+	}
 	if req.Pull && (digest.MatchString(ref) || !validPullRef(ref)) {
 		s.writeError(w, http.StatusBadRequest, "the image is an ID, not a reference such as nginx:1.29, so it can't be pulled")
 		return
@@ -459,13 +441,26 @@ func (s *server) recreateContainer(w http.ResponseWriter, r *http.Request) {
 }
 
 // replacement is a recreate or update under way: the container and the image it runs
-// (zero if the image is gone), inspected before anything changed.
+// (zero if the image is gone), inspected before anything changed, and its owner key ("" for
+// the admins').
 type replacement struct {
 	env      environments.Environment
 	c        docker.Client
 	old      container.InspectResponse
 	oldImage image.InspectResponse
-	done     func()
+	owner    string
+	// tenant, if set, is the spec to rebuild the container from (tenant.go).
+	tenant *tenantSpec
+	done   func()
+}
+
+// mounts are the volume mounts of the user's container the replacement builds: the
+// spec's, or the old container's when it is rebuilt from its own settings.
+func (rp *replacement) mounts() []tenantMount {
+	if rp.tenant != nil {
+		return rp.tenant.Mounts
+	}
+	return volumeMounts(rp.old)
 }
 
 // errRecreating refuses a second recreate or update of a container while one runs.
@@ -507,6 +502,11 @@ func (s *server) beginReplace(w http.ResponseWriter, r *http.Request, id string)
 	if !ok {
 		return nil, false
 	}
+	id, err := s.ownedContainerID(r.Context(), c, id)
+	if err != nil {
+		s.replaceError(w, r, env, err)
+		return nil, false
+	}
 	rp, err := s.startReplace(r.Context(), env, c, id)
 	if err != nil {
 		s.replaceError(w, r, env, err)
@@ -528,6 +528,9 @@ func (s *server) startReplace(ctx context.Context, env environments.Environment,
 	if old.Config == nil || old.HostConfig == nil || old.State == nil {
 		return nil, errors.New("inspect: incomplete container settings")
 	}
+	if self, _ := s.selfContainer(ctx, env, c); self != "" && self == old.ID {
+		return nil, errSelfContainer
+	}
 	// Before a pull, while the old image is surely still there.
 	var oldImage image.InspectResponse
 	ires, err := c.ImageInspect(ctx, old.Image)
@@ -542,12 +545,16 @@ func (s *server) startReplace(ctx context.Context, env environments.Environment,
 	if !ok {
 		return nil, errRecreating
 	}
-	return &replacement{env: env, c: c, old: old, oldImage: oldImage, done: done}, nil
+	var imageLabels map[string]string
+	if oldImage.Config != nil {
+		imageLabels = oldImage.Config.Labels
+	}
+	return &replacement{env: env, c: c, old: old, oldImage: oldImage, owner: containerOwner(old, imageLabels), done: done}, nil
 }
 
 // pullForReplace pulls ref with its registry's credentials; on false it has answered.
 func (s *server) pullForReplace(w http.ResponseWriter, r *http.Request, rp *replacement, ref string) bool {
-	if err := s.pullWithAuth(r.Context(), rp.c, ref); err != nil {
+	if err := s.pullOwned(r.Context(), rp.env.ID, rp.c, ref, rp.owner, rp.mounts()); err != nil {
 		s.replaceError(w, r, rp.env, err)
 		return false
 	}
@@ -585,7 +592,7 @@ func (s *server) finishReplace(w http.ResponseWriter, r *http.Request, rp *repla
 func (s *server) completeReplace(ctx context.Context, rp *replacement, spec *containerSpec) (string, error) {
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recreateTimeout)
 	defer cancel()
-	newID, err := s.replace(rctx, rp.c, rp.old, rp.oldImage.Config, spec)
+	newID, err := s.replace(rctx, rp, spec)
 	if err != nil {
 		return "", err
 	}
@@ -598,7 +605,11 @@ func (s *server) replaceError(w http.ResponseWriter, r *http.Request, env enviro
 	var pf *pullFailure
 	var inf *internalFailure
 	var df *dockerFailure
+	var fe *fieldsError
 	switch {
+	case errors.As(err, &fe):
+		s.envs.Seen(r.Context(), &env)
+		s.writeFields(w, fe.fields)
 	case errors.Is(err, errRegistryDecrypt):
 		s.log.Error("registry credentials", "err", err)
 		s.writeError(w, http.StatusInternalServerError, "the stored registry password can't be decrypted (was secret.key replaced?): enter it again under Registries")
@@ -632,21 +643,53 @@ func pullAndWait(ctx context.Context, c docker.Client, ref string, opts client.I
 }
 
 // replace does the steps of a recreate after the pull and returns the new container's ID.
-func (s *server) replace(ctx context.Context, c docker.Client, old container.InspectResponse, img *dockerspec.DockerOCIImageConfig, spec *containerSpec) (string, error) {
+func (s *server) replace(ctx context.Context, rp *replacement, spec *containerSpec) (string, error) {
+	c, old := rp.c, rp.old
 	name := strings.TrimPrefix(old.Name, "/")
-	cfg, hc, nc := recreateSettings(old)
-	dropImageDefaults(cfg, img)
-	if spec != nil {
-		spec.apply(cfg, hc, nc, nc.EndpointsConfig)
-		if spec.Name != "" {
-			name = spec.Name
-		}
-	}
-	keepAnonymousVolumes(old, hc)
+	var cfg *container.Config
+	var hc *container.HostConfig
+	var nc *network.NetworkingConfig
 	var secrets []string
-	if spec != nil {
-		secrets = spec.Env
+	switch {
+	case rp.owner != "" && spec != nil:
+		return "", errAdminSpec
+	case rp.owner != "":
+		// A user's container is always rebuilt by the tenant builder, never copied: its
+		// settings can only be ones the builder makes.
+		var err error
+		if cfg, hc, nc, name, err = s.tenantSettings(ctx, rp); err != nil {
+			return "", err
+		}
+		secrets = cfg.Env
+	default:
+		cfg, hc, nc = docker.RecreateSettings(old)
+		docker.DropImageDefaults(cfg, rp.oldImage.Config)
+		if spec != nil {
+			// The spec can't set nudge's own labels (the owner): keep the old container's.
+			kept := maps.Clone(cfg.Labels)
+			maps.DeleteFunc(kept, func(k, _ string) bool { return !reservedKey(k) })
+			spec.apply(cfg, hc, nc, nc.EndpointsConfig)
+			if len(kept) > 0 {
+				cfg.Labels = maps.Clone(cfg.Labels)
+				if cfg.Labels == nil {
+					cfg.Labels = map[string]string{}
+				}
+				maps.Copy(cfg.Labels, kept)
+			}
+			if spec.Name != "" {
+				name = spec.Name
+			}
+			secrets = spec.Env
+		}
+		docker.KeepAnonymousVolumes(old, hc)
 	}
+	// Checked before the old container stops; it is left out of the user's total, so a
+	// bigger limit counts as the difference.
+	unlock, err := s.fitAllowance(ctx, rp.env.ID, c, rp.owner, cfg, hc, old.ID, true)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
 	secrets = append(secrets, old.Config.Env...)
 
 	wasRunning := old.State.Running || old.State.Restarting || old.State.Paused
@@ -743,64 +786,6 @@ func (s *server) beginRecreate(env int64, id string) (done func(), ok bool) {
 func (s *server) cleanUp(ctx context.Context, c docker.Client, id string) {
 	if _, err := c.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true}); err != nil {
 		s.log.Error("remove failed new container", "container", id, "err", err)
-	}
-}
-
-// recreateSettings copies a container's settings for its replacement, leaving out what
-// Docker generated for it: the hostname (its short ID) and the endpoints' addresses.
-func recreateSettings(old container.InspectResponse) (*container.Config, *container.HostConfig, *network.NetworkingConfig) {
-	cfg, hc := *old.Config, *old.HostConfig
-	if strings.HasPrefix(old.ID, cfg.Hostname) && cfg.Hostname != "" {
-		cfg.Hostname = ""
-	}
-	hc.Mounts = slices.Clone(hc.Mounts)
-	hc.Binds = slices.Clone(hc.Binds)
-	cfg.ExposedPorts = maps.Clone(cfg.ExposedPorts)
-	nc := &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{}}
-	if ns := old.NetworkSettings; ns != nil {
-		for name, ep := range ns.Networks {
-			if ep == nil {
-				continue
-			}
-			nc.EndpointsConfig[name] = &network.EndpointSettings{
-				IPAMConfig: ep.IPAMConfig, Links: ep.Links, Aliases: ep.Aliases,
-				DriverOpts: ep.DriverOpts, GwPriority: ep.GwPriority,
-			}
-		}
-	}
-	return &cfg, &hc, nc
-}
-
-// keepAnonymousVolumes mounts the old container's anonymous volumes (from an image's
-// VOLUME, `-v /path` or a volume mount without a source) at the same paths, so their data
-// survives a recreate.
-func keepAnonymousVolumes(old container.InspectResponse, hc *container.HostConfig) {
-	anon := map[string]container.MountPoint{}
-	for _, m := range old.Mounts {
-		if m.Type == mount.TypeVolume {
-			anon[path.Clean(m.Destination)] = m
-		}
-	}
-	mounted := map[string]bool{}
-	for i, m := range hc.Mounts {
-		target := path.Clean(m.Target)
-		if om, ok := anon[target]; ok && m.Type == mount.TypeVolume && m.Source == "" {
-			hc.Mounts[i].Source = om.Name
-		}
-		mounted[target] = true
-	}
-	for _, b := range hc.Binds {
-		parts := strings.Split(b, ":")
-		if len(parts) >= 2 {
-			mounted[path.Clean(parts[1])] = true
-		}
-	}
-	for _, m := range old.Mounts {
-		// Named volumes have a mount or bind of their own.
-		if m.Type != mount.TypeVolume || mounted[path.Clean(m.Destination)] {
-			continue
-		}
-		hc.Mounts = append(hc.Mounts, mount.Mount{Type: mount.TypeVolume, Source: m.Name, Target: m.Destination, ReadOnly: !m.RW})
 	}
 }
 

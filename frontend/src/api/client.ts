@@ -45,7 +45,8 @@ async function send(path: string, init?: RequestInit, opts?: FetchOptions): Prom
     },
   });
   if (!res.ok) {
-    let message = res.statusText;
+    // HTTP/2 has no status text, and an empty message reads as no error at all.
+    let message = res.statusText || `Request failed (${res.status})`;
     let fields: Record<string, string> = {};
     try {
       const body = (await res.json()) as { error?: string; fields?: Record<string, string> };
@@ -67,14 +68,19 @@ export interface Health {
   version: string;
 }
 
-export const getHealth = () => apiFetch<Health>('/health');
+export const getHealth = (init?: RequestInit) => apiFetch<Health>('/health', init);
+
+export type Role = 'admin' | 'user';
 
 export interface User {
   id: number;
   username: string;
   created_at: string;
+  role: Role;
   // admin: the user may do admin-only actions (the UI hides them otherwise).
   admin: boolean;
+  // sso: signs in through the SSO provider; no password to change in nudge.
+  sso: boolean;
 }
 
 export interface Credentials {
@@ -86,7 +92,24 @@ export const getSetupStatus = () => apiFetch<{ needed: boolean }>('/setup');
 export const setup = (c: Credentials) => apiFetch<User>('/setup', post(c), { redirectOn401: false });
 export const login = (c: Credentials) => apiFetch<User>('/auth/login', post(c), { redirectOn401: false });
 // The caller navigates to login itself, so a 401 (session already gone) must not redirect too.
-export const logout = () => apiFetch<void>('/auth/logout', { method: 'POST' }, { redirectOn401: false });
+// An SSO user's logout answers with the provider's sign-out page; others get nothing.
+export const logout = () =>
+  apiFetch<{ logout_url: string } | undefined>('/auth/logout', { method: 'POST' }, { redirectOn401: false });
+
+export interface AuthMethods {
+  password: boolean;
+  oidc: { name: string } | null;
+}
+
+export const getAuthMethods = () =>
+  apiFetch<AuthMethods>('/auth/methods', undefined, { redirectOn401: false });
+// ssoLoginUrl is where the browser goes (a navigation, not a fetch) to sign in with SSO.
+export const ssoLoginUrl = (redirect: string) =>
+  `/api/v1/auth/oidc/login?redirect=${encodeURIComponent(redirect)}`;
+// changePassword changes the signed-in user's password; their other sessions end.
+export const changePassword = (current: string, next: string) =>
+  apiFetch<void>('/auth/password', post({ current, new: next }));
+
 export const getMe = () => apiFetch<User>('/auth/me', undefined, { redirectOn401: false });
 
 export interface Token {
@@ -105,6 +128,15 @@ export interface CreatedToken extends Token {
 export const listTokens = () => apiFetch<Token[]>('/tokens');
 export const createToken = (name: string) => apiFetch<CreatedToken>('/tokens', post({ name }));
 export const deleteToken = (id: number) => apiFetch<void>(`/tokens/${id}`, { method: 'DELETE' });
+
+// createBackup asks for a backup of the server's data, encrypted with passphrase, and
+// returns it with the file name the server gives it.
+export async function createBackup(passphrase: string): Promise<{ blob: Blob; name: string }> {
+  const res = await send('/backup', post({ passphrase }));
+  const disposition = res.headers.get('Content-Disposition') ?? '';
+  const name = /filename="([^"]+)"/.exec(disposition)?.[1] ?? 'nudge.nudgebak';
+  return { blob: await res.blob(), name };
+}
 
 // AuditEntry is one write through the API; environment is an environment ID.
 export interface AuditEntry {
@@ -172,6 +204,82 @@ export interface RegistryInput {
   owners?: string[];
   plain_http?: boolean;
 }
+
+// Account is a user in the user management (admins only).
+export interface Account {
+  id: number;
+  username: string;
+  role: Role;
+  disabled: boolean;
+  // sso: signs in through the SSO provider, which sets the role; no password in nudge.
+  sso: boolean;
+  display_name: string;
+  email: string;
+  created_at: string;
+}
+
+export interface AccountChange {
+  role?: Role;
+  disabled?: boolean;
+  password?: string;
+}
+
+export const listUsers = () => apiFetch<Account[]>('/users');
+export const createUser = (u: { username: string; password: string; role: Role }) =>
+  apiFetch<Account>('/users', post(u));
+export const updateUser = (id: number, change: AccountChange) =>
+  apiFetch<Account>(`/users/${id}`, { method: 'PATCH', body: JSON.stringify(change) });
+export const deleteUser = (id: number) => apiFetch<void>(`/users/${id}`, { method: 'DELETE' });
+// Re-link SSO identity: merges the duplicate SSO user into user id, which takes over its
+// issuer and subject; the duplicate is deleted.
+export const relinkUser = (id: number, duplicate: number) =>
+  apiFetch<Account>(`/users/${id}/relink`, post({ duplicate }));
+// The environments a user may use, by id (admins use every one).
+export const getUserEnvironments = (id: number) =>
+  apiFetch<{ environments: number[] }>(`/users/${id}/environments`);
+export const setUserEnvironments = (id: number, environments: number[]) =>
+  apiFetch<{ environments: number[] }>(`/users/${id}/environments`, {
+    method: 'PUT',
+    body: JSON.stringify({ environments }),
+  });
+
+// AllowanceLimits is what a user's containers may take in total in one environment.
+export interface AllowanceLimits {
+  cpus_milli: number;
+  memory_bytes: number;
+  disk_bytes: number;
+  max_containers: number;
+  // port_min..port_max are the host ports the user may publish; both 0 allows none.
+  port_min: number;
+  port_max: number;
+  // images are image patterns (nginx, ghcr.io/me/*); empty allows any.
+  images: string[];
+  updated_at?: string;
+}
+
+export interface AllowanceUsage {
+  cpus_milli: number;
+  memory_bytes: number;
+  disk_bytes: number;
+  containers: number;
+}
+
+// Allowance is a user's allowance (null without one), what they use and what is left.
+export interface Allowance {
+  user: number;
+  limits: AllowanceLimits | null;
+  used: AllowanceUsage;
+  left: AllowanceUsage | null;
+}
+
+// user is for admins; a user gets their own.
+const allowancePath = (env: string, user?: number) =>
+  `/environments/${env}/allowance${user === undefined ? '' : `?user=${user}`}`;
+export const getAllowance = (env: string, user?: number) => apiFetch<Allowance>(allowancePath(env, user));
+export const setAllowance = (env: string, user: number, limits: AllowanceLimits) =>
+  apiFetch<AllowanceLimits>(allowancePath(env, user), { method: 'PUT', body: JSON.stringify(limits) });
+export const deleteAllowance = (env: string, user: number) =>
+  apiFetch<void>(allowancePath(env, user), { method: 'DELETE' });
 
 export const listRegistries = () => apiFetch<Registry[]>('/registries');
 export const getRegistry = (id: number) => apiFetch<Registry>(`/registries/${id}`);
@@ -288,8 +396,9 @@ export interface Environment {
   online: boolean;
   created_at: string;
   last_seen_at: string | null;
-  // Only on agent environments.
-  agent?: { enrolled: boolean; version: string };
+  // Only on agent environments. While its tunnel is up: the address it came from (admins
+  // only) and the round trip of its last ping, in ms.
+  agent?: { enrolled: boolean; version: string; address?: string; rtt_ms?: number };
 }
 
 export interface JoinToken {
@@ -335,6 +444,9 @@ export const createEnvironment = (name: string) =>
   apiFetch<CreatedEnvironment>('/environments', post({ name, kind: 'agent' }));
 export const createJoinToken = (env: number) =>
   apiFetch<JoinToken>(`/environments/${env}/join-tokens`, { method: 'POST' });
+export const deleteEnvironment = (env: number) =>
+  apiFetch<void>(`/environments/${env}`, { method: 'DELETE' });
+
 export const revokeAgent = (env: number) =>
   apiFetch<void>(`/environments/${env}/credentials`, { method: 'DELETE' });
 
@@ -461,6 +573,10 @@ export interface Volume {
   scope: string;
   created_at: string | null;
   labels: Record<string, string>;
+  // size is the last measured size in bytes: null before the first measurement
+  // (size_measured_at null too) or when the driver can't report it.
+  size: number | null;
+  size_measured_at: string | null;
 }
 
 export interface Network {
@@ -527,6 +643,42 @@ export const recreateContainer = (
   id: string,
   opts: { pull?: boolean; spec?: ContainerSpec } = {},
 ) => apiFetch<CreatedContainer>(envPath(env, `/containers/${enc(id)}/recreate`), post(opts));
+
+// TenantSpec is a user's container: the server builds Docker's settings from it, checked
+// against the allowance. name is without the user's prefix; host_port 0 takes a free one
+// of the user's range; mounts and networks name the user's own volumes and networks.
+export interface TenantSpec {
+  image: string;
+  name: string;
+  command: string[];
+  entrypoint: string[];
+  env: string[];
+  cpus_milli: number;
+  memory_bytes: number;
+  ports: { host_port: number; container_port: number; protocol: string }[];
+  mounts: { volume: string; target: string; read_only: boolean }[];
+  networks: string[];
+  restart_policy: string;
+  // healthcheck null keeps the image's.
+  healthcheck: TenantHealth | null;
+  labels: Record<string, string>;
+}
+
+export interface TenantHealth {
+  command: string[];
+  interval_seconds: number;
+  timeout_seconds: number;
+  start_period_seconds: number;
+  retries: number;
+}
+
+export const createTenantContainer = (env: string, spec: TenantSpec, start: boolean) =>
+  apiFetch<CreatedContainer>(envPath(env, '/user-containers'), post({ ...spec, start }));
+export const getTenantSpec = (env: string, id: string) =>
+  apiFetch<TenantSpec>(envPath(env, `/user-containers/${enc(id)}/spec`));
+// recreateTenantContainer pulls the image and replaces the container with spec's settings.
+export const recreateTenantContainer = (env: string, id: string, spec: TenantSpec) =>
+  apiFetch<CreatedContainer>(envPath(env, `/user-containers/${enc(id)}/recreate`), post(spec));
 
 // UpdatedContainer is the outcome of an update: updated is false when the registry had
 // nothing newer and the container was left alone; id is the (new) container's.
@@ -805,6 +957,104 @@ export interface EnvironmentStats {
 export const getEnvironmentStats = (env: string, signal?: AbortSignal) =>
   apiFetch<EnvironmentStats>(envPath(env, '/stats'), { signal });
 
+// HostUsage is the whole machine's load: CPU as a percentage of every CPU (0-100, not of
+// one CPU like the containers'), memory in use (all but what is available) and all of it.
+export interface HostUsage {
+  cpu_percent: number;
+  memory_usage: number;
+  memory_total: number;
+}
+
+// LiveUsage is one sample of an environment from its live usage stream: the overview's
+// shape (a user's: of their containers) with the sample's time; `host` only for an admin,
+// when the host can be read.
+export interface LiveUsage extends EnvironmentStats {
+  time: string;
+  host?: HostUsage;
+}
+
+export interface LiveUsageHandlers {
+  onUsage: (u: LiveUsage) => void;
+  // onEnd runs once when the stream ends, always with an error: it has no natural end.
+  onEnd: (error?: string) => void;
+}
+
+// streamLiveUsage opens the environment's live usage WebSocket: a frame per sample, the
+// environment sampled faster while it is open. It returns a function that closes it.
+export const streamLiveUsage = (env: string, h: LiveUsageHandlers) =>
+  openStream<LiveUsage>(
+    envPath(env, '/metrics/live'),
+    'usage',
+    (m) => m.time !== undefined,
+    h.onUsage,
+    h.onEnd,
+  );
+
+// UsageSummary is an environment's usage totals from the server's latest collection (a
+// user's: of their containers): CPU as a percentage of one CPU, memory without the page
+// cache, over `containers` sampled.
+export interface UsageSummary {
+  sampled_at: string;
+  cpu_percent: number;
+  memory_usage: number;
+  containers: number;
+  // host is the whole machine's load, for an admin when it can be read.
+  host?: HostUsage;
+}
+
+// getEnvironmentSummary answers the environment's latest collected usage totals; 404 when
+// there is no recent one (collection is off, or the environment is offline).
+export const getEnvironmentSummary = (env: string) => apiFetch<UsageSummary>(envPath(env, '/stats/summary'));
+
+// MetricsPoint is one bucket of a usage history: CPU (percent of one CPU) and memory
+// averaged and at their maximum; network and block I/O are counters since each
+// container started, at their largest in the bucket.
+export interface MetricsPoint {
+  time: string;
+  cpu_percent: number;
+  cpu_max: number;
+  memory_usage: number;
+  memory_max: number;
+  network_rx: number;
+  network_tx: number;
+  block_read: number;
+  block_write: number;
+  // host is the whole machine's load averaged, in an admin's environment history.
+  host?: HostUsage;
+}
+
+// MetricsHistory is a usage history, oldest point first; `source` says whether raw
+// samples or hourly rollups answered and `step` is the bucket size in seconds.
+export interface MetricsHistory {
+  source: 'raw' | 'hourly';
+  step: number;
+  points: MetricsPoint[];
+}
+
+// MetricsRange picks a history: `since` a duration back (24h) or an RFC 3339 time,
+// `resolution` a bucket size (15m); the server's defaults are 24h and as stored.
+export interface MetricsRange {
+  since?: string;
+  resolution?: string;
+}
+
+function metricsQuery(r: MetricsRange): string {
+  const q = new URLSearchParams();
+  if (r.since) q.set('since', r.since);
+  if (r.resolution) q.set('resolution', r.resolution);
+  const s = q.toString();
+  return s ? `?${s}` : '';
+}
+
+// getEnvironmentMetrics answers the environment's usage history (a user's: of their
+// containers).
+export const getEnvironmentMetrics = (env: string, range: MetricsRange = {}) =>
+  apiFetch<MetricsHistory>(envPath(env, `/metrics${metricsQuery(range)}`));
+
+// getContainerMetrics answers one container's usage history.
+export const getContainerMetrics = (env: string, id: string, range: MetricsRange = {}) =>
+  apiFetch<MetricsHistory>(envPath(env, `/containers/${enc(id)}/metrics${metricsQuery(range)}`));
+
 // force also removes an image with several tags or used by stopped containers.
 export const removeImage = (env: string, id: string, force = false) =>
   apiFetch<void>(envPath(env, `/images/${enc(id)}${force ? '?force=true' : ''}`), { method: 'DELETE' });
@@ -838,6 +1088,48 @@ export interface VolumePruneResult {
 }
 
 // all also prunes named volumes, not only anonymous ones.
+// measureVolumes measures the volume sizes now; it resolves once they're stored.
+export const measureVolumes = (env: string) =>
+  apiFetch<void>(envPath(env, '/volumes/usage'), { method: 'POST' });
+
+// DiskPart is what one kind of Docker object takes: bytes, what a prune of the unused
+// ones would free, how many there are and how many are in use.
+export interface DiskPart {
+  size: number;
+  reclaimable: number;
+  count: number;
+  active: number;
+}
+
+// EnvironmentDisk is Docker's disk usage by kind from the last measurement (null before
+// the first) and the size of the disk under Docker's root dir (null when unknown).
+export interface EnvironmentDisk {
+  usage: {
+    measured_at: string;
+    volumes: DiskPart;
+    images: DiskPart;
+    build_cache: DiskPart;
+    containers: DiskPart;
+  } | null;
+  disk: { total: number; free: number } | null;
+}
+
+// ActivityDay is one day's container events by hour of the day (24 counts).
+export interface ActivityDay {
+  date: string;
+  counts: number[];
+}
+
+// getEnvironmentActivity answers the environment's container events per hour (a user's:
+// of their containers) for the last days days in the browser's time zone, oldest first.
+export const getEnvironmentActivity = (env: string, days = 7) => {
+  const q = new URLSearchParams({ days: String(days), tz: Intl.DateTimeFormat().resolvedOptions().timeZone });
+  return apiFetch<{ days: ActivityDay[] }>(envPath(env, `/activity?${q}`));
+};
+
+// getEnvironmentDisk answers the environment's disk usage (admins only).
+export const getEnvironmentDisk = (env: string) => apiFetch<EnvironmentDisk>(envPath(env, '/disk'));
+
 export const pruneVolumes = (env: string, all = false) =>
   apiFetch<VolumePruneResult>(envPath(env, `/volumes/prune${all ? '?all=true' : ''}`), { method: 'POST' });
 
@@ -1042,6 +1334,36 @@ export const listUpdates = (env: string) => apiFetch<ImageUpdate[]>(envPath(env,
 export const checkUpdates = (env: string) =>
   apiFetch<ImageUpdate[]>(envPath(env, '/updates/check'), post({}));
 
+// SelfUpdate is the update state of nudge's own container: the server's, or an agent's
+// on its environment. can_update is false when nudge can't replace it itself (reason).
+export interface SelfUpdate {
+  version: string;
+  image?: string;
+  status: 'available' | 'current' | 'unknown';
+  local_digest?: string;
+  remote_digest?: string;
+  checked_at?: string;
+  // error says why the status is unknown.
+  error?: string;
+  can_update: boolean;
+  reason?: string;
+}
+
+// SelfUpdateStarted: started is false when the registry had nothing newer.
+export interface SelfUpdateStarted {
+  started: boolean;
+}
+
+export const getSystemUpdate = () => apiFetch<SelfUpdate>('/system/update');
+export const checkSystemUpdate = () => apiFetch<SelfUpdate>('/system/update/check', post({}));
+// startSystemUpdate pulls the server's image and, if newer, restarts nudge on it.
+export const startSystemUpdate = () => apiFetch<SelfUpdateStarted>('/system/update', post({}));
+export const getAgentUpdate = (env: string) => apiFetch<SelfUpdate>(envPath(env, '/agent/update'));
+export const checkAgentUpdate = (env: string) =>
+  apiFetch<SelfUpdate>(envPath(env, '/agent/update/check'), post({}));
+export const startAgentUpdate = (env: string) =>
+  apiFetch<SelfUpdateStarted>(envPath(env, '/agent/update'), post({}));
+
 // UpdateRecord is an update made through nudge: the image a container (or a stack's
 // service) ran before and after, for a rollback by hand. Digests are empty when unknown.
 export interface UpdateRecord {
@@ -1130,3 +1452,126 @@ export const rotateDeployHook = (env: string, id: string) =>
   apiFetch<DeployHookWithSecret>(hooksPath(env, `/${enc(id)}/secret`), post({}));
 export const listDeployHookRuns = (env: string, id: string) =>
   apiFetch<DeployHookRun[]>(hooksPath(env, `/${enc(id)}/runs`));
+
+// Deployments: a stack CI deploys through, with members and deploy tokens of its own.
+export type DeploymentAction = 'view' | 'deploy' | 'edit' | 'manage_tokens' | 'manage_members' | 'delete';
+export type DeploymentRole = 'viewer' | 'deployer' | 'maintainer' | 'owner';
+
+// DeploymentHealth says when a deployment's run succeeded: compose waits up to
+// wait_seconds for healthy services, every container keeps running for stable_seconds,
+// then the HTTP checks run in order (at most 10); rollback redeploys the replaced values
+// when one fails, and remove_oneoffs removes the containers that exited with 0 after a
+// run succeeded.
+export interface DeploymentHealth {
+  wait_seconds: number;
+  stable_seconds: number;
+  http_checks: DeploymentHttpCheck[];
+  rollback: boolean;
+  remove_oneoffs: boolean;
+}
+
+// DeploymentHttpCheck is a GET of http://127.0.0.1:port/path inside a container of service.
+export interface DeploymentHttpCheck {
+  service: string;
+  port: number;
+  path: string;
+  status: number;
+  timeout_seconds: number;
+}
+
+export interface Deployment {
+  name: string;
+  environment: number;
+  stack: string;
+  description: string;
+  // variables are the stack's .env variables a deploy may set.
+  variables: string[];
+  health: DeploymentHealth;
+  created_at: string;
+  updated_at: string;
+  // role is the caller's ('' for an admin who isn't a member); can what it may do.
+  role: DeploymentRole | '';
+  can: DeploymentAction[];
+}
+
+export interface DeploymentInput {
+  name: string;
+  environment: number;
+  stack: string;
+  description: string;
+  variables: string[];
+  health?: DeploymentHealth;
+}
+
+export interface DeploymentMember {
+  user_id: number;
+  username: string;
+  role: DeploymentRole;
+}
+
+export type DeployScope = 'deploy' | 'runs:read';
+
+export interface DeployToken {
+  id: number;
+  name: string;
+  prefix: string;
+  scopes: DeployScope[];
+  created_by: string;
+  created_at: string;
+  expires_at: string | null;
+  last_used_at: string | null;
+}
+
+export interface CreatedDeployToken extends DeployToken {
+  // token is shown only this once.
+  token: string;
+}
+
+export interface DeploymentRun {
+  id: number;
+  actor: string;
+  actor_kind: 'user' | 'token';
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'superseded' | 'rolled_back';
+  variables: Record<string, string>;
+  previous: Record<string, string>;
+  queued_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  image_before: string;
+  image_after: string;
+  error: string;
+  // step is the last step the run reached; warnings are what it skipped or worked around.
+  step: '' | 'pulling' | 'deploying' | 'checking' | 'rolling_back';
+  warnings: string[];
+}
+
+const depPath = (name: string, rest = '') => `/deployments/${enc(name)}${rest}`;
+
+export const listDeployments = () => apiFetch<Deployment[]>('/deployments');
+export const getDeployment = (name: string) => apiFetch<Deployment>(depPath(name));
+export const createDeployment = (d: DeploymentInput) => apiFetch<Deployment>('/deployments', post(d));
+export const changeDeployment = (
+  name: string,
+  change: { description?: string; variables?: string[]; health?: DeploymentHealth },
+) => apiFetch<Deployment>(depPath(name), { method: 'PATCH', body: JSON.stringify(change) });
+export const deleteDeployment = (name: string) => apiFetch<void>(depPath(name), { method: 'DELETE' });
+
+export const listDeploymentMembers = (name: string) =>
+  apiFetch<DeploymentMember[]>(depPath(name, '/members'));
+export const setDeploymentMember = (name: string, username: string, role: DeploymentRole) =>
+  apiFetch<DeploymentMember>(depPath(name, '/members'), post({ username, role }));
+export const removeDeploymentMember = (name: string, userID: number) =>
+  apiFetch<void>(depPath(name, `/members/${userID}`), { method: 'DELETE' });
+
+export const listDeployTokens = (name: string) => apiFetch<DeployToken[]>(depPath(name, '/tokens'));
+export const createDeployToken = (
+  name: string,
+  token: { name: string; scopes: DeployScope[]; expires_at?: string },
+) => apiFetch<CreatedDeployToken>(depPath(name, '/tokens'), post(token));
+export const deleteDeployToken = (name: string, id: number) =>
+  apiFetch<void>(depPath(name, `/tokens/${id}`), { method: 'DELETE' });
+
+export const listDeploymentRuns = (name: string) => apiFetch<DeploymentRun[]>(depPath(name, '/deploys'));
+// deploy queues a run and answers it at once (queued or running).
+export const deploy = (name: string, variables: Record<string, string>) =>
+  apiFetch<DeploymentRun>(depPath(name, '/deploys'), post({ variables }));

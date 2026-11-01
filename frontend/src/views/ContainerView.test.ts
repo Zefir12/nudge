@@ -5,7 +5,7 @@ import { createMemoryHistory } from 'vue-router';
 import type { ContainerDetail } from '../api/client';
 import { createAppRouter } from '../router';
 import { currentUser } from '../session';
-import { admin, stubApi, stubSockets } from '../test-utils';
+import { admin, user, stubApi, stubSockets } from '../test-utils';
 import ContainerView from './ContainerView.vue';
 
 const detail: ContainerDetail = {
@@ -264,5 +264,16 @@ describe('ContainerView', () => {
     const fetch = stubApi({ 'GET /environments/1/containers/a%20b': { body: detail } });
     await mountAt('/env/1/containers/a%20b');
     expect(fetch).toHaveBeenCalledWith('/api/v1/environments/1/containers/a%20b', expect.anything());
+  });
+
+  it("edits a user's container through the tenant form and hides the admin parts", async () => {
+    currentUser.value = user;
+    stubApi({ 'GET /environments/1/containers/web': { body: detail } });
+    const wrapper = await mountAt('/env/1/containers/web');
+    const edit = wrapper.findAll('a').find((a) => a.text() === 'Edit');
+    expect(edit?.attributes('href')).toBe('/env/1/containers/abc123def4567890/redeploy');
+    expect(wrapper.findAll('button').some((b) => b.text() === 'Recreate')).toBe(false);
+    expect(wrapper.text()).not.toContain('Open the image');
+    expect(wrapper.text()).not.toContain('Deploy webhooks');
   });
 });

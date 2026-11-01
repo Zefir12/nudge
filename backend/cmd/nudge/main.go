@@ -21,22 +21,31 @@ import (
 	"syscall"
 	"time"
 
-	"git.zefirlabs.net/zefir/nudge/backend/internal/agent"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/allowances"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/api"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/audit"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/backup"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/certs"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/cli"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/config"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/deployhooks"
-	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/deployments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/events"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/hostdisk"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/hostload"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/metrics"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/notify"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/oidc"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/probe"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/registries"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/secretbox"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/selfupdate"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/stacks"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/store"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/updates"
+	diskusage "git.zefirlabs.net/zefir/nudge/backend/internal/usage"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/version"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/web"
 )
@@ -44,11 +53,15 @@ import (
 const usage = `usage: nudge [command] [flags]
 
 commands:
-  serve    run the API and web UI (default)
-  agent    connect this host's Docker to a nudge server
-  version  print the version
+  serve        run the API and web UI (default)
+  agent        connect this host's Docker to a nudge server
+  deploy       start a deployment run and follow it (for CI; token in NUDGE_DEPLOY_TOKEN)
+  probe        one HTTP check (what a deployment's HTTP check runs in a helper container)
+  self-update  replace this container with its image's newer version (what a self-update's helper runs)
+  restore      restore a backup into the data directory (with the server stopped)
+  version      print the version
 
-Run "nudge serve -h" or "nudge agent -h" for their flags.
+Run "nudge <command> -h" for a command's flags.
 `
 
 func main() {
@@ -80,20 +93,15 @@ func realMain(ctx context.Context, args []string, getenv func(string) string, st
 		}
 		return 0
 	case "agent":
-		cfg, err := config.LoadAgent(args, getenv, stderr)
-		if errors.Is(err, flag.ErrHelp) {
-			return 0
-		}
-		if err != nil {
-			_, _ = fmt.Fprintln(stderr, "nudge:", err)
-			return 2
-		}
-		log := slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: cfg.LogLevel}))
-		if err := runAgent(ctx, cfg, log); err != nil {
-			log.Error("agent stopped", "err", err)
-			return 1
-		}
-		return 0
+		return cli.Agent(ctx, args, getenv, stderr, "")
+	case "deploy":
+		return runDeploy(ctx, args, getenv, stdout, stderr)
+	case "probe":
+		return cli.Probe(ctx, args, stdout, stderr)
+	case "self-update":
+		return cli.SelfUpdate(ctx, args, stderr)
+	case "restore":
+		return runRestore(ctx, args, getenv, stdout, stderr)
 	case "version":
 		_, _ = fmt.Fprintln(stdout, version.Version)
 		return 0
@@ -118,10 +126,10 @@ func warnTrustedProxies(log *slog.Logger, proxies []netip.Prefix) {
 
 func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error) {
 	warnTrustedProxies(log, cfg.TrustedProxies)
-	if err := prepareDataDir(cfg.DataDir); err != nil {
+	if err := cli.PrepareDataDir(cfg.DataDir); err != nil {
 		return err
 	}
-	if err := cleanComposeConfigs(composeConfigDir(cfg.DataDir), log); err != nil {
+	if err := cli.CleanComposeConfigs(cli.ComposeConfigDir(cfg.DataDir), log); err != nil {
 		return err
 	}
 	var certLoader *certs.Loader
@@ -149,9 +157,27 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 	if err != nil {
 		return err
 	}
+	backups := backup.New(backup.Options{Store: st, DataDir: cfg.DataDir, StacksDir: cfg.StacksDir, Version: version.Version, Log: log})
+	var backupPassphrase string
+	if cfg.Backup.Interval > 0 {
+		if backupPassphrase, err = backup.ReadPassphrase(cfg.Backup.PassphraseFile); err != nil {
+			return err
+		}
+	}
 	regs := registries.New(registries.Options{DB: st.DB(), Box: box})
 
-	authSvc := auth.New(auth.Options{DB: st.DB(), Log: log})
+	authSvc := auth.New(auth.Options{
+		DB: st.DB(), Log: log, SSOSessionTTL: cfg.OIDC.SessionTTL, AdminPasswordOnly: cfg.NoPasswordLogin,
+	})
+	var sso *oidc.Client
+	if cfg.OIDC.Enabled() {
+		sso = oidc.New(oidc.Options{
+			Issuer: cfg.OIDC.Issuer, ClientID: cfg.OIDC.ClientID, ClientSecret: cfg.OIDC.ClientSecret,
+			RedirectURL: cfg.PublicURL + "/api/v1/auth/oidc/callback",
+			AdminRole:   cfg.OIDC.AdminRole, UserRole: cfg.OIDC.UserRole, RequireMFA: cfg.OIDC.RequireMFA, Log: log,
+		})
+		log.Info("single sign-on on", "issuer", cfg.OIDC.Issuer, "password_login", !cfg.NoPasswordLogin)
+	}
 	auditSvc := audit.New(audit.Options{DB: st.DB(), Log: log, Retention: time.Duration(cfg.AuditRetentionDays) * 24 * time.Hour})
 	if cfg.AdminPassword != "" {
 		// Like the migrations: part of startup, not cancelled by a signal.
@@ -184,6 +210,17 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 		log.Info("created local environment", "docker_host", cfg.DockerHost)
 	}
 
+	// Like nudge.db: migrated at startup, closed after the collector below stops.
+	metricsDB, err := metrics.Open(context.WithoutCancel(ctx), cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cerr := metricsDB.Close(); cerr != nil {
+			log.Warn("closing metrics database", "err", cerr)
+		}
+	}()
+
 	// The cleanup stops before the deferred st.Close above.
 	var wg sync.WaitGroup
 	cleanupCtx, stopCleanup := context.WithCancel(ctx)
@@ -206,10 +243,41 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 	if err := deployHooks.FailStale(context.WithoutCancel(ctx)); err != nil {
 		return err
 	}
+	deps := deployments.New(deployments.Options{Context: ctx, DB: st.DB(), Log: log})
+	defer deps.Close()
+	if err := deps.FailStale(context.WithoutCancel(ctx)); err != nil {
+		return err
+	}
 	upd := updates.New(updates.Options{DB: st.DB(), Log: log, Envs: envs, Auth: regs.AuthFor, Checked: hooks.UpdatesChecked})
 	if cfg.UpdateCheckInterval > 0 {
 		// The first check waits for agents to reconnect after a restart.
 		wg.Go(func() { upd.Run(cleanupCtx, 2*time.Minute, cfg.UpdateCheckInterval) })
+	}
+	metricsSvc := metrics.New(metrics.Options{
+		DB: metricsDB, Log: log, Envs: envs, Owners: api.ContainerOwners,
+		// /proc shows the host's CPU and memory inside the container too.
+		Host: func(ctx context.Context, env environments.Environment) (hostload.Reading, error) {
+			if env.Kind == environments.KindLocal {
+				return hostload.Read("/proc")
+			}
+			return hostload.Remote(ctx, envs.ControlDialer(env.ID))
+		},
+		Interval: cfg.MetricsInterval, Retention: cfg.MetricsRetention,
+		LiveInterval: cfg.MetricsLiveInterval,
+	})
+	wg.Go(func() { metricsSvc.Run(cleanupCtx) })
+	// Counts the heatmap's events per hour; flushes to metrics.db when it stops.
+	activity := metrics.NewActivity(metrics.ActivityOptions{DB: metricsDB, Log: log, Envs: envs, Hub: hub, Owner: api.EventOwner})
+	wg.Go(func() { activity.Run(cleanupCtx) })
+	// Volume sizes go to nudge.db, the usage by kind to metrics.db.
+	usageSvc := diskusage.New(diskusage.Options{DB: st.DB(), Log: log, Envs: envs, Disk: metricsSvc})
+	if cfg.UsageInterval > 0 {
+		// Like the update check, the first measurement waits for agents to reconnect.
+		wg.Go(func() { usageSvc.Run(cleanupCtx, 2*time.Minute, cfg.UsageInterval) })
+	}
+	if cfg.Backup.Interval > 0 {
+		wg.Go(func() { backups.Run(cleanupCtx, cfg.Backup.Interval, backupPassphrase, cfg.Backup.Keep) })
+		log.Info("scheduled backups on", "interval", cfg.Backup.Interval, "keep", cfg.Backup.Keep, "dir", filepath.Join(cfg.DataDir, backup.Dir))
 	}
 	if certLoader != nil {
 		// SIGHUP would otherwise kill the process.
@@ -230,13 +298,24 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 			Auth:    authSvc,
 			Envs:    envs,
 
-			Registries:  regs,
-			Audit:       auditSvc,
-			Updates:     upd,
-			Webhooks:    hooks,
-			DeployHooks: deployHooks,
-			Events:      hub,
-			Web:         web.Handler(web.Dist()),
+			Registries:   regs,
+			Audit:        auditSvc,
+			Updates:      upd,
+			Webhooks:     hooks,
+			DeployHooks:  deployHooks,
+			Deployments:  deps,
+			Usage:        usageSvc,
+			Metrics:      metricsSvc,
+			Activity:     activity,
+			Backups:      backups,
+			Allowances:   allowances.New(allowances.Options{DB: st.DB()}),
+			Tenant:       api.TenantHosting{CgroupParent: cfg.Tenant.CgroupParent, Runtime: cfg.Tenant.Runtime, StorageSize: cfg.Tenant.StorageSize},
+			DeniedLabels: cfg.Tenant.DeniedLabels,
+			// Users' pulls are anonymous, but a reference names any host the daemon can
+			// reach: only these registries.
+			UserRegistries: cfg.UserRegistries,
+			Events:         hub,
+			Web:            web.Handler(web.Dist()),
 
 			StacksDir:   cfg.StacksDir,
 			StackRunner: stackRunner(cfg, envs, regs, log),
@@ -246,6 +325,21 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 			PublicURL:      cfg.PublicURL,
 			SecureCookies:  cfg.TLS() || strings.HasPrefix(cfg.PublicURL, "https://"),
 			TrustedProxies: cfg.TrustedProxies,
+			Self:           stacks.SelfID(os.ReadFile, os.Hostname),
+			DockerHost:     cfg.DockerHost,
+			AgentSelf: func(ctx context.Context, env environments.Environment) (stacks.Self, string, error) {
+				return selfupdate.RemoteSelf(ctx, envs.ControlDialer(env.ID))
+			},
+			DiskSpace: func(ctx context.Context, env environments.Environment) (hostdisk.Space, error) {
+				if env.Kind == environments.KindLocal {
+					return hostdisk.Stat(cfg.DockerRoot)
+				}
+				return hostdisk.Remote(ctx, envs.ControlDialer(env.ID))
+			},
+
+			OIDC:            sso,
+			OIDCName:        cfg.OIDC.Name,
+			NoPasswordLogin: cfg.NoPasswordLogin,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
@@ -285,44 +379,6 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 	return nil
 }
 
-func runAgent(ctx context.Context, cfg config.Agent, log *slog.Logger) error {
-	if err := prepareDataDir(cfg.DataDir); err != nil {
-		return err
-	}
-	if err := cleanComposeConfigs(composeConfigDir(cfg.DataDir), log); err != nil {
-		return err
-	}
-	dial, err := docker.LocalDialer(cfg.DockerHost)
-	if err != nil {
-		return err
-	}
-	if cfg.ServerURL.Scheme == "http" {
-		log.Warn("connecting over http:// (-insecure): the agent secret and all Docker traffic travel in clear text")
-	}
-	hostname, err := os.Hostname()
-	if err != nil {
-		log.Warn("hostname unknown", "err", err)
-	}
-	log.Info("agent starting", "server", cfg.ServerURL.Redacted(), "docker_host", cfg.DockerHost, "version", version.Version)
-	err = agent.New(agent.Options{
-		ServerURL: cfg.ServerURL,
-		JoinToken: cfg.JoinToken,
-		DataDir:   cfg.DataDir,
-		Dial:      dial,
-		Control: stacks.NewControl(stacks.NewLocal(stacks.LocalOptions{
-			Dir: stacks.NewDir(cfg.StacksDir), Compose: cfg.Compose, DockerHost: cfg.DockerHost,
-			ConfigDir: composeConfigDir(cfg.DataDir),
-		}), log),
-		Version:  version.Version,
-		Hostname: hostname,
-		Log:      log,
-	}).Run(ctx)
-	if err == nil {
-		log.Info("agent stopped")
-	}
-	return err
-}
-
 // stackRunner deploys the local environment's stacks with compose here, and an agent
 // environment's through its agent's control service; both pull with the stored registry
 // credentials.
@@ -336,35 +392,18 @@ func stackRunner(cfg config.Server, envs *environments.Service, regs *registries
 		if env.Kind == environments.KindAgent {
 			return stacks.NewRemote(envs.ControlDialer(env.ID)).WithCredentials(dir, creds)
 		}
+		prober := probe.New(probe.Options{
+			Docker: func() (probe.Docker, error) { return envs.Client(env) },
+			Self:   self.ID, Hostname: self.Hostname,
+		})
 		return stacks.NewLocal(stacks.LocalOptions{
 			Dir: dir, Compose: cfg.Compose, DockerHost: cfg.DockerHost, Credentials: creds,
-			ConfigDir: composeConfigDir(cfg.DataDir),
+			ConfigDir: cli.ComposeConfigDir(cfg.DataDir),
 			Mounts:    stacks.ContainerMounts(self, func() (stacks.Inspector, error) { return envs.Client(env) }),
 			Log:       log.With("env", env.ID),
+			Probe:     prober.Run,
 		})
 	}
-}
-
-// composeConfigDir is where compose runs get their temporary Docker configs with the
-// registry credentials: on the data volume, private to nudge (not in the stacks
-// directory, which stacks may bind-mount).
-func composeConfigDir(dataDir string) string {
-	if dataDir == "" {
-		return ""
-	}
-	return filepath.Join(dataDir, "compose-config")
-}
-
-// cleanComposeConfigs prepares dir and removes the Docker configs a killed run left there.
-func cleanComposeConfigs(dir string, log *slog.Logger) error {
-	n, err := stacks.CleanConfigDir(dir)
-	if err != nil {
-		return err
-	}
-	if n > 0 {
-		log.Warn("removed docker configs left by an interrupted compose run", "count", n, "dir", dir)
-	}
-	return nil
 }
 
 // stackCredentials finds the stored credentials of the registries a stack's files name.
@@ -380,25 +419,4 @@ func stackCredentials(regs *registries.Service) stacks.CredentialFunc {
 		}
 		return creds, nil
 	}
-}
-
-// prepareDataDir creates the data directory (0700) if it is missing and checks that it
-// is writable, so a bad volume fails at start with a clear message instead of on the
-// first write.
-func prepareDataDir(dir string) error {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("create data directory: %w", err)
-	}
-	f, err := os.CreateTemp(dir, ".write-test-*")
-	if err != nil {
-		return fmt.Errorf("data directory %s is not writable: %w", dir, err)
-	}
-	name := f.Name()
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("data directory %s is not writable: %w", dir, err)
-	}
-	if err := os.Remove(name); err != nil {
-		return fmt.Errorf("data directory %s: remove %s: %w", dir, filepath.Base(name), err)
-	}
-	return nil
 }

@@ -83,12 +83,13 @@ func (s *server) containerExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), dockerTimeout)
-	info, err := c.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
+	ct, ref, err := s.ownedContainer(ctx, c, id)
 	var execID string
-	if err == nil && (info.Container.State == nil || !info.Container.State.Running) {
+	if err == nil && (ct.State == nil || !ct.State.Running) {
 		err = docker.ErrConflict
 	}
 	if err == nil {
+		id = ref
 		var res client.ExecCreateResult
 		res, err = c.ExecCreate(ctx, id, client.ExecCreateOptions{
 			TTY: true, ConsoleSize: size, AttachStdin: true, AttachStdout: true, AttachStderr: true,

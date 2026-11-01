@@ -149,10 +149,17 @@ func TestLocalRuns(t *testing.T) {
 		run  func(l *Local, out func(Line)) (int, error)
 		args []string
 	}{
-		{"up", func(l *Local, out func(Line)) (int, error) { return l.Up(context.Background(), "web", false, out) },
+		{"up", func(l *Local, out func(Line)) (int, error) {
+			return l.Up(context.Background(), "web", UpOptions{}, out)
+		},
 			[]string{"up", "--detach", "--remove-orphans"}},
-		{"up with pull", func(l *Local, out func(Line)) (int, error) { return l.Up(context.Background(), "web", true, out) },
+		{"up with pull", func(l *Local, out func(Line)) (int, error) {
+			return l.Up(context.Background(), "web", UpOptions{Pull: true}, out)
+		},
 			[]string{"up", "--detach", "--remove-orphans", "--pull", "always"}},
+		{"up with wait", func(l *Local, out func(Line)) (int, error) {
+			return l.Up(context.Background(), "web", UpOptions{Pull: true, Wait: 90 * time.Second}, out)
+		}, []string{"up", "--detach", "--remove-orphans", "--pull", "always", "--wait", "--wait-timeout", "90"}},
 		{"down", func(l *Local, out func(Line)) (int, error) { return l.Down(context.Background(), "web", false, out) },
 			[]string{"down", "--remove-orphans"}},
 		{"down with volumes", func(l *Local, out func(Line)) (int, error) {
@@ -308,7 +315,7 @@ func TestLocalCredentials(t *testing.T) {
 			if tt.down {
 				_, err = l.Down(ctx, "web", false, out)
 			} else {
-				_, err = l.Up(ctx, "web", true, out)
+				_, err = l.Up(ctx, "web", UpOptions{Pull: true}, out)
 			}
 			if tt.wantErr {
 				if err == nil || len(lines()) != 0 {
@@ -422,7 +429,7 @@ func TestLocalConfigDir(t *testing.T) {
 		Credentials: func(context.Context, Files) ([]Credential, error) {
 			return []Credential{{Address: "ghcr.io", Username: "u", Password: "p"}}, nil
 		}})
-	if _, err := l.Up(context.Background(), "web", false, func(Line) {}); err != nil {
+	if _, err := l.Up(context.Background(), "web", UpOptions{}, func(Line) {}); err != nil {
 		t.Fatal(err)
 	}
 	if seen := run.get(); filepath.Dir(seen.dir) != configDir || !strings.HasPrefix(filepath.Base(seen.dir), "nudge-compose-") {
@@ -447,13 +454,13 @@ func TestLocalErrors(t *testing.T) {
 	d := NewDir(t.TempDir())
 	rec := &recorder{err: errors.New("killed")}
 	l := NewLocal(LocalOptions{Dir: d, Exec: rec.exec})
-	if _, err := l.Up(context.Background(), "web", false, func(Line) {}); !errors.Is(err, ErrNotFound) {
+	if _, err := l.Up(context.Background(), "web", UpOptions{}, func(Line) {}); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Up of a missing stack = %v, want ErrNotFound", err)
 	}
 	if err := l.Sync(context.Background(), "web", Files{Compose: "services: {}\n"}); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
-	if _, err := l.Up(context.Background(), "web", false, func(Line) {}); err == nil || !strings.Contains(err.Error(), "killed") {
+	if _, err := l.Up(context.Background(), "web", UpOptions{}, func(Line) {}); err == nil || !strings.Contains(err.Error(), "killed") {
 		t.Errorf("Up with a failing exec = %v", err)
 	}
 	if rec.cmd.Path != DefaultCompose {

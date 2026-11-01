@@ -15,6 +15,8 @@ import (
 
 func TestLoadServer(t *testing.T) {
 	t.Parallel()
+	// Rows without denied labels want the default list.
+	defaultDenied := []string{"traefik.", "caddy", "com.centurylinklabs.watchtower.", "ofelia.", "wud.", "diun."}
 	tests := []struct {
 		name    string
 		args    []string
@@ -24,18 +26,18 @@ func TestLoadServer(t *testing.T) {
 	}{
 		{
 			name: "defaults",
-			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, MetricsInterval: time.Minute, MetricsLiveInterval: 5 * time.Second, MetricsRetention: 720 * time.Hour, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute},
 		},
 		{
 			name: "env",
 			env:  map[string]string{"NUDGE_ADDR": ":9000", "NUDGE_DATA": "/var/lib/nudge", "NUDGE_LOG_LEVEL": "debug", "NUDGE_ADMIN_PASSWORD": "s3cret-pw", "DOCKER_HOST": "tcp://10.0.0.2:2375"},
-			want: Server{Addr: ":9000", DataDir: "/var/lib/nudge", StacksDir: "/var/lib/nudge/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelDebug, AdminPassword: "s3cret-pw", DockerHost: "tcp://10.0.0.2:2375", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour},
+			want: Server{Addr: ":9000", DataDir: "/var/lib/nudge", StacksDir: "/var/lib/nudge/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelDebug, AdminPassword: "s3cret-pw", DockerHost: "tcp://10.0.0.2:2375", AuditRetentionDays: 90, MetricsInterval: time.Minute, MetricsLiveInterval: 5 * time.Second, MetricsRetention: 720 * time.Hour, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute},
 		},
 		{
 			name: "flag wins over env",
 			args: []string{"-addr", "127.0.0.1:1234"},
 			env:  map[string]string{"NUDGE_ADDR": ":9000"},
-			want: Server{Addr: "127.0.0.1:1234", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour},
+			want: Server{Addr: "127.0.0.1:1234", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, MetricsInterval: time.Minute, MetricsLiveInterval: 5 * time.Second, MetricsRetention: 720 * time.Hour, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute},
 		},
 		{name: "bad log level", args: []string{"-log-level", "loud"}, wantErr: true},
 		{name: "empty addr", args: []string{"-addr", ""}, wantErr: true},
@@ -45,12 +47,12 @@ func TestLoadServer(t *testing.T) {
 		{
 			name: "tls and public url",
 			env:  map[string]string{"NUDGE_TLS_CERT": "/certs/cert.pem", "NUDGE_TLS_KEY": "/certs/key.pem", "NUDGE_PUBLIC_URL": "https://nudge.example.net:8443/"},
-			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour, TLSCert: "/certs/cert.pem", TLSKey: "/certs/key.pem", PublicURL: "https://nudge.example.net:8443"},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, MetricsInterval: time.Minute, MetricsLiveInterval: 5 * time.Second, MetricsRetention: 720 * time.Hour, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute, TLSCert: "/certs/cert.pem", TLSKey: "/certs/key.pem", PublicURL: "https://nudge.example.net:8443"},
 		},
 		{
 			name: "public url flag",
 			args: []string{"-public-url", "http://10.0.0.5:8080"},
-			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour, PublicURL: "http://10.0.0.5:8080"},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, MetricsInterval: time.Minute, MetricsLiveInterval: 5 * time.Second, MetricsRetention: 720 * time.Hour, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute, PublicURL: "http://10.0.0.5:8080"},
 		},
 		{name: "cert without key", args: []string{"-tls-cert", "/c.pem"}, wantErr: true},
 		{name: "key without cert", env: map[string]string{"NUDGE_TLS_KEY": "/k.pem"}, wantErr: true},
@@ -65,12 +67,12 @@ func TestLoadServer(t *testing.T) {
 		{
 			name: "audit retention",
 			env:  map[string]string{"NUDGE_AUDIT_RETENTION_DAYS": "7"},
-			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 7, UpdateCheckInterval: 6 * time.Hour},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 7, MetricsInterval: time.Minute, MetricsLiveInterval: 5 * time.Second, MetricsRetention: 720 * time.Hour, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute},
 		},
 		{
 			name: "stacks",
 			env:  map[string]string{"NUDGE_STACKS_DIR": "/opt/nudge/stacks", "NUDGE_COMPOSE": "/bin/compose"},
-			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/opt/nudge/stacks", Compose: "/bin/compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/opt/nudge/stacks", Compose: "/bin/compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, MetricsInterval: time.Minute, MetricsLiveInterval: 5 * time.Second, MetricsRetention: 720 * time.Hour, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute},
 		},
 		{name: "relative stacks dir", args: []string{"-stacks-dir", "stacks"}, wantErr: true},
 		{name: "empty compose", args: []string{"-compose", ""}, wantErr: true},
@@ -78,13 +80,41 @@ func TestLoadServer(t *testing.T) {
 		{
 			name: "update check interval",
 			env:  map[string]string{"NUDGE_UPDATE_CHECK_INTERVAL": "30m"},
-			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 30 * time.Minute},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, MetricsInterval: time.Minute, MetricsLiveInterval: 5 * time.Second, MetricsRetention: 720 * time.Hour, UpdateCheckInterval: 30 * time.Minute, UsageInterval: 15 * time.Minute},
 		},
 		{
 			name: "update checks off",
 			args: []string{"-update-check-interval", "0"},
-			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, MetricsInterval: time.Minute, MetricsLiveInterval: 5 * time.Second, MetricsRetention: 720 * time.Hour, UsageInterval: 15 * time.Minute},
 		},
+		{
+			name: "usage interval",
+			env:  map[string]string{"NUDGE_USAGE_INTERVAL": "1h"},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, MetricsInterval: time.Minute, MetricsLiveInterval: 5 * time.Second, MetricsRetention: 720 * time.Hour, UpdateCheckInterval: 6 * time.Hour, UsageInterval: time.Hour},
+		},
+		{
+			name: "usage measuring off",
+			args: []string{"-usage-interval", "0"},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, MetricsInterval: time.Minute, MetricsLiveInterval: 5 * time.Second, MetricsRetention: 720 * time.Hour, UpdateCheckInterval: 6 * time.Hour},
+		},
+		{name: "usage interval too short", args: []string{"-usage-interval", "30s"}, wantErr: true},
+		{
+			name: "metrics",
+			env:  map[string]string{"NUDGE_METRICS_INTERVAL": "5m", "NUDGE_METRICS_RETENTION": "2160h", "NUDGE_METRICS_LIVE_INTERVAL": "10s"},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, MetricsInterval: 5 * time.Minute, MetricsLiveInterval: 10 * time.Second, MetricsRetention: 2160 * time.Hour, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute},
+		},
+		{
+			name: "metrics collection off",
+			args: []string{"-metrics-interval", "0"},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, MetricsLiveInterval: 5 * time.Second, MetricsRetention: 720 * time.Hour, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute},
+		},
+		{name: "metrics interval too short", args: []string{"-metrics-interval", "5s"}, wantErr: true},
+		{name: "metrics interval not a duration", env: map[string]string{"NUDGE_METRICS_INTERVAL": "often"}, wantErr: true},
+		{name: "metrics live interval not a duration", env: map[string]string{"NUDGE_METRICS_LIVE_INTERVAL": "fast"}, wantErr: true},
+		{name: "metrics live interval too short", args: []string{"-metrics-live-interval", "1s"}, wantErr: true},
+		{name: "metrics retention too short", args: []string{"-metrics-retention", "24h"}, wantErr: true},
+		{name: "metrics retention not a duration", env: map[string]string{"NUDGE_METRICS_RETENTION": "a month"}, wantErr: true},
+		{name: "usage interval not a duration", env: map[string]string{"NUDGE_USAGE_INTERVAL": "often"}, wantErr: true},
 		{name: "update check interval too short", args: []string{"-update-check-interval", "1m"}, wantErr: true},
 		{name: "update check interval negative", args: []string{"-update-check-interval", "-1h"}, wantErr: true},
 		{name: "update check interval not a duration", env: map[string]string{"NUDGE_UPDATE_CHECK_INTERVAL": "daily"}, wantErr: true},
@@ -92,7 +122,7 @@ func TestLoadServer(t *testing.T) {
 		{
 			name: "trusted proxies",
 			env:  map[string]string{"NUDGE_TRUSTED_PROXIES": " 172.16.0.0/12, 10.1.2.3 ,fd00::/8,::1,10.9.9.9/8,::ffff:192.0.2.1"},
-			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour,
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, MetricsInterval: time.Minute, MetricsLiveInterval: 5 * time.Second, MetricsRetention: 720 * time.Hour, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute,
 				TrustedProxies: []netip.Prefix{
 					netip.MustParsePrefix("172.16.0.0/12"), netip.MustParsePrefix("10.1.2.3/32"), netip.MustParsePrefix("fd00::/8"),
 					netip.MustParsePrefix("::1/128"), netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("192.0.2.1/32"),
@@ -102,18 +132,105 @@ func TestLoadServer(t *testing.T) {
 			name: "trusted proxies flag wins over env",
 			args: []string{"-trusted-proxies", "127.0.0.1"},
 			env:  map[string]string{"NUDGE_TRUSTED_PROXIES": "10.0.0.0/8"},
-			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour,
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, MetricsInterval: time.Minute, MetricsLiveInterval: 5 * time.Second, MetricsRetention: 720 * time.Hour, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute,
 				TrustedProxies: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}},
 		},
+		{
+			name: "oidc defaults",
+			env:  map[string]string{"NUDGE_OIDC_ISSUER": "https://auth.example.net", "NUDGE_OIDC_CLIENT_ID": "nudge", "NUDGE_OIDC_CLIENT_SECRET": "s3cret", "NUDGE_PUBLIC_URL": "https://nudge.example.net"},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, MetricsInterval: time.Minute, MetricsLiveInterval: 5 * time.Second, MetricsRetention: 720 * time.Hour, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute, PublicURL: "https://nudge.example.net",
+				OIDC: OIDC{Issuer: "https://auth.example.net", ClientID: "nudge", ClientSecret: "s3cret", Name: "SSO", AdminRole: "admin", UserRole: "user", SessionTTL: 12 * time.Hour}},
+		},
+		{
+			name: "oidc settings",
+			args: []string{"-oidc-name", "Authestra", "-oidc-admin-role", "nudge-admin", "-oidc-user-role", "", "-oidc-session-ttl", "1h", "-password-login=false"},
+			env:  map[string]string{"NUDGE_OIDC_ISSUER": "https://auth.example.net", "NUDGE_OIDC_CLIENT_ID": "nudge", "NUDGE_OIDC_CLIENT_SECRET": "s3cret", "NUDGE_PUBLIC_URL": "https://nudge.example.net", "NUDGE_OIDC_REQUIRE_MFA": "true"},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, MetricsInterval: time.Minute, MetricsLiveInterval: 5 * time.Second, MetricsRetention: 720 * time.Hour, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute, PublicURL: "https://nudge.example.net", NoPasswordLogin: true,
+				OIDC: OIDC{Issuer: "https://auth.example.net", ClientID: "nudge", ClientSecret: "s3cret", Name: "Authestra", AdminRole: "nudge-admin", RequireMFA: true, SessionTTL: time.Hour}},
+		},
+		{
+			name: "oidc user role",
+			env:  map[string]string{"NUDGE_OIDC_ISSUER": "https://auth.example.net", "NUDGE_OIDC_CLIENT_ID": "nudge", "NUDGE_OIDC_CLIENT_SECRET": "s3cret", "NUDGE_PUBLIC_URL": "https://nudge.example.net", "NUDGE_OIDC_USER_ROLE": "nudge-user"},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, MetricsInterval: time.Minute, MetricsLiveInterval: 5 * time.Second, MetricsRetention: 720 * time.Hour, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute, PublicURL: "https://nudge.example.net",
+				OIDC: OIDC{Issuer: "https://auth.example.net", ClientID: "nudge", ClientSecret: "s3cret", Name: "SSO", AdminRole: "admin", UserRole: "nudge-user", SessionTTL: 12 * time.Hour}},
+		},
+		{name: "oidc without secret", env: map[string]string{"NUDGE_OIDC_ISSUER": "https://auth.example.net", "NUDGE_OIDC_CLIENT_ID": "nudge", "NUDGE_PUBLIC_URL": "https://nudge.example.net"}, wantErr: true},
+		{name: "oidc secret alone", env: map[string]string{"NUDGE_OIDC_CLIENT_SECRET": "s3cret"}, wantErr: true},
+		{name: "oidc http issuer", args: []string{"-oidc-issuer", "http://auth.example.net"}, env: map[string]string{"NUDGE_OIDC_ISSUER": "https://auth.example.net", "NUDGE_OIDC_CLIENT_ID": "nudge", "NUDGE_OIDC_CLIENT_SECRET": "s3cret", "NUDGE_PUBLIC_URL": "https://nudge.example.net"}, wantErr: true},
+		{name: "oidc without public url", env: map[string]string{"NUDGE_OIDC_ISSUER": "https://auth.example.net", "NUDGE_OIDC_CLIENT_ID": "nudge", "NUDGE_OIDC_CLIENT_SECRET": "s3cret"}, wantErr: true},
+		{name: "oidc http public url", args: []string{"-public-url", "http://nudge.example.net"}, env: map[string]string{"NUDGE_OIDC_ISSUER": "https://auth.example.net", "NUDGE_OIDC_CLIENT_ID": "nudge", "NUDGE_OIDC_CLIENT_SECRET": "s3cret", "NUDGE_PUBLIC_URL": "https://nudge.example.net"}, wantErr: true},
+		{name: "oidc session ttl too short", args: []string{"-oidc-session-ttl", "1m"}, env: map[string]string{"NUDGE_OIDC_ISSUER": "https://auth.example.net", "NUDGE_OIDC_CLIENT_ID": "nudge", "NUDGE_OIDC_CLIENT_SECRET": "s3cret", "NUDGE_PUBLIC_URL": "https://nudge.example.net"}, wantErr: true},
+		{name: "oidc empty admin role", args: []string{"-oidc-admin-role", ""}, env: map[string]string{"NUDGE_OIDC_ISSUER": "https://auth.example.net", "NUDGE_OIDC_CLIENT_ID": "nudge", "NUDGE_OIDC_CLIENT_SECRET": "s3cret", "NUDGE_PUBLIC_URL": "https://nudge.example.net"}, wantErr: true},
+		{name: "oidc user role same as admin role", args: []string{"-oidc-user-role", "admin"}, env: map[string]string{"NUDGE_OIDC_ISSUER": "https://auth.example.net", "NUDGE_OIDC_CLIENT_ID": "nudge", "NUDGE_OIDC_CLIENT_SECRET": "s3cret", "NUDGE_PUBLIC_URL": "https://nudge.example.net"}, wantErr: true},
+		{name: "oidc require mfa not a bool", env: map[string]string{"NUDGE_OIDC_ISSUER": "https://auth.example.net", "NUDGE_OIDC_CLIENT_ID": "nudge", "NUDGE_OIDC_CLIENT_SECRET": "s3cret", "NUDGE_PUBLIC_URL": "https://nudge.example.net", "NUDGE_OIDC_REQUIRE_MFA": "maybe"}, wantErr: true},
+		{name: "password login off without oidc", env: map[string]string{"NUDGE_PASSWORD_LOGIN": "false"}, wantErr: true},
 		{name: "trusted proxies not an address", env: map[string]string{"NUDGE_TRUSTED_PROXIES": "proxy.local"}, wantErr: true},
 		{name: "trusted proxies bad prefix length", args: []string{"-trusted-proxies", "10.0.0.0/33"}, wantErr: true},
 		{name: "trusted proxies empty entry", args: []string{"-trusted-proxies", "10.0.0.1,,10.0.0.2"}, wantErr: true},
 		{name: "trusted proxies with zone", args: []string{"-trusted-proxies", "fe80::1%eth0"}, wantErr: true},
+		{
+			name: "tenant hardening",
+			env:  map[string]string{"NUDGE_TENANT_CGROUP_PARENT": "nudge-u{id}.slice", "NUDGE_TENANT_RUNTIME": "runsc", "NUDGE_TENANT_STORAGE_SIZE": "10G"},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, MetricsInterval: time.Minute, MetricsLiveInterval: 5 * time.Second, MetricsRetention: 720 * time.Hour, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute,
+				Tenant: Tenant{CgroupParent: "nudge-u{id}.slice", Runtime: "runsc", StorageSize: 10 << 30}},
+		},
+		{
+			name: "tenant flags",
+			args: []string{"-tenant-cgroup-parent", "/nudge/u{id}", "-tenant-runtime", "kata-runtime", "-tenant-storage-size", "512MiB"},
+			env:  map[string]string{"NUDGE_TENANT_RUNTIME": "runsc"},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, MetricsInterval: time.Minute, MetricsLiveInterval: 5 * time.Second, MetricsRetention: 720 * time.Hour, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute,
+				Tenant: Tenant{CgroupParent: "/nudge/u{id}", Runtime: "kata-runtime", StorageSize: 512 << 20}},
+		},
+		{name: "tenant storage size in bytes", args: []string{"-tenant-storage-size", "1073741824"}, want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, MetricsInterval: time.Minute, MetricsLiveInterval: 5 * time.Second, MetricsRetention: 720 * time.Hour, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute, Tenant: Tenant{StorageSize: 1 << 30}}},
+		{name: "tenant storage size lower case", args: []string{"-tenant-storage-size", "2gb"}, want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, MetricsInterval: time.Minute, MetricsLiveInterval: 5 * time.Second, MetricsRetention: 720 * time.Hour, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute, Tenant: Tenant{StorageSize: 2 << 30}}},
+		{name: "tenant cgroup parent without id", args: []string{"-tenant-cgroup-parent", "nudge.slice"}, wantErr: true},
+		{name: "tenant cgroup parent stray brace", args: []string{"-tenant-cgroup-parent", "u{id}{x}.slice"}, wantErr: true},
+		{name: "tenant cgroup parent dot dot", args: []string{"-tenant-cgroup-parent", "/a/../u{id}"}, wantErr: true},
+		{name: "tenant cgroup parent slice path", args: []string{"-tenant-cgroup-parent", "a/u{id}.slice"}, wantErr: true},
+		{name: "tenant cgroup parent space", args: []string{"-tenant-cgroup-parent", "u{id} .slice"}, wantErr: true},
+		{name: "tenant runtime with space", args: []string{"-tenant-runtime", "runsc --debug"}, wantErr: true},
+		{name: "tenant runtime with slash", args: []string{"-tenant-runtime", "/usr/bin/runsc"}, wantErr: true},
+		{name: "tenant denied labels", env: map[string]string{"NUDGE_TENANT_DENIED_LABELS": " Traefik. , homepage.,traefik."}, want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, MetricsInterval: time.Minute, MetricsLiveInterval: 5 * time.Second, MetricsRetention: 720 * time.Hour, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute, Tenant: Tenant{DeniedLabels: []string{"traefik.", "homepage."}}}},
+		{name: "tenant denied labels none", args: []string{"-tenant-denied-labels", "none"}, want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, MetricsInterval: time.Minute, MetricsLiveInterval: 5 * time.Second, MetricsRetention: 720 * time.Hour, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute, Tenant: Tenant{DeniedLabels: []string{}}}},
+		{name: "tenant denied labels empty", args: []string{"-tenant-denied-labels", ""}, wantErr: true},
+		{name: "tenant denied labels empty entry", args: []string{"-tenant-denied-labels", "traefik.,,caddy"}, wantErr: true},
+		{name: "tenant denied labels space", args: []string{"-tenant-denied-labels", "traefik http"}, wantErr: true},
+		{name: "tenant denied labels equals", args: []string{"-tenant-denied-labels", "traefik.enable=true"}, wantErr: true},
+		{name: "tenant storage size bad", args: []string{"-tenant-storage-size", "lots"}, wantErr: true},
+		{name: "tenant storage size too small", args: []string{"-tenant-storage-size", "1M"}, wantErr: true},
+		{name: "tenant storage size too large", args: []string{"-tenant-storage-size", "99999999999T"}, wantErr: true},
+		{name: "tenant storage size negative", args: []string{"-tenant-storage-size", "-1G"}, wantErr: true},
+		{
+			name: "user registries",
+			env:  map[string]string{"NUDGE_USER_REGISTRIES": " docker.io, GHCR.io ,registry.example.net:5000"},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, MetricsInterval: time.Minute, MetricsLiveInterval: 5 * time.Second, MetricsRetention: 720 * time.Hour, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute,
+				UserRegistries: []string{"docker.io", "ghcr.io", "registry.example.net:5000"}},
+		},
+		{
+			name: "user registries any",
+			args: []string{"-user-registries", "*"},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, MetricsInterval: time.Minute, MetricsLiveInterval: 5 * time.Second, MetricsRetention: 720 * time.Hour, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute,
+				UserRegistries: []string{"*"}},
+		},
+		{
+			name: "scheduled backups",
+			env:  map[string]string{"NUDGE_BACKUP_INTERVAL": "24h", "NUDGE_BACKUP_KEEP": "3", "NUDGE_BACKUP_PASSPHRASE_FILE": "/run/secrets/backup"},
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, MetricsInterval: time.Minute, MetricsLiveInterval: 5 * time.Second, MetricsRetention: 720 * time.Hour, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute,
+				Backup: Backup{Interval: 24 * time.Hour, Keep: 3, PassphraseFile: "/run/secrets/backup"}},
+		},
+		{name: "scheduled backups without a passphrase", args: []string{"-backup-interval", "24h"}, wantErr: true},
+		{name: "backup interval too short", args: []string{"-backup-interval", "1m", "-backup-passphrase-file", "/p"}, wantErr: true},
+		{name: "backup keep zero", args: []string{"-backup-interval", "1h", "-backup-keep", "0", "-backup-passphrase-file", "/p"}, wantErr: true},
+		{name: "backup interval not a duration", env: map[string]string{"NUDGE_BACKUP_INTERVAL": "daily"}, wantErr: true},
+		{name: "backup keep not a number", env: map[string]string{"NUDGE_BACKUP_KEEP": "all"}, wantErr: true},
+		{name: "user registries with scheme", args: []string{"-user-registries", "https://ghcr.io"}, wantErr: true},
+		{name: "user registries with path", args: []string{"-user-registries", "ghcr.io/me"}, wantErr: true},
+		{name: "user registries empty entry", args: []string{"-user-registries", "docker.io,,ghcr.io"}, wantErr: true},
 		{name: "trusted proxies IPv4-mapped prefix shorter than /96", args: []string{"-trusted-proxies", "::ffff:0.0.0.0/80"}, wantErr: true},
 		{
 			name: "trusted proxies IPv4-mapped /96 is all of IPv4",
 			args: []string{"-trusted-proxies", "::ffff:0.0.0.0/96"},
-			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, UpdateCheckInterval: 6 * time.Hour,
+			want: Server{Addr: ":8080", DataDir: "/data", StacksDir: "/data/stacks", Compose: "/usr/local/bin/docker-compose", LogLevel: slog.LevelInfo, DockerHost: "unix:///var/run/docker.sock", AuditRetentionDays: 90, MetricsInterval: time.Minute, MetricsLiveInterval: 5 * time.Second, MetricsRetention: 720 * time.Hour, UpdateCheckInterval: 6 * time.Hour, UsageInterval: 15 * time.Minute,
 				TrustedProxies: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}},
 		},
 	}
@@ -125,7 +242,55 @@ func TestLoadServer(t *testing.T) {
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
 			}
+			if tt.want.Tenant.DeniedLabels == nil {
+				tt.want.Tenant.DeniedLabels = defaultDenied
+			}
+			if tt.want.Backup.Keep == 0 {
+				tt.want.Backup.Keep = 7
+			}
+			if tt.want.DockerRoot == "" {
+				tt.want.DockerRoot = DefaultDockerRoot
+			}
 			if err == nil && !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("got %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadRestore(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		args    []string
+		env     map[string]string
+		want    Restore
+		wantErr bool
+	}{
+		{
+			name: "defaults",
+			args: []string{"-file", "/b/x.nudgebak", "-passphrase-file", "/p"},
+			want: Restore{File: "/b/x.nudgebak", DataDir: "/data", StacksDir: "/data/stacks", PassphraseFile: "/p"},
+		},
+		{
+			name: "env and force",
+			args: []string{"-file", "x.nudgebak", "-force"},
+			env:  map[string]string{"NUDGE_DATA": "/srv/nudge", "NUDGE_STACKS_DIR": "/srv/stacks", "NUDGE_BACKUP_PASSPHRASE_FILE": "/run/p"},
+			want: Restore{File: "x.nudgebak", DataDir: "/srv/nudge", StacksDir: "/srv/stacks", PassphraseFile: "/run/p", Force: true},
+		},
+		{name: "no file", args: []string{"-passphrase-file", "/p"}, wantErr: true},
+		{name: "no passphrase", args: []string{"-file", "x"}, wantErr: true},
+		{name: "relative stacks dir", args: []string{"-file", "x", "-passphrase-file", "/p", "-stacks-dir", "stacks"}, wantErr: true},
+		{name: "extra argument", args: []string{"-file", "x", "-passphrase-file", "/p", "now"}, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := LoadRestore(tt.args, func(k string) string { return tt.env[k] }, io.Discard)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err == nil && got != tt.want {
 				t.Errorf("got %+v, want %+v", got, tt.want)
 			}
 		})
@@ -222,5 +387,38 @@ func TestLoadAgentHelpHidesJoinToken(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "s3cret") {
 		t.Errorf("usage shows the join token:\n%s", out.String())
+	}
+}
+
+// NUDGE_DOCKER_ROOT and -docker-root for both binaries; empty turns the disk size off.
+func TestDockerRoot(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		args []string
+		env  map[string]string
+		want string
+	}{
+		{"default", nil, nil, DefaultDockerRoot},
+		{"env", nil, map[string]string{"NUDGE_DOCKER_ROOT": "/mnt/docker"}, "/mnt/docker"},
+		{"flag wins", []string{"-docker-root", "/srv/docker"}, map[string]string{"NUDGE_DOCKER_ROOT": "/mnt/docker"}, "/srv/docker"},
+		{"off", []string{"-docker-root", ""}, nil, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			getenv := func(k string) string { return tt.env[k] }
+			srv, err := LoadServer(tt.args, getenv, io.Discard)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ag, err := LoadAgent(append([]string{"-server", "https://nudge.example.net"}, tt.args...), getenv, io.Discard)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if srv.DockerRoot != tt.want || ag.DockerRoot != tt.want {
+				t.Errorf("DockerRoot = server %q, agent %q; want %q", srv.DockerRoot, ag.DockerRoot, tt.want)
+			}
+		})
 	}
 }

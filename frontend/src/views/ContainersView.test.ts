@@ -5,7 +5,7 @@ import { createMemoryHistory } from 'vue-router';
 import type { ContainerSummary } from '../api/client';
 import { createAppRouter } from '../router';
 import { currentUser } from '../session';
-import { admin, stubApi, stubSockets, type FakeWebSocket } from '../test-utils';
+import { admin, user, stubApi, stubSockets, type FakeWebSocket } from '../test-utils';
 import ContainersView from './ContainersView.vue';
 
 const base: ContainerSummary = {
@@ -228,11 +228,11 @@ describe('ContainersView', () => {
       },
     });
     const { wrapper } = await mountAt('/env/1/containers');
-    const stop = wrapper.findAll('tbody button').find((b) => b.text() === 'Stop');
+    const stop = wrapper.findAll('tbody button').find((b) => b.attributes('title') === 'Stop');
     await stop!.trigger('click');
     await flushPromises();
     expect(wrapper.find('tbody tr').text()).toContain('exited');
-    expect(wrapper.findAll('tbody button').map((b) => b.text())).toEqual(['Start', 'Remove']);
+    expect(wrapper.findAll('tbody button').map((b) => b.attributes('title'))).toEqual(['Start', 'Remove']);
   });
 
   it('reloads when the environment changes', async () => {
@@ -245,5 +245,14 @@ describe('ContainersView', () => {
     await router.push('/env/2/containers');
     await flushPromises();
     expect(wrapper.findAll('tbody tr')).toHaveLength(1);
+  });
+
+  it('offers a user the deploy form instead of the admin one', async () => {
+    currentUser.value = user;
+    stubApi({ 'GET /environments/1/containers': { body: containers } });
+    const { wrapper } = await mountAt('/env/1/containers');
+    expect(wrapper.find('a.primary').text()).toBe('Deploy');
+    expect(wrapper.find('a.primary').attributes('href')).toBe('/env/1/deploy');
+    expect(wrapper.text()).not.toContain('Check for updates');
   });
 });

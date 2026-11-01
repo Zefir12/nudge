@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"git.zefirlabs.net/zefir/nudge/backend/internal/probe"
 )
 
 // controlTest is a control service on a Local runner over a temporary directory, served
@@ -99,7 +101,7 @@ func TestRemoteSyncUpDownRemove(t *testing.T) {
 
 	ct.setExec(output("one\ntwo\n", 3, nil))
 	out, lines := collect()
-	code, err := ct.remote.Up(ctx, "web", true, out)
+	code, err := ct.remote.Up(ctx, "web", UpOptions{Pull: true}, out)
 	if err != nil || code != 3 {
 		t.Fatalf("Up = %d, %v; want 3", code, err)
 	}
@@ -161,7 +163,7 @@ func TestRemoteErrors(t *testing.T) {
 				}
 			}
 			ct.setExec(tt.exec)
-			if _, err := ct.remote.Up(ctx, "web", false, func(Line) {}); !tt.want(err) {
+			if _, err := ct.remote.Up(ctx, "web", UpOptions{}, func(Line) {}); !tt.want(err) {
 				t.Errorf("Up = %v", err)
 			}
 		})
@@ -263,7 +265,7 @@ func TestRemoteCredentials(t *testing.T) {
 			if tt.down {
 				_, err = remote.Down(ctx, "web", false, out)
 			} else {
-				_, err = remote.Up(ctx, "web", true, out)
+				_, err = remote.Up(ctx, "web", UpOptions{Pull: true}, out)
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -318,7 +320,7 @@ func TestRemoteCredentials(t *testing.T) {
 				var d net.Dialer
 				return d.DialContext(ctx, "tcp", addr)
 			}).WithCredentials(dir, func(context.Context, Files) ([]Credential, error) { return tt.creds, nil })
-			_, err := remote.Up(context.Background(), "web", false, func(Line) {})
+			_, err := remote.Up(context.Background(), "web", UpOptions{}, func(Line) {})
 			if got := errors.Is(err, ErrOldAgent); got != tt.wantOld || (!tt.wantOld && err != nil) {
 				t.Errorf("%s: Up = %v, want ErrOldAgent %v", tt.name, err, tt.wantOld)
 			}
@@ -338,7 +340,7 @@ func TestRemoteCredentials(t *testing.T) {
 		remote = remote.WithCredentials(dir, func(context.Context, Files) ([]Credential, error) {
 			return nil, errors.New("sealed with another key")
 		})
-		if _, err := remote.Up(context.Background(), "web", false, func(Line) {}); err == nil {
+		if _, err := remote.Up(context.Background(), "web", UpOptions{}, func(Line) {}); err == nil {
 			t.Error("Up with a failing lookup succeeded")
 		}
 	})
@@ -360,7 +362,7 @@ func TestControlOneChangePerStack(t *testing.T) {
 	})
 	done := make(chan error, 1)
 	go func() {
-		_, err := ct.remote.Up(ctx, "web", false, func(Line) {})
+		_, err := ct.remote.Up(ctx, "web", UpOptions{}, func(Line) {})
 		done <- err
 	}()
 	<-started
@@ -401,7 +403,7 @@ func TestRemoteCancelKillsCompose(t *testing.T) {
 	got := make(chan Line, 1)
 	done := make(chan error, 1)
 	go func() {
-		_, err := ct.remote.Up(ctx, "web", false, func(l Line) {
+		_, err := ct.remote.Up(ctx, "web", UpOptions{}, func(l Line) {
 			select {
 			case got <- l:
 			default:
@@ -455,5 +457,104 @@ func TestControlReleasesStackBeforeFinalLine(t *testing.T) {
 				t.Errorf("DELETE while the %s answer is sent = %d, want %d", op, w.status, http.StatusNoContent)
 			}
 		})
+	}
+}
+
+// probeServer serves handler and returns a Remote that calls it.
+func probeServer(t *testing.T, handler http.Handler) *Remote {
+	t.Helper()
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	addr := srv.Listener.Addr().String()
+	return NewRemote(func(ctx context.Context) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, "tcp", addr)
+	})
+}
+
+func TestRemoteProbe(t *testing.T) {
+	t.Parallel()
+	req := probe.Request{Container: "0123456789ab", Port: 8080, Path: "/health", Status: 200, Timeout: 5 * time.Second}
+	tests := []struct {
+		name    string
+		handler func(got chan<- probe.Request) http.Handler
+		want    func(error) bool
+	}{
+		{"passes", func(got chan<- probe.Request) http.Handler {
+			return NewControl(NewLocal(LocalOptions{Dir: NewDir(t.TempDir()), Probe: func(_ context.Context, _ string, r probe.Request) error {
+				got <- r
+				return nil
+			}}), nil)
+		}, func(err error) bool { return err == nil }},
+		{"fails", func(got chan<- probe.Request) http.Handler {
+			return NewControl(NewLocal(LocalOptions{Dir: NewDir(t.TempDir()), Probe: func(_ context.Context, _ string, r probe.Request) error {
+				got <- r
+				return &probe.FailedError{Msg: "answered another status than 200"}
+			}}), nil)
+		}, func(err error) bool {
+			var fe *probe.FailedError
+			return errors.As(err, &fe) && fe.Msg == "answered another status than 200"
+		}},
+		{"agent outside a container", func(chan<- probe.Request) http.Handler {
+			return NewControl(NewLocal(LocalOptions{Dir: NewDir(t.TempDir())}), nil)
+		}, func(err error) bool { return errors.Is(err, probe.ErrNoSelf) }},
+		{"check broken", func(chan<- probe.Request) http.Handler {
+			return NewControl(NewLocal(LocalOptions{Dir: NewDir(t.TempDir()), Probe: func(context.Context, string, probe.Request) error {
+				return errors.New("daemon said: secret stuff")
+			}}), nil)
+		}, func(err error) bool { return err != nil && !strings.Contains(err.Error(), "secret") }},
+		{"old agent", func(chan<- probe.Request) http.Handler {
+			// An agent from before checks: the catch-all 404 of its control service.
+			return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { controlError(w, http.StatusNotFound, "not found") })
+		}, func(err error) bool { return errors.Is(err, ErrNoProbe) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := make(chan probe.Request, 1)
+			err := probeServer(t, tt.handler(got)).Probe(context.Background(), "web", req)
+			if !tt.want(err) {
+				t.Fatalf("Probe = %v", err)
+			}
+			select {
+			case r := <-got:
+				if r != req {
+					t.Errorf("agent got %+v, want %+v", r, req)
+				}
+			default:
+			}
+		})
+	}
+}
+
+func TestControlRefusesBadProbe(t *testing.T) {
+	t.Parallel()
+	h := NewControl(NewLocal(LocalOptions{Dir: NewDir(t.TempDir()), Probe: func(context.Context, string, probe.Request) error { return nil }}), nil)
+	for _, body := range []string{`{"container":"x","port":80,"path":"/","status":200,"timeout":1000000000}`, `{"unknown":1}`, `not json`} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/stacks/web/probe", strings.NewReader(body)))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s = %d, want 400", body, rec.Code)
+		}
+	}
+}
+
+func TestRemoteUpWaitOldAgent(t *testing.T) {
+	t.Parallel()
+	// An agent from before --wait refuses the unknown field.
+	remote := probeServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(b), "wait_seconds") {
+			controlError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = w.Write([]byte(`{"exit_code":0}` + "\n"))
+	}))
+	if _, err := remote.Up(context.Background(), "web", UpOptions{Pull: true, Wait: time.Minute}, func(Line) {}); !errors.Is(err, ErrNoWait) {
+		t.Fatalf("Up with wait = %v, want ErrNoWait", err)
+	}
+	if code, err := remote.Up(context.Background(), "web", UpOptions{Pull: true}, func(Line) {}); err != nil || code != 0 {
+		t.Fatalf("Up without wait = %d, %v", code, err)
 	}
 }

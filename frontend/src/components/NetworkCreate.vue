@@ -1,12 +1,16 @@
 <script setup lang="ts">
-import { reactive, ref } from 'vue';
+import { computed, reactive, ref } from 'vue';
 
 import { createNetwork } from '../api/client';
 import { parsePairs } from '../format';
+import { currentUser } from '../session';
 
 const props = defineProps<{ env: string }>();
 const emit = defineEmits<{ created: [id: string] }>();
 
+// A user's networks are bridges Docker picks the addresses of, without driver options,
+// IPv6 or attaching.
+const isAdmin = computed(() => !!currentUser.value?.admin);
 const empty = () => ({
   name: '',
   driver: '',
@@ -60,12 +64,12 @@ async function onSubmit() {
         Name
         <input v-model="form.name" name="name" maxlength="255" required :disabled="busy" />
       </label>
-      <label>
+      <label v-if="isAdmin">
         Driver
         <input v-model="form.driver" name="driver" maxlength="255" placeholder="bridge" :disabled="busy" />
       </label>
     </div>
-    <div class="row">
+    <div v-if="isAdmin" class="row">
       <label>
         Subnet
         <input
@@ -89,11 +93,13 @@ async function onSubmit() {
         <input v-model="form.internal" type="checkbox" :disabled="busy" />
         Internal (no outside access)
       </label>
-      <label><input v-model="form.attachable" type="checkbox" :disabled="busy" /> Attachable</label>
-      <label><input v-model="form.ipv6" type="checkbox" :disabled="busy" /> IPv6</label>
+      <template v-if="isAdmin">
+        <label><input v-model="form.attachable" type="checkbox" :disabled="busy" /> Attachable</label>
+        <label><input v-model="form.ipv6" type="checkbox" :disabled="busy" /> IPv6</label>
+      </template>
     </div>
     <div class="row">
-      <label>
+      <label v-if="isAdmin">
         Driver options (one key=value per line)
         <textarea v-model="form.options" name="options" rows="3" :disabled="busy"></textarea>
       </label>

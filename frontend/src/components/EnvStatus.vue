@@ -3,21 +3,24 @@ import { computed } from 'vue';
 
 import type { Environment } from '../api/client';
 import { formatDate } from '../format';
+import ConnPlug from './ConnPlug.vue';
 
 // EnvStatus shows whether an environment's Docker host answers, and when it last did.
 const props = defineProps<{ env: Environment }>();
 
 const status = computed(() => {
-  if (props.env.online) return { label: 'online', tone: 'good' };
+  if (props.env.online) return { label: 'online', tone: 'good', waiting: false };
   if (props.env.kind === 'agent' && !props.env.agent?.enrolled)
-    return { label: 'waiting for agent', tone: 'warn' };
-  return { label: 'offline', tone: 'bad' };
+    return { label: 'waiting for agent', tone: 'warn', waiting: true };
+  return { label: 'offline', tone: 'bad', waiting: false };
 });
 </script>
 
 <template>
   <span class="status">
-    <span class="badge" :class="status.tone">{{ status.label }}</span>
+    <span class="badge" :class="status.tone">
+      <ConnPlug :online="env.online" :waiting="status.waiting" />{{ status.label }}
+    </span>
     <span v-if="!env.online && env.last_seen_at" class="muted">
       last seen {{ formatDate(env.last_seen_at) }}
     </span>
@@ -29,20 +32,20 @@ const status = computed(() => {
   display: inline-flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 0.25rem 0.5rem;
+  gap: 0.25rem 0.6rem;
 }
 
 .badge {
-  display: inline-block;
-  padding: 0.05rem 0.5rem;
-  font-size: 0.85em;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.9em;
+  font-weight: 500;
   white-space: nowrap;
-  border: 1px solid currentColor;
-  border-radius: 999px;
 }
 
 .good {
-  color: var(--ok);
+  color: var(--ok-text);
 }
 
 .warn {
@@ -50,7 +53,7 @@ const status = computed(() => {
 }
 
 .bad {
-  color: var(--danger);
+  color: var(--muted);
 }
 
 .muted {

@@ -9,8 +9,11 @@ import { useLiveReload } from '../composables/useEvents';
 import { useLoad } from '../composables/useLoad';
 import { useParams } from '../composables/params';
 import { matches } from '../format';
+import { currentUser } from '../session';
 
 const { env } = useParams();
+// Prunes are for admins.
+const isAdmin = computed(() => !!currentUser.value?.admin);
 const { data, error, reload } = useLoad(env, listNetworks);
 // Docker events refresh the list, so changes made elsewhere show up by themselves.
 useLiveReload(env, ['network'], reload);
@@ -47,7 +50,7 @@ const shown = computed(() => (data.value ?? []).filter((n) => matches(query.valu
     <NetworkCreate :env="env" @created="reload" />
   </section>
   <section class="card">
-    <div class="prune">
+    <div v-if="isAdmin" class="prune">
       <button type="button" class="danger" :disabled="pruning" @click="onPrune">Prune unused</button>
       <span v-if="pruneResult" class="muted" role="status">{{ pruneResult }}</span>
     </div>

@@ -544,3 +544,20 @@ func TestServerRefusesAgentStreams(t *testing.T) {
 		t.Errorf("read = %v, want EOF from the server closing the stream", err)
 	}
 }
+
+func TestPing(t *testing.T) {
+	t.Parallel()
+	server, agent := newPipePair(t.Context(), t, fast)
+	rtt, err := server.Ping()
+	if err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	if rtt <= 0 {
+		t.Errorf("Ping rtt = %v, want > 0", rtt)
+	}
+	_ = agent.Close()
+	waitDone(t, "server", server)
+	if _, err := server.Ping(); !errors.Is(err, ErrClosed) {
+		t.Errorf("Ping after close: %v, want ErrClosed", err)
+	}
+}

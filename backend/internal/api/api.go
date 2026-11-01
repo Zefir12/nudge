@@ -11,17 +11,25 @@ import (
 	"net/http"
 	"net/netip"
 	"sync"
+	"time"
 
+	"git.zefirlabs.net/zefir/nudge/backend/internal/allowances"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/audit"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/backup"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/deployhooks"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/deployments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/events"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/hostdisk"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/metrics"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/notify"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/oidc"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/registries"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/registryclient"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/stacks"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/updates"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/usage"
 )
 
 // Options are the API's dependencies.
@@ -37,10 +45,6 @@ type Options struct {
 	Registries *registries.Service
 	// RegistryClient browses registries over HTTP; nil means a registryclient.Client.
 	RegistryClient RegistryBrowser
-	// Admin says whether a user may do admin-only actions (deleting registry tags,
-	// managing every user's deploy webhooks); nil means every user is an admin, as nudge
-	// has one user until roles exist.
-	Admin func(auth.User) bool
 	// Audit records every write.
 	Audit *audit.Service
 	// StacksDir holds every environment's stacks as <dir>/<environment ID>/<name>/.
@@ -57,6 +61,29 @@ type Options struct {
 	Webhooks *notify.Service
 	// DeployHooks are the deploy webhooks; nil means they aren't available.
 	DeployHooks *deployhooks.Service
+	// Deployments are the deployments; nil means they aren't available.
+	Deployments *deployments.Service
+	// Usage keeps the measured volume sizes; nil means sizes aren't available.
+	Usage *usage.Service
+	// Metrics keeps the collected usage samples; nil answers no samples.
+	Metrics *metrics.Service
+	// Activity counts the container events per hour; nil answers 404.
+	Activity *metrics.Activity
+	// Backups writes backups; nil means none can be downloaded.
+	Backups *backup.Service
+	// Allowances are the users' allowances, checked before a user's container is
+	// created, recreated, updated or started.
+	Allowances *allowances.Service
+	// Tenant is the host-side hardening of users' containers (cgroup slice, runtime,
+	// disk limit); the zero value adds none.
+	Tenant TenantHosting
+	// UserRegistries are the registry hosts users' pulls may reach, "*" for any; nil
+	// means DefaultUserRegistries (pull_registry.go).
+	UserRegistries []string
+	// DeniedLabels are label prefixes (lower case) a user's container may not carry, from
+	// its spec or its image: labels that steer tools on the host such as reverse proxies
+	// (traefik.) or updaters. Empty denies none.
+	DeniedLabels []string
 	// Events is the Docker events hub, shared with the notification watcher; nil means
 	// the API makes its own.
 	Events *events.Hub
@@ -68,6 +95,29 @@ type Options struct {
 	// SecureCookies marks the session cookie Secure on every response, not only on
 	// requests that came over HTTPS (set when nudge serves TLS or PublicURL is https).
 	SecureCookies bool
+	// After is time.After outside tests: the deployments' stability window and the
+	// keepalives of their progress streams.
+	After func(time.Duration) <-chan time.Time
+	// Now is time.Now outside tests: audit entries' times.
+	Now func() time.Time
+	// OIDC signs users in through the SSO provider; nil means SSO is off.
+	OIDC *oidc.Client
+	// OIDCName labels the SSO button on the login page.
+	OIDCName string
+	// NoPasswordLogin hides the password form; the auth service refuses everyone but the
+	// break-glass admin.
+	NoPasswordLogin bool
+	// Self is nudge's own container (stacks.SelfID) and DockerHost how the server reaches
+	// the local environment's daemon: what an update of the server replaces, and what the
+	// generic recreate, update and stack runs refuse to touch.
+	Self       stacks.Self
+	DockerHost string
+	// AgentSelf asks an agent environment's agent for its own container and Docker host
+	// (selfupdate.RemoteSelf); nil means agents can't be updated from the server.
+	AgentSelf func(ctx context.Context, env environments.Environment) (stacks.Self, string, error)
+	// DiskSpace is the size of the disk under an environment's Docker root dir
+	// (hostdisk.Stat locally, hostdisk.Remote for an agent); nil means unknown.
+	DiskSpace func(ctx context.Context, env environments.Environment) (hostdisk.Space, error)
 	// TrustedProxies are the reverse proxies whose X-Forwarded-For (client IP for the
 	// login limiter and logs) and X-Forwarded-Proto are believed; empty means none.
 	TrustedProxies []netip.Prefix
@@ -80,6 +130,11 @@ var publicRoutes = map[string]bool{
 	"GET /api/v1/setup":       true,
 	"POST /api/v1/setup":      true,
 	"POST /api/v1/auth/login": true,
+	// The login page asks which ways to sign in it offers; the SSO login starts and ends
+	// before there is a session (the callback checks its state and binding cookie).
+	"GET /api/v1/auth/methods":       true,
+	"GET /api/v1/auth/oidc/login":    true,
+	"GET /api/v1/auth/oidc/callback": true,
 	// Logout clears the cookie even when the session has already expired.
 	"POST /api/v1/auth/logout": true,
 	// Agents enroll with a join token and connect with their ID and secret instead of a
@@ -95,18 +150,244 @@ var publicRoutes = map[string]bool{
 // that would outlive the token's revocation, so a leaked token can't leave a way back in.
 // The refusal is audited with the token's name.
 var sessionOnlyRoutes = map[string]bool{
-	"POST /api/v1/tokens": true,
+	"POST /api/v1/tokens":                    true,
+	"POST /api/v1/deployments/{name}/tokens": true,
+	// A user's password is a credential too; a token mustn't be able to take over the
+	// account by changing it.
+	"POST /api/v1/auth/password": true,
+	"POST /api/v1/users":         true,
+	"PATCH /api/v1/users/{id}":   true,
+	// Re-linking decides whose login signs in as a user, admins included.
+	"POST /api/v1/users/{id}/relink": true,
+	// A backup holds the key to the stored registry passwords and every credential hash.
+	"POST /api/v1/backup": true,
+	// A join token enrolls an agent, whose credentials stay valid until revoked.
+	"POST /api/v1/environments":                   true,
+	"POST /api/v1/environments/{env}/join-tokens": true,
+	// A deploy webhook's secret triggers deploys as its creator.
+	"POST /api/v1/environments/{env}/webhooks":             true,
+	"POST /api/v1/environments/{env}/webhooks/{id}/secret": true,
+}
+
+// userRoutes are the routes open to users; every other authenticated route is for admins
+// only (403 for a user's session or API token), so a new route is admin-only until it is
+// listed here. Handlers of these routes check what the user may do with the object
+// (deployments.Authorize).
+var userRoutes = map[string]bool{
+	// The catch-all only answers 404.
+	"/api/":                    true,
+	"GET /api/v1/auth/me":      true,
+	"POST /api/v1/auth/logout": true,
+	// Their own password.
+	"POST /api/v1/auth/password": true,
+	// Their own API tokens.
+	"GET /api/v1/tokens":         true,
+	"POST /api/v1/tokens":        true,
+	"DELETE /api/v1/tokens/{id}": true,
+	// Deployments they are a member of; creating one is for admins.
+	"GET /api/v1/deployments":                          true,
+	"GET /api/v1/deployments/{name}":                   true,
+	"PATCH /api/v1/deployments/{name}":                 true,
+	"DELETE /api/v1/deployments/{name}":                true,
+	"GET /api/v1/deployments/{name}/members":           true,
+	"POST /api/v1/deployments/{name}/members":          true,
+	"DELETE /api/v1/deployments/{name}/members/{user}": true,
+	"GET /api/v1/deployments/{name}/tokens":            true,
+	"POST /api/v1/deployments/{name}/tokens":           true,
+	"DELETE /api/v1/deployments/{name}/tokens/{id}":    true,
+	"POST /api/v1/deployments/{name}/deploys":          true,
+	"GET /api/v1/deployments/{name}/deploys":           true,
+	"GET /api/v1/deployments/{name}/deploys/{run}":     true,
+	// The environments an admin gave them, and in those only the containers, volumes and
+	// networks they own (scope): someone else's are 404. Creating and recreating containers
+	// with the admin spec, images, stacks and prunes stay with admins.
+	"GET /api/v1/environments":                                true,
+	"GET /api/v1/environments/{env}":                          true,
+	"GET /api/v1/environments/{env}/containers":               true,
+	"GET /api/v1/environments/{env}/containers/{id}":          true,
+	"POST /api/v1/environments/{env}/containers/{id}/update":  true,
+	"DELETE /api/v1/environments/{env}/containers/{id}":       true,
+	"POST /api/v1/environments/{env}/containers/{id}/start":   true,
+	"POST /api/v1/environments/{env}/containers/{id}/stop":    true,
+	"POST /api/v1/environments/{env}/containers/{id}/restart": true,
+	"POST /api/v1/environments/{env}/containers/{id}/kill":    true,
+	"GET /api/v1/environments/{env}/containers/{id}/logs":     true,
+	"GET /api/v1/environments/{env}/containers/{id}/stats":    true,
+	"GET /api/v1/environments/{env}/containers/{id}/exec":     true,
+	"GET /api/v1/environments/{env}/stats":                    true,
+	"GET /api/v1/environments/{env}/stats/summary":            true,
+	"GET /api/v1/environments/{env}/metrics":                  true,
+	"GET /api/v1/environments/{env}/metrics/live":             true,
+	"GET /api/v1/environments/{env}/activity":                 true,
+	"GET /api/v1/environments/{env}/containers/{id}/metrics":  true,
+	// Their own allowance; setting one is for admins.
+	"GET /api/v1/environments/{env}/allowance":        true,
+	"GET /api/v1/environments/{env}/events":           true,
+	"GET /api/v1/environments/{env}/volumes":          true,
+	"GET /api/v1/environments/{env}/volumes/{id}":     true,
+	"DELETE /api/v1/environments/{env}/volumes/{id}":  true,
+	"GET /api/v1/environments/{env}/networks":         true,
+	"GET /api/v1/environments/{env}/networks/{id}":    true,
+	"DELETE /api/v1/environments/{env}/networks/{id}": true,
+	// Their own containers, built by the server from the strict tenant spec (tenant.go).
+	"POST /api/v1/environments/{env}/user-containers":               true,
+	"GET /api/v1/environments/{env}/user-containers/{id}/spec":      true,
+	"POST /api/v1/environments/{env}/user-containers/{id}/recreate": true,
+	// Their own networks and volumes: bridge and local only, named with their prefix.
+	"POST /api/v1/environments/{env}/volumes":  true,
+	"POST /api/v1/environments/{env}/networks": true,
+}
+
+// route is one API route: its mux pattern and the server method that serves it.
+type route struct {
+	pattern string
+	handler func(*server, http.ResponseWriter, *http.Request)
+}
+
+// routes are every route the API serves.
+var routes = []route{
+	{"GET /api/v1/health", (*server).health},
+	{"GET /api/v1/setup", (*server).setupStatus},
+	{"POST /api/v1/setup", (*server).setup},
+	{"POST /api/v1/auth/login", (*server).login},
+	{"POST /api/v1/auth/logout", (*server).logout},
+	{"POST /api/v1/auth/password", (*server).changePassword},
+	{"GET /api/v1/auth/me", (*server).me},
+	{"GET /api/v1/auth/methods", (*server).authMethods},
+	{"GET /api/v1/auth/oidc/login", (*server).oidcLogin},
+	{"GET /api/v1/auth/oidc/callback", (*server).oidcCallback},
+	{"GET /api/v1/tokens", (*server).listTokens},
+	{"POST /api/v1/tokens", (*server).createToken},
+	{"DELETE /api/v1/tokens/{id}", (*server).deleteToken},
+	{"GET /api/v1/audit", (*server).listAudit},
+	{"POST /api/v1/backup", (*server).createBackup},
+	{"GET /api/v1/users", (*server).listUsers},
+	{"POST /api/v1/users", (*server).createUser},
+	{"PATCH /api/v1/users/{id}", (*server).changeUser},
+	{"DELETE /api/v1/users/{id}", (*server).deleteUser},
+	{"POST /api/v1/users/{id}/relink", (*server).relinkUser},
+	{"GET /api/v1/users/{id}/environments", (*server).getUserEnvironments},
+	{"PUT /api/v1/users/{id}/environments", (*server).setUserEnvironments},
+	{"GET /api/v1/registries", (*server).listRegistries},
+	{"POST /api/v1/registries", (*server).createRegistry},
+	{"GET /api/v1/registries/{id}", (*server).getRegistry},
+	{"PUT /api/v1/registries/{id}", (*server).updateRegistry},
+	{"DELETE /api/v1/registries/{id}", (*server).deleteRegistry},
+	{"GET /api/v1/registries/{id}/repositories", (*server).listRegistryRepositories},
+	{"GET /api/v1/registries/{id}/tags", (*server).listRegistryTags},
+	{"DELETE /api/v1/registries/{id}/tags", (*server).deleteRegistryTag},
+	{"GET /api/v1/registries/{id}/manifest", (*server).getRegistryManifest},
+	{"GET /api/v1/webhooks", (*server).listWebhooks},
+	{"POST /api/v1/webhooks", (*server).createWebhook},
+	{"GET /api/v1/webhooks/{id}", (*server).getWebhook},
+	{"PUT /api/v1/webhooks/{id}", (*server).updateWebhook},
+	{"DELETE /api/v1/webhooks/{id}", (*server).deleteWebhook},
+	{"POST /api/v1/webhooks/{id}/test", (*server).testWebhook},
+	{"GET /api/v1/environments", (*server).listEnvironments},
+	{"POST /api/v1/environments", (*server).createEnvironment},
+	{"GET /api/v1/environments/{env}", (*server).getEnvironment},
+	{"DELETE /api/v1/environments/{env}", (*server).deleteEnvironment},
+	{"POST /api/v1/environments/{env}/join-tokens", (*server).createJoinToken},
+	{"DELETE /api/v1/environments/{env}/credentials", (*server).revokeAgent},
+	{"POST /api/v1/agents/enroll", (*server).enrollAgent},
+	{"GET /api/v1/agents/connect", (*server).connectAgent},
+	{"GET /api/v1/environments/{env}/containers", (*server).listContainers},
+	{"POST /api/v1/environments/{env}/containers", (*server).createContainer},
+	{"GET /api/v1/environments/{env}/containers/{id}", (*server).getContainer},
+	{"GET /api/v1/environments/{env}/containers/{id}/spec", (*server).getContainerSpec},
+	{"POST /api/v1/environments/{env}/containers/{id}/recreate", (*server).recreateContainer},
+	{"POST /api/v1/environments/{env}/user-containers", (*server).createTenantContainer},
+	{"GET /api/v1/environments/{env}/user-containers/{id}/spec", (*server).getTenantSpec},
+	{"POST /api/v1/environments/{env}/user-containers/{id}/recreate", (*server).recreateTenantContainer},
+	{"POST /api/v1/environments/{env}/containers/{id}/update", (*server).updateContainer},
+	{"DELETE /api/v1/environments/{env}/containers/{id}", (*server).removeContainer},
+	{"POST /api/v1/environments/{env}/containers/{id}/start", (*server).startContainer},
+	{"POST /api/v1/environments/{env}/containers/{id}/stop", (*server).stopContainer},
+	{"POST /api/v1/environments/{env}/containers/{id}/restart", (*server).restartContainer},
+	{"POST /api/v1/environments/{env}/containers/{id}/kill", (*server).killContainer},
+	{"GET /api/v1/environments/{env}/containers/{id}/logs", (*server).containerLogs},
+	{"GET /api/v1/environments/{env}/containers/{id}/stats", (*server).containerStats},
+	{"GET /api/v1/environments/{env}/containers/{id}/exec", (*server).containerExec},
+	{"GET /api/v1/environments/{env}/stats", (*server).environmentStats},
+	{"GET /api/v1/environments/{env}/stats/summary", (*server).environmentSummary},
+	{"GET /api/v1/environments/{env}/metrics", (*server).environmentMetrics},
+	{"GET /api/v1/environments/{env}/metrics/live", (*server).environmentLiveMetrics},
+	{"GET /api/v1/environments/{env}/activity", (*server).environmentActivity},
+	{"GET /api/v1/environments/{env}/containers/{id}/metrics", (*server).containerMetrics},
+	{"GET /api/v1/environments/{env}/allowance", (*server).getAllowance},
+	{"PUT /api/v1/environments/{env}/allowance", (*server).setAllowance},
+	{"DELETE /api/v1/environments/{env}/allowance", (*server).deleteAllowance},
+	{"GET /api/v1/environments/{env}/events", (*server).environmentEvents},
+	{"GET /api/v1/environments/{env}/images", (*server).listImages},
+	{"POST /api/v1/environments/{env}/images/pull", (*server).pullImage},
+	{"POST /api/v1/environments/{env}/images/prune", (*server).pruneImages},
+	{"GET /api/v1/environments/{env}/images/{id}", (*server).getImage},
+	{"DELETE /api/v1/environments/{env}/images/{id}", (*server).removeImage},
+	{"GET /api/v1/environments/{env}/volumes", (*server).listVolumes},
+	{"POST /api/v1/environments/{env}/volumes", (*server).createVolume},
+	{"POST /api/v1/environments/{env}/volumes/prune", (*server).pruneVolumes},
+	{"POST /api/v1/environments/{env}/volumes/usage", (*server).measureVolumes},
+	{"GET /api/v1/environments/{env}/disk", (*server).environmentDisk},
+	{"POST /api/v1/environments/{env}/disk", (*server).measureDisk},
+	{"GET /api/v1/environments/{env}/volumes/{id}", (*server).getVolume},
+	{"DELETE /api/v1/environments/{env}/volumes/{id}", (*server).removeVolume},
+	{"GET /api/v1/environments/{env}/networks", (*server).listNetworks},
+	{"POST /api/v1/environments/{env}/networks", (*server).createNetwork},
+	{"POST /api/v1/environments/{env}/networks/prune", (*server).pruneNetworks},
+	{"GET /api/v1/environments/{env}/networks/{id}", (*server).getNetwork},
+	{"DELETE /api/v1/environments/{env}/networks/{id}", (*server).removeNetwork},
+	{"POST /api/v1/stacks/check", (*server).checkStack},
+	{"GET /api/v1/environments/{env}/stacks", (*server).listStacks},
+	{"POST /api/v1/environments/{env}/stacks", (*server).createStack},
+	{"GET /api/v1/environments/{env}/stacks/{id}", (*server).getStack},
+	{"PUT /api/v1/environments/{env}/stacks/{id}", (*server).updateStack},
+	{"DELETE /api/v1/environments/{env}/stacks/{id}", (*server).removeStack},
+	{"POST /api/v1/environments/{env}/stacks/{id}/up", (*server).upStack},
+	{"POST /api/v1/environments/{env}/stacks/{id}/down", (*server).downStack},
+	{"POST /api/v1/environments/{env}/stacks/{id}/update", (*server).updateStackImages},
+	{"GET /api/v1/system/update", (*server).getSystemUpdate},
+	{"POST /api/v1/system/update/check", (*server).checkSystemUpdate},
+	{"POST /api/v1/system/update", (*server).startSystemUpdate},
+	{"GET /api/v1/environments/{env}/agent/update", (*server).getAgentUpdate},
+	{"POST /api/v1/environments/{env}/agent/update/check", (*server).checkAgentUpdate},
+	{"POST /api/v1/environments/{env}/agent/update", (*server).startAgentUpdate},
+	{"GET /api/v1/environments/{env}/updates", (*server).listUpdates},
+	{"POST /api/v1/environments/{env}/updates/check", (*server).checkUpdates},
+	{"GET /api/v1/environments/{env}/updates/history", (*server).listUpdateHistory},
+	{"GET /api/v1/environments/{env}/webhooks", (*server).listDeployHooks},
+	{"POST /api/v1/environments/{env}/webhooks", (*server).createDeployHook},
+	{"DELETE /api/v1/environments/{env}/webhooks/{id}", (*server).deleteDeployHook},
+	{"POST /api/v1/environments/{env}/webhooks/{id}/secret", (*server).rotateDeployHookSecret},
+	{"GET /api/v1/environments/{env}/webhooks/{id}/runs", (*server).listDeployHookRuns},
+	{"POST /api/v1/hooks/{id}", (*server).triggerDeployHook},
+	{"GET /api/v1/deployments", (*server).listDeployments},
+	{"POST /api/v1/deployments", (*server).createDeployment},
+	{"GET /api/v1/deployments/{name}", (*server).getDeployment},
+	{"PATCH /api/v1/deployments/{name}", (*server).changeDeployment},
+	{"DELETE /api/v1/deployments/{name}", (*server).deleteDeployment},
+	{"GET /api/v1/deployments/{name}/members", (*server).listDeploymentMembers},
+	{"POST /api/v1/deployments/{name}/members", (*server).setDeploymentMember},
+	{"DELETE /api/v1/deployments/{name}/members/{user}", (*server).removeDeploymentMember},
+	{"GET /api/v1/deployments/{name}/tokens", (*server).listDeployTokens},
+	{"POST /api/v1/deployments/{name}/tokens", (*server).createDeployToken},
+	{"DELETE /api/v1/deployments/{name}/tokens/{id}", (*server).deleteDeployToken},
+	{"POST /api/v1/deployments/{name}/deploys", (*server).startDeploymentRun},
+	{"GET /api/v1/deployments/{name}/deploys", (*server).listDeploymentRuns},
+	{"GET /api/v1/deployments/{name}/deploys/{run}", (*server).getDeploymentRun},
+	{"/api/", (*server).notFound},
 }
 
 // New returns the server's root handler: the API plus the web UI.
 func New(opts Options) http.Handler {
 	s := &server{
 		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries, audit: opts.Audit, updates: opts.Updates,
-		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, registryClient: opts.RegistryClient, isAdmin: opts.Admin,
-		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, recreating: map[string]bool{},
+		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, deployments: opts.Deployments, usage: opts.Usage, metrics: opts.Metrics, activity: opts.Activity, backups: opts.Backups, allowances: opts.Allowances, tenant: opts.Tenant, deniedLabels: opts.DeniedLabels, registryClient: opts.RegistryClient,
+		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, oidc: opts.OIDC, oidcName: opts.OIDCName, noPasswordLogin: opts.NoPasswordLogin, recreating: map[string]bool{},
 		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{},
-		checks: make(chan struct{}, maxStackChecks),
-		done:   context.Background(),
+		self: opts.Self, dockerHost: opts.DockerHost, agentSelf: opts.AgentSelf, diskSpace: opts.DiskSpace,
+		checks:         make(chan struct{}, maxStackChecks),
+		done:           context.Background(),
+		userRegistries: newRegistrySet(opts.UserRegistries),
 	}
 	if s.events == nil {
 		s.events = events.New(events.Options{Context: opts.Context, Log: opts.Log})
@@ -114,98 +395,24 @@ func New(opts Options) http.Handler {
 	if s.registryClient == nil {
 		s.registryClient = registryclient.New(registryclient.Options{})
 	}
-	if s.isAdmin == nil {
-		s.isAdmin = func(auth.User) bool { return true }
-	}
 	if opts.Context != nil {
 		s.done = opts.Context
+	}
+	s.after = opts.After
+	if s.after == nil {
+		s.after = time.After
+	}
+	s.now = opts.Now
+	if s.now == nil {
+		s.now = time.Now
 	}
 	if s.stackRunner == nil {
 		s.stackRunner = func(environments.Environment) stacks.Runner { return nil }
 	}
 	api := http.NewServeMux()
-	api.HandleFunc("GET /api/v1/health", s.health)
-	api.HandleFunc("GET /api/v1/setup", s.setupStatus)
-	api.HandleFunc("POST /api/v1/setup", s.setup)
-	api.HandleFunc("POST /api/v1/auth/login", s.login)
-	api.HandleFunc("POST /api/v1/auth/logout", s.logout)
-	api.HandleFunc("GET /api/v1/auth/me", s.me)
-	api.HandleFunc("GET /api/v1/tokens", s.listTokens)
-	api.HandleFunc("POST /api/v1/tokens", s.createToken)
-	api.HandleFunc("DELETE /api/v1/tokens/{id}", s.deleteToken)
-	api.HandleFunc("GET /api/v1/audit", s.listAudit)
-	api.HandleFunc("GET /api/v1/registries", s.listRegistries)
-	api.HandleFunc("POST /api/v1/registries", s.createRegistry)
-	api.HandleFunc("GET /api/v1/registries/{id}", s.getRegistry)
-	api.HandleFunc("PUT /api/v1/registries/{id}", s.updateRegistry)
-	api.HandleFunc("DELETE /api/v1/registries/{id}", s.deleteRegistry)
-	api.HandleFunc("GET /api/v1/registries/{id}/repositories", s.listRegistryRepositories)
-	api.HandleFunc("GET /api/v1/registries/{id}/tags", s.listRegistryTags)
-	api.HandleFunc("DELETE /api/v1/registries/{id}/tags", s.deleteRegistryTag)
-	api.HandleFunc("GET /api/v1/registries/{id}/manifest", s.getRegistryManifest)
-	api.HandleFunc("GET /api/v1/webhooks", s.listWebhooks)
-	api.HandleFunc("POST /api/v1/webhooks", s.createWebhook)
-	api.HandleFunc("GET /api/v1/webhooks/{id}", s.getWebhook)
-	api.HandleFunc("PUT /api/v1/webhooks/{id}", s.updateWebhook)
-	api.HandleFunc("DELETE /api/v1/webhooks/{id}", s.deleteWebhook)
-	api.HandleFunc("POST /api/v1/webhooks/{id}/test", s.testWebhook)
-	api.HandleFunc("GET /api/v1/environments", s.listEnvironments)
-	api.HandleFunc("POST /api/v1/environments", s.createEnvironment)
-	api.HandleFunc("GET /api/v1/environments/{env}", s.getEnvironment)
-	api.HandleFunc("POST /api/v1/environments/{env}/join-tokens", s.createJoinToken)
-	api.HandleFunc("DELETE /api/v1/environments/{env}/credentials", s.revokeAgent)
-	api.HandleFunc("POST /api/v1/agents/enroll", s.enrollAgent)
-	api.HandleFunc("GET /api/v1/agents/connect", s.connectAgent)
-	api.HandleFunc("GET /api/v1/environments/{env}/containers", s.listContainers)
-	api.HandleFunc("POST /api/v1/environments/{env}/containers", s.createContainer)
-	api.HandleFunc("GET /api/v1/environments/{env}/containers/{id}", s.getContainer)
-	api.HandleFunc("GET /api/v1/environments/{env}/containers/{id}/spec", s.getContainerSpec)
-	api.HandleFunc("POST /api/v1/environments/{env}/containers/{id}/recreate", s.recreateContainer)
-	api.HandleFunc("POST /api/v1/environments/{env}/containers/{id}/update", s.updateContainer)
-	api.HandleFunc("DELETE /api/v1/environments/{env}/containers/{id}", s.removeContainer)
-	api.HandleFunc("POST /api/v1/environments/{env}/containers/{id}/start", s.startContainer)
-	api.HandleFunc("POST /api/v1/environments/{env}/containers/{id}/stop", s.stopContainer)
-	api.HandleFunc("POST /api/v1/environments/{env}/containers/{id}/restart", s.restartContainer)
-	api.HandleFunc("POST /api/v1/environments/{env}/containers/{id}/kill", s.killContainer)
-	api.HandleFunc("GET /api/v1/environments/{env}/containers/{id}/logs", s.containerLogs)
-	api.HandleFunc("GET /api/v1/environments/{env}/containers/{id}/stats", s.containerStats)
-	api.HandleFunc("GET /api/v1/environments/{env}/containers/{id}/exec", s.containerExec)
-	api.HandleFunc("GET /api/v1/environments/{env}/stats", s.environmentStats)
-	api.HandleFunc("GET /api/v1/environments/{env}/events", s.environmentEvents)
-	api.HandleFunc("GET /api/v1/environments/{env}/images", s.listImages)
-	api.HandleFunc("POST /api/v1/environments/{env}/images/pull", s.pullImage)
-	api.HandleFunc("POST /api/v1/environments/{env}/images/prune", s.pruneImages)
-	api.HandleFunc("GET /api/v1/environments/{env}/images/{id}", s.getImage)
-	api.HandleFunc("DELETE /api/v1/environments/{env}/images/{id}", s.removeImage)
-	api.HandleFunc("GET /api/v1/environments/{env}/volumes", s.listVolumes)
-	api.HandleFunc("POST /api/v1/environments/{env}/volumes", s.createVolume)
-	api.HandleFunc("POST /api/v1/environments/{env}/volumes/prune", s.pruneVolumes)
-	api.HandleFunc("GET /api/v1/environments/{env}/volumes/{id}", s.getVolume)
-	api.HandleFunc("DELETE /api/v1/environments/{env}/volumes/{id}", s.removeVolume)
-	api.HandleFunc("GET /api/v1/environments/{env}/networks", s.listNetworks)
-	api.HandleFunc("POST /api/v1/environments/{env}/networks", s.createNetwork)
-	api.HandleFunc("POST /api/v1/environments/{env}/networks/prune", s.pruneNetworks)
-	api.HandleFunc("GET /api/v1/environments/{env}/networks/{id}", s.getNetwork)
-	api.HandleFunc("DELETE /api/v1/environments/{env}/networks/{id}", s.removeNetwork)
-	api.HandleFunc("POST /api/v1/stacks/check", s.checkStack)
-	api.HandleFunc("GET /api/v1/environments/{env}/stacks", s.listStacks)
-	api.HandleFunc("POST /api/v1/environments/{env}/stacks", s.createStack)
-	api.HandleFunc("GET /api/v1/environments/{env}/stacks/{id}", s.getStack)
-	api.HandleFunc("PUT /api/v1/environments/{env}/stacks/{id}", s.updateStack)
-	api.HandleFunc("DELETE /api/v1/environments/{env}/stacks/{id}", s.removeStack)
-	api.HandleFunc("POST /api/v1/environments/{env}/stacks/{id}/up", s.upStack)
-	api.HandleFunc("POST /api/v1/environments/{env}/stacks/{id}/down", s.downStack)
-	api.HandleFunc("POST /api/v1/environments/{env}/stacks/{id}/update", s.updateStackImages)
-	api.HandleFunc("GET /api/v1/environments/{env}/updates", s.listUpdates)
-	api.HandleFunc("POST /api/v1/environments/{env}/updates/check", s.checkUpdates)
-	api.HandleFunc("GET /api/v1/environments/{env}/updates/history", s.listUpdateHistory)
-	api.HandleFunc("GET /api/v1/environments/{env}/webhooks", s.listDeployHooks)
-	api.HandleFunc("POST /api/v1/environments/{env}/webhooks", s.createDeployHook)
-	api.HandleFunc("DELETE /api/v1/environments/{env}/webhooks/{id}", s.deleteDeployHook)
-	api.HandleFunc("POST /api/v1/environments/{env}/webhooks/{id}/secret", s.rotateDeployHookSecret)
-	api.HandleFunc("GET /api/v1/environments/{env}/webhooks/{id}/runs", s.listDeployHookRuns)
-	api.HandleFunc("POST /api/v1/hooks/{id}", s.triggerDeployHook)
-	api.HandleFunc("/api/", s.notFound)
+	for _, rt := range routes {
+		api.HandleFunc(rt.pattern, func(w http.ResponseWriter, r *http.Request) { rt.handler(s, w, r) })
+	}
 
 	// tokenRefused answers the session-only routes for token requests, through a mux so
 	// the audit entry gets the route and its path values.
@@ -213,6 +420,16 @@ func New(opts Options) http.Handler {
 	for pattern := range sessionOnlyRoutes {
 		s.tokenRefused.HandleFunc(pattern, s.refuseToken)
 	}
+
+	// adminOnly answers users on every other route, through a mux for the audit entry too.
+	s.adminOnly = http.NewServeMux()
+	for _, rt := range routes {
+		if !userRoutes[rt.pattern] && !publicRoutes[rt.pattern] {
+			s.adminOnly.HandleFunc(rt.pattern, s.refuseUser)
+		}
+	}
+
+	s.deployTokens = s.deployTokenRoutes()
 
 	mux := http.NewServeMux()
 	mux.Handle("/api/", s.protect(api))
@@ -226,16 +443,34 @@ type server struct {
 	auth    *auth.Service
 	envs    *environments.Service
 
+	// self, dockerHost and agentSelf find nudge's own containers (Options).
+	self       stacks.Self
+	dockerHost string
+	agentSelf  func(ctx context.Context, env environments.Environment) (stacks.Self, string, error)
+	// diskSpace is Options.DiskSpace.
+	diskSpace func(ctx context.Context, env environments.Environment) (hostdisk.Space, error)
+
 	registries     *registries.Service
 	registryClient RegistryBrowser
-	// isAdmin gates admin-only actions (Options.Admin), such as managing every user's
-	// deploy webhooks.
-	isAdmin  func(auth.User) bool
-	audit    *audit.Service
-	updates  *updates.Service
-	webhooks *notify.Service
+	audit          *audit.Service
+	updates        *updates.Service
+	webhooks       *notify.Service
 	// deployHooks are the deploy webhooks.
 	deployHooks *deployhooks.Service
+	deployments *deployments.Service
+	// deployTokens serves the requests that carry a deploy token.
+	deployTokens *http.ServeMux
+	usage        *usage.Service
+	metrics      *metrics.Service
+	activity     *metrics.Activity
+	backups      *backup.Service
+	allowances   *allowances.Service
+	// tenant is the host-side hardening of users' containers (tenant_host.go).
+	tenant TenantHosting
+	// userRegistries are the registries users' pulls may reach (pull_registry.go).
+	userRegistries registrySet
+	// deniedLabels is Options.DeniedLabels.
+	deniedLabels []string
 	// done ends at shutdown (Options.Context).
 	done context.Context
 	// events fans each environment's Docker events out to the clients watching it.
@@ -243,6 +478,10 @@ type server struct {
 
 	publicURL     string
 	secureCookies bool
+	// oidc is the SSO client, nil when SSO is off.
+	oidc            *oidc.Client
+	oidcName        string
+	noPasswordLogin bool
 
 	stacksDir    string
 	stackRunner  func(env environments.Environment) stacks.Runner
@@ -251,12 +490,18 @@ type server struct {
 	checks chan struct{}
 	// tokenRefused serves sessionOnlyRoutes to API tokens.
 	tokenRefused *http.ServeMux
+	// adminOnly serves the routes outside userRoutes to users.
+	adminOnly *http.ServeMux
 
 	mu sync.Mutex
 	// recreating holds "<env>/<container ID>" of the recreates running now.
 	recreating map[string]bool
 	// stackBusy holds stackKey of the stacks being changed or deployed now.
 	stackBusy map[string]bool
+	// after is Options.After.
+	after func(time.Duration) <-chan time.Time
+	// now is Options.Now.
+	now func() time.Time
 }
 
 // protect requires a session or an API token for every route outside publicRoutes.
@@ -281,6 +526,11 @@ func (s *server) protect(api *http.ServeMux) http.Handler {
 		return s.auth.TokenUser(r.Context(), token)
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isDeployToken(r) {
+			// Its own routes, which check the token themselves; it reaches nothing else.
+			s.serveAudited(s.deployTokens, w, r)
+			return
+		}
 		if r.Header.Get("Authorization") != "" {
 			withToken.ServeHTTP(w, r)
 			return
@@ -290,8 +540,8 @@ func (s *server) protect(api *http.ServeMux) http.Handler {
 }
 
 // authenticate serves public routes as they are and every other route only to the user
-// that lookup finds. With token set (lookup checks an API token) sessionOnlyRoutes are
-// refused.
+// that lookup finds, and to a user (not an admin) only userRoutes. With token set (lookup
+// checks an API token, which has its user's role) sessionOnlyRoutes are refused.
 func (s *server) authenticate(api *http.ServeMux, token bool, lookup func(*http.Request) (auth.User, error)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, pattern := api.Handler(r)
@@ -313,6 +563,10 @@ func (s *server) authenticate(api *http.ServeMux, token bool, lookup func(*http.
 			s.serveAudited(s.tokenRefused, w, r)
 			return
 		}
+		if !userRoutes[pattern] && !isAdmin(u) {
+			s.serveAudited(s.adminOnly, w, r)
+			return
+		}
 		s.serveAudited(api, w, r)
 	})
 }
@@ -320,6 +574,13 @@ func (s *server) authenticate(api *http.ServeMux, token bool, lookup func(*http.
 func (s *server) refuseToken(w http.ResponseWriter, _ *http.Request) {
 	s.writeError(w, http.StatusForbidden, "API tokens can't do this; sign in to the web UI")
 }
+
+func (s *server) refuseUser(w http.ResponseWriter, _ *http.Request) {
+	s.writeError(w, http.StatusForbidden, "admins only")
+}
+
+// isAdmin reports whether u may do admin-only actions.
+func isAdmin(u auth.User) bool { return u.Role == auth.RoleAdmin }
 
 type healthResponse struct {
 	Status  string `json:"status"`

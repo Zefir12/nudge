@@ -182,19 +182,32 @@ func TestReservedSubscription(t *testing.T) {
 	if _, err := h.Subscribe(1, src); !errors.Is(err, ErrTooMany) {
 		t.Errorf("subscribe over the limit: err = %v, want ErrTooMany", err)
 	}
-	r, err := h.SubscribeReserved(1, src)
+	r, err := h.SubscribeReserved(1, "notify", src)
 	if err != nil {
 		t.Fatalf("reserved subscribe with the clients at the limit: %v", err)
 	}
-	if _, err := h.SubscribeReserved(1, src); !errors.Is(err, ErrTooMany) {
+	if _, err := h.SubscribeReserved(1, "notify", src); !errors.Is(err, ErrTooMany) {
 		t.Errorf("second reserved subscribe: err = %v, want ErrTooMany", err)
 	}
+	other, err := h.SubscribeReserved(1, "activity", src)
+	if err != nil {
+		t.Fatalf("reserved subscribe of another name: %v", err)
+	}
+	if _, err := h.SubscribeReserved(1, "", src); err == nil {
+		t.Error("reserved subscribe without a name: want an error")
+	}
 	src.msgs <- msg("start")
-	if e, _ := recv(t, r); e.Action != "start" {
-		t.Errorf("reserved got %+v", e)
+	for _, s := range []*Subscription{r, other} {
+		if e, _ := recv(t, s); e.Action != "start" {
+			t.Errorf("reserved got %+v", e)
+		}
+	}
+	other.Close()
+	if _, err := h.Subscribe(1, src); !errors.Is(err, ErrTooMany) {
+		t.Errorf("subscribe over the limit after a reserved one left: err = %v, want ErrTooMany", err)
 	}
 	r.Close()
-	if _, err := h.SubscribeReserved(1, src); err != nil {
+	if _, err := h.SubscribeReserved(1, "notify", src); err != nil {
 		t.Errorf("reserved subscribe after Close: %v", err)
 	}
 }

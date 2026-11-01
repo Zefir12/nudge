@@ -1,16 +1,25 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue';
+import { computed, onUnmounted, ref, watch } from 'vue';
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router';
 
 import { logout } from './api/client';
-import EnvSwitcher from './components/EnvSwitcher.vue';
+import AppBreadcrumbs from './components/AppBreadcrumbs.vue';
+import AppSidebar from './components/AppSidebar.vue';
+import AppSpinner from './components/AppSpinner.vue';
+import BrandLogo from './components/BrandLogo.vue';
+import GearButton from './components/GearButton.vue';
+import RestartOverlay from './components/RestartOverlay.vue';
+import SelfUpdatePanel from './components/SelfUpdatePanel.vue';
+import SettingsDialog from './components/SettingsDialog.vue';
 import { lastEnvironment, rememberEnvironment } from './environments';
-import { apiError, currentUser } from './session';
+import { page, waitForServer } from './reconnect';
+import { apiError, apiErrorPath, currentUser } from './session';
 
 const route = useRoute();
 const router = useRouter();
+const settingsOpen = ref(false);
 
-// The environment links follow the open environment, or the one used last.
+// The environment part of the sidebar follows the open environment, or the one used last.
 const env = computed(() => (typeof route.params.env === 'string' ? route.params.env : lastEnvironment()));
 watch(
   () => route.params.env,
@@ -20,153 +29,150 @@ watch(
   { immediate: true },
 );
 
-const sections = [
-  { name: 'stacks', label: 'Stacks' },
-  { name: 'containers', label: 'Containers' },
-  { name: 'images', label: 'Images' },
-  { name: 'volumes', label: 'Volumes' },
-  { name: 'networks', label: 'Networks' },
-  { name: 'events', label: 'Events' },
-];
+// While the API is unreachable, poll it and load the page again once it answers: a
+// restarted server may serve a new UI.
+let reconnect: AbortController | null = null;
+watch(
+  apiError,
+  async (err) => {
+    reconnect?.abort();
+    reconnect = null;
+    if (!err) return;
+    const ctl = new AbortController();
+    reconnect = ctl;
+    if ((await waitForServer(ctl.signal)) && !ctl.signal.aborted) page.load(apiErrorPath.value || '/');
+  },
+  { immediate: true },
+);
+onUnmounted(() => reconnect?.abort());
 
 async function onLogout() {
+  let providerLogout = '';
   try {
-    await logout();
+    providerLogout = (await logout())?.logout_url ?? '';
   } finally {
     currentUser.value = null;
-    await router.replace({ name: 'login' });
+    // An SSO user is signed out at the provider too, which shows its own page.
+    if (providerLogout) window.location.assign(providerLogout);
+    else await router.replace({ name: 'login' });
   }
 }
 </script>
 
 <template>
+  <RestartOverlay />
   <div v-if="apiError" class="auth-page">
+    <BrandLogo class="auth-logo" />
     <section class="card auth-card" role="alert">
       <h1>nudge is unreachable</h1>
       <p class="error">{{ apiError }}</p>
-      <p class="muted">Check that the server is running, then reload the page.</p>
+      <p class="muted reconnecting"><AppSpinner /> Reconnecting… this page loads once the server answers.</p>
     </section>
   </div>
   <!-- Nothing until the first navigation resolves, so the guard decides the layout. -->
   <template v-else-if="route.matched.length === 0" />
   <RouterView v-else-if="route.meta.public" />
-  <div v-else class="layout">
-    <aside class="sidebar">
-      <RouterLink to="/" class="brand">nudge</RouterLink>
-      <EnvSwitcher />
-      <nav>
-        <template v-if="env">
-          <RouterLink :to="{ name: 'env', params: { env } }">Dashboard</RouterLink>
-          <!-- Active on a list and on its detail and form pages (stack, stack-new). -->
-          <RouterLink
-            v-for="s in sections"
-            :key="s.name"
-            :to="{ name: s.name, params: { env } }"
-            :class="{ active: String(route.name ?? '').startsWith(s.name.slice(0, -1)) }"
-          >
-            {{ s.label }}
-          </RouterLink>
-        </template>
-        <RouterLink v-else to="/">Dashboard</RouterLink>
-        <RouterLink to="/environments">Environments</RouterLink>
-        <RouterLink to="/registries">Registries</RouterLink>
-        <RouterLink to="/webhooks">Notifications</RouterLink>
-        <RouterLink to="/tokens">API tokens</RouterLink>
-        <RouterLink to="/audit">Audit log</RouterLink>
-      </nav>
-      <div v-if="currentUser" class="account">
-        <span class="muted">{{ currentUser.username }}</span>
-        <button type="button" @click="onLogout">Log out</button>
-      </div>
-    </aside>
-    <main class="content">
-      <RouterView />
-    </main>
+  <div v-else class="shell">
+    <header class="topbar">
+      <RouterLink to="/" class="brand"><BrandLogo /></RouterLink>
+      <AppBreadcrumbs />
+      <GearButton v-if="currentUser?.admin" class="settings" label="Settings" @click="settingsOpen = true" />
+    </header>
+    <SettingsDialog v-if="settingsOpen" title="Settings" @close="settingsOpen = false">
+      <SelfUpdatePanel />
+    </SettingsDialog>
+    <div class="layout">
+      <AppSidebar :env="env" @logout="onLogout" />
+      <main class="content">
+        <RouterView v-if="currentUser?.admin || route.meta.users" />
+        <section v-else class="card" role="alert">
+          <h1>Not allowed</h1>
+          <p class="muted">This page is for admins. Ask an admin if you need access.</p>
+        </section>
+      </main>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.layout {
-  display: grid;
-  grid-template-columns: 220px 1fr;
+.shell {
   min-height: 100vh;
 }
 
-.sidebar {
+.reconnecting {
   display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
-  padding: 1.25rem 1rem;
-  background: var(--surface);
-  border-right: 1px solid var(--border);
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  height: 56px;
+  padding: 0 1.25rem;
+  background: var(--topbar);
+  backdrop-filter: blur(10px);
+}
+
+.settings {
+  margin-left: auto;
+}
+
+/* A hairline that fades out at both ends. */
+.topbar::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent-border), transparent);
 }
 
 .brand {
-  font-size: 1.25rem;
-  font-weight: 700;
-  color: var(--accent);
-  text-decoration: none;
+  --logo-height: 2.1rem;
+
+  flex-shrink: 0;
+  width: calc(248px - 1.25rem - 1rem);
 }
 
-nav {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
+.layout {
+  display: grid;
+  grid-template-columns: 248px minmax(0, 1fr);
+  min-height: calc(100vh - 56px);
 }
 
-nav a {
-  padding: 0.5rem 0.75rem;
-  border-radius: var(--radius);
-  color: var(--text);
-  text-decoration: none;
-}
-
-nav a.router-link-exact-active,
-nav a.active {
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
-.account {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  margin-top: auto;
+.layout > :first-child {
+  position: sticky;
+  top: 56px;
+  height: calc(100vh - 56px);
+  overflow-y: auto;
 }
 
 .content {
-  padding: 1.5rem 2rem;
+  padding: 2.25rem 2.5rem 3.5rem;
 }
 
 @media (max-width: 720px) {
+  .brand {
+    width: auto;
+  }
+
   .layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
-  .sidebar {
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.75rem 1rem;
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-  }
-
-  nav {
-    flex-direction: row;
-    flex-wrap: wrap;
-    order: 3;
-    width: 100%;
-  }
-
-  .account {
-    margin-top: 0;
-    margin-left: auto;
+  .layout > :first-child {
+    position: static;
+    height: auto;
   }
 
   .content {
-    padding: 1rem;
+    padding: 1.25rem 1rem 2rem;
   }
 }
 </style>

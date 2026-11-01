@@ -37,6 +37,12 @@ func (s *server) environmentEvents(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	sc, err := s.scopeOf(r.Context())
+	if err != nil {
+		s.dockerError(w, r, env, "events", err)
+		return
+	}
+	owners := &ownerCache{log: s.log, sc: sc, c: c, owners: map[string]bool{}}
 	sub, err := s.events.Subscribe(env.ID, c)
 	if errors.Is(err, events.ErrTooMany) {
 		s.writeError(w, http.StatusServiceUnavailable, "too many event streams open for this environment")
@@ -69,7 +75,7 @@ func (s *server) environmentEvents(w http.ResponseWriter, r *http.Request) {
 				s.endEvents(ctx, ws, sub.Err())
 				return
 			}
-			if len(types) > 0 && !types[e.Type] {
+			if len(types) > 0 && !types[e.Type] || !owners.event(ctx, e.Type, e.ID, e.Attributes) {
 				continue
 			}
 			if wsjson.Write(ctx, ws, e) != nil {

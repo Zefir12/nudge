@@ -74,7 +74,7 @@ func (s *server) containerLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ictx, icancel := context.WithTimeout(r.Context(), dockerTimeout)
-	info, err := c.ContainerInspect(ictx, id, client.ContainerInspectOptions{})
+	ct, ref, err := s.ownedContainer(ictx, c, id)
 	icancel()
 	if docker.NotFound(err) {
 		s.writeError(w, http.StatusNotFound, "container not found")
@@ -85,7 +85,8 @@ func (s *server) containerLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.envs.Seen(r.Context(), &env)
-	tty := info.Container.Config != nil && info.Container.Config.Tty
+	id = ref
+	tty := ct.Config != nil && ct.Config.Tty
 
 	// Accept answers a failed upgrade itself; it refuses an Origin other than the Host,
 	// so another site can't open the stream with the user's cookie.

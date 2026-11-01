@@ -2,6 +2,7 @@ package dockertest
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -75,6 +76,18 @@ type Resources struct {
 	// answer.
 	VolumePruneReport  volume.PruneReport
 	NetworkPruneReport network.PruneReport
+	// VolumeUsage is the usage DiskUsage reports for each volume in Volumes by name; a
+	// missing one is reported as not available (-1). DiskUsageErr fails every DiskUsage
+	// call, and DiskUsageWait, if set, holds each call until it receives (or the
+	// context ends).
+	VolumeUsage   map[string]volume.UsageData
+	DiskUsageErr  error
+	DiskUsageWait chan struct{}
+	// DiskUsageTotals are the totals DiskUsage reports for the kinds asked for (no
+	// items); a zero Volumes.TotalCount is reported as len(Volumes).
+	DiskUsageTotals client.DiskUsageResult
+	// DiskUsageOpts records the options of the last DiskUsage call.
+	DiskUsageOpts client.DiskUsageOptions
 }
 
 // Action is a recorded call that changes a container, image, volume or network: its name
@@ -407,6 +420,57 @@ func (f *Fake) VolumeList(ctx context.Context, _ client.VolumeListOptions) (clie
 	return client.VolumeListResult{Items: f.Volumes}, nil
 }
 
+// DiskUsage answers with DiskUsageTotals for the kinds asked for, and Volumes and their
+// VolumeUsage when asked for volumes in detail.
+func (f *Fake) DiskUsage(ctx context.Context, opts client.DiskUsageOptions) (client.DiskUsageResult, error) {
+	f.mu.Lock()
+	f.DiskUsageOpts = opts
+	f.mu.Unlock()
+	if f.DiskUsageWait != nil {
+		select {
+		case <-f.DiskUsageWait:
+		case <-ctx.Done():
+			return client.DiskUsageResult{}, ctx.Err()
+		}
+	}
+	if err := f.resourceErr(ctx); err != nil {
+		return client.DiskUsageResult{}, err
+	}
+	if f.DiskUsageErr != nil {
+		return client.DiskUsageResult{}, f.DiskUsageErr
+	}
+	var res client.DiskUsageResult
+	t := f.DiskUsageTotals
+	if opts.Images {
+		res.Images = client.ImagesDiskUsage{ActiveCount: t.Images.ActiveCount, TotalCount: t.Images.TotalCount, Reclaimable: t.Images.Reclaimable, TotalSize: t.Images.TotalSize}
+	}
+	if opts.Containers {
+		res.Containers = client.ContainersDiskUsage{ActiveCount: t.Containers.ActiveCount, TotalCount: t.Containers.TotalCount, Reclaimable: t.Containers.Reclaimable, TotalSize: t.Containers.TotalSize}
+	}
+	if opts.BuildCache {
+		res.BuildCache = client.BuildCacheDiskUsage{ActiveCount: t.BuildCache.ActiveCount, TotalCount: t.BuildCache.TotalCount, Reclaimable: t.BuildCache.Reclaimable, TotalSize: t.BuildCache.TotalSize}
+	}
+	if !opts.Volumes {
+		return res, nil
+	}
+	res.Volumes = client.VolumesDiskUsage{ActiveCount: t.Volumes.ActiveCount, TotalCount: t.Volumes.TotalCount, Reclaimable: t.Volumes.Reclaimable, TotalSize: t.Volumes.TotalSize}
+	if res.Volumes.TotalCount == 0 {
+		res.Volumes.TotalCount = int64(len(f.Volumes))
+	}
+	if !opts.Verbose {
+		return res, nil
+	}
+	for _, v := range f.Volumes {
+		u, ok := f.VolumeUsage[v.Name]
+		if !ok {
+			u = volume.UsageData{Size: -1, RefCount: -1}
+		}
+		v.UsageData = &u
+		res.Volumes.Items = append(res.Volumes.Items, v)
+	}
+	return res, nil
+}
+
 // VolumeInspect answers with the volume in Volumes named id.
 func (f *Fake) VolumeInspect(ctx context.Context, id string, _ client.VolumeInspectOptions) (client.VolumeInspectResult, error) {
 	if err := f.resourceErr(ctx); err != nil {
@@ -421,13 +485,18 @@ func (f *Fake) VolumeInspect(ctx context.Context, id string, _ client.VolumeInsp
 }
 
 // VolumeCreate records the action (the ID is the requested name) and answers with the
-// new volume.
+// new volume or, like Docker, the one in Volumes of that name and driver as it is.
 func (f *Fake) VolumeCreate(ctx context.Context, opts client.VolumeCreateOptions) (client.VolumeCreateResult, error) {
 	if err := f.resourceErr(ctx); err != nil {
 		return client.VolumeCreateResult{}, err
 	}
 	if err := f.record("volume-create", opts.Name, opts); err != nil {
 		return client.VolumeCreateResult{}, err
+	}
+	for _, v := range f.Volumes {
+		if v.Name == opts.Name && v.Driver == cmp.Or(opts.Driver, "local") {
+			return client.VolumeCreateResult{Volume: v}, nil
+		}
 	}
 	v := volume.Volume{Name: opts.Name, Driver: opts.Driver, Labels: opts.Labels, Options: opts.DriverOpts, Scope: "local"}
 	if v.Name == "" {

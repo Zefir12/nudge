@@ -1,16 +1,28 @@
-# Agent configuration (`nudge agent`)
+# Agent configuration (`nudge-agent`)
 
 The agent runs on a remote Docker host and dials out to the server, so it needs no
-inbound port (docs/architecture.md has the design). "Add environment" in the UI prints
+inbound port (docs/architecture.md has the design). It has its own image,
+`registrydedic.zefirlabs.net/nudge-agent`, with the same tags as the server's: only the
+agent and docker-compose, none of the server's API, database or web UI. "Add environment" in the UI prints
 the command below with the server URL and a join token filled in.
 
 ```sh
 docker run -d --name nudge-agent --restart unless-stopped \
   -v /var/run/docker.sock:/var/run/docker.sock -v nudge-agent:/data \
+  -v /var/lib/docker:/host/docker:ro \
   -e NUDGE_SERVER_URL=https://nudge.example.net \
   -e NUDGE_JOIN_TOKEN=<from the UI> \
-  registrydedic.zefirlabs.net/nudge:latest agent
+  registrydedic.zefirlabs.net/nudge-agent:latest agent
 ```
+
+The server image (`nudge`) runs `nudge agent` too, and is just as valid an agent;
+`nudge-agent` is the smaller one (no API, web UI or SQLite). To switch a host between
+them, change its image and keep the same `/data` volume (the agent's credentials are in
+`agent.json` there), no new join token needed. Keep the server and the agents on the same tag; the tunnel's protocol version
+refuses an agent the server can't talk to.
+
+The `/var/lib/docker` mount gives the disk's size (docs/config/server.md, Disk usage);
+agents installed without it get it on their next self-update.
 
 It also shows the same agent as a compose file:
 [deploy/agent.compose.yml](../../deploy/agent.compose.yml) with the values filled in.
@@ -23,6 +35,7 @@ It also shows the same agent as a compose file:
 | `-insecure` | `NUDGE_INSECURE` | `false` | allow `http://` server URLs (testing only) |
 | `-log-level` | `NUDGE_LOG_LEVEL` | `info` | as for the server |
 | `-docker-host` | `DOCKER_HOST` | `unix:///var/run/docker.sock` | the Docker API the agent serves, `unix://` or `tcp://` |
+| `-docker-root` | `NUDGE_DOCKER_ROOT` | `/host/docker` | where the host's Docker root dir is mounted (read-only), so the server can show the disk's size; as for the server (docs/config/server.md, Disk usage) |
 | `-stacks-dir` | `NUDGE_STACKS_DIR` | `<data>/stacks` | the stacks the server deploys here, an absolute path; mount it at the same path on the host (see Stacks) |
 | `-compose` | `NUDGE_COMPOSE` | `/usr/local/bin/docker-compose` | docker-compose binary that deploys them (shipped in the image) |
 

@@ -17,6 +17,7 @@ import (
 	"github.com/moby/moby/client"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker/dockertest"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/metrics"
 )
 
 var statsT0 = time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
@@ -52,103 +53,6 @@ func linuxStats(sec int) container.StatsResponse {
 	return s
 }
 
-func TestToStatsSample(t *testing.T) {
-	t.Parallel()
-	want := statsSample{
-		Time: statsT0.Add(time.Second), CPUPercent: 100, MemoryUsage: 256 << 20, MemoryLimit: 1 << 30,
-		MemoryPercent: 25, NetworkRx: 1024, NetworkTx: 256, BlockRead: 8192, BlockWrite: 512, PIDs: 7,
-	}
-	tests := []struct {
-		name   string
-		in     func(s *container.StatsResponse)
-		want   func(w *statsSample)
-		wantOK bool
-	}{
-		{name: "cgroup v2", wantOK: true},
-		{
-			name: "cgroup v1 cache",
-			in: func(s *container.StatsResponse) {
-				s.MemoryStats.Stats = map[string]uint64{"total_inactive_file": 44 << 20}
-			},
-			wantOK: true,
-		},
-		{
-			name: "cache larger than usage is ignored",
-			in:   func(s *container.StatsResponse) { s.MemoryStats.Stats = map[string]uint64{"inactive_file": 400 << 20} },
-			want: func(w *statsSample) {
-				w.MemoryUsage, w.MemoryPercent = 300<<20, 300.0/1024*100
-			},
-			wantOK: true,
-		},
-		{
-			name: "online CPUs missing: counts per-CPU usage",
-			in: func(s *container.StatsResponse) {
-				s.CPUStats.OnlineCPUs = 0
-				s.CPUStats.CPUUsage.PercpuUsage = []uint64{1, 2, 3, 4}
-			},
-			want:   func(w *statsSample) { w.CPUPercent = 200 },
-			wantOK: true,
-		},
-		{
-			name:   "no memory limit",
-			in:     func(s *container.StatsResponse) { s.MemoryStats.Limit = 0 },
-			want:   func(w *statsSample) { w.MemoryLimit, w.MemoryPercent = 0, 0 },
-			wantOK: true,
-		},
-		{
-			name:   "idle",
-			in:     func(s *container.StatsResponse) { s.PreCPUStats.CPUUsage = s.CPUStats.CPUUsage },
-			want:   func(w *statsSample) { w.CPUPercent = 0 },
-			wantOK: true,
-		},
-		{
-			name: "no previous reading",
-			in:   func(s *container.StatsResponse) { s.PreCPUStats = container.CPUStats{} },
-		},
-		{
-			name: "windows",
-			in: func(s *container.StatsResponse) {
-				s.OSType, s.NumProcs = "windows", 4
-				// 1s is 1e7 units of 100ns on each of 4 processors; 2e7 used is 50%.
-				s.CPUStats = container.CPUStats{CPUUsage: container.CPUUsage{TotalUsage: 3e7}}
-				s.PreCPUStats = container.CPUStats{CPUUsage: container.CPUUsage{TotalUsage: 1e7}}
-				s.MemoryStats = container.MemoryStats{PrivateWorkingSet: 64 << 20}
-				s.BlkioStats = container.BlkioStats{}
-				s.StorageStats = container.StorageStats{ReadSizeBytes: 10, WriteSizeBytes: 20}
-			},
-			want: func(w *statsSample) {
-				w.CPUPercent, w.MemoryUsage, w.MemoryLimit, w.MemoryPercent = 50, 64<<20, 0, 0
-				w.BlockRead, w.BlockWrite = 10, 20
-			},
-			wantOK: true,
-		},
-		{
-			name: "windows without a previous reading",
-			in:   func(s *container.StatsResponse) { s.OSType, s.PreRead = "windows", time.Time{} },
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			in := linuxStats(1)
-			if tt.in != nil {
-				tt.in(&in)
-			}
-			w := want
-			if tt.want != nil {
-				tt.want(&w)
-			}
-			got, ok := toStatsSample(in)
-			if ok != tt.wantOK {
-				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
-			}
-			if ok && got != w {
-				t.Errorf("sample =\n%+v\nwant\n%+v", got, w)
-			}
-		})
-	}
-}
-
 type statsTest struct {
 	envTest
 	srv  *httptest.Server
@@ -156,6 +60,12 @@ type statsTest struct {
 }
 
 func newStatsTest(t *testing.T) statsTest {
+	t.Helper()
+	return newStatsTestOpts(t, nil)
+}
+
+// newStatsTestOpts is newStatsTest with mod changing the API's options, if not nil.
+func newStatsTestOpts(t *testing.T, mod func(*Options)) statsTest {
 	t.Helper()
 	running := &container.State{Running: true}
 	fake := &dockertest.Fake{Resources: dockertest.Resources{
@@ -181,11 +91,11 @@ func newStatsTest(t *testing.T) statsTest {
 		ContainerDetails: map[string]container.InspectResponse{"web": {State: running}},
 		StatsErr:         errors.New("daemon: secret-detail"),
 	}}
-	et := newEnvTest(t, map[string]*dockertest.Fake{
+	et := newEnvTestOpts(t, map[string]*dockertest.Fake{
 		"local":  fake,
 		"down":   {Resources: dockertest.Resources{ResourceErr: &net.OpError{Op: "dial", Err: errors.New("connection refused")}}},
 		"broken": broken,
-	})
+	}, mod)
 	srv := httptest.NewServer(et.h)
 	t.Cleanup(srv.Close)
 	return statsTest{envTest: et, srv: srv, fake: fake}
@@ -214,13 +124,13 @@ func TestContainerStatsStream(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	ws := st.dial(ctx, t, st.path("local", "/containers/web/stats"))
-	var got []statsSample
+	var got []metrics.Sample
 	for range 2 {
 		_, data, err := ws.Read(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
-		var s statsSample
+		var s metrics.Sample
 		if err := json.Unmarshal(data, &s); err != nil {
 			t.Fatal(err)
 		}
@@ -275,6 +185,8 @@ func TestContainerStatsRefused(t *testing.T) {
 		{name: "stopped", path: st.path("local", "/containers/stopped/stats"), cookie: true, code: http.StatusConflict, want: "container is not running"},
 		{name: "offline", path: st.path("down", "/containers/web/stats"), cookie: true, code: http.StatusServiceUnavailable, want: "the environment is offline"},
 		{name: "environment offline", path: st.path("down", "/stats"), cookie: true, code: http.StatusServiceUnavailable, want: "the environment is offline"},
+		{name: "summary without a sample", path: st.path("down", "/stats/summary"), cookie: true, code: http.StatusNotFound, want: "no recent usage sample"},
+		{name: "summary without session", path: st.path("local", "/stats/summary"), code: http.StatusUnauthorized, want: "authentication required"},
 		{name: "environment without session", path: st.path("local", "/stats"), code: http.StatusUnauthorized, want: "authentication required"},
 	}
 	for _, tt := range tests {
@@ -308,9 +220,9 @@ func TestEnvironmentStats(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	sample, _ := toStatsSample(linuxStats(1))
+	sample, _ := metrics.ToSample(linuxStats(1))
 	want := environmentStats{
-		Containers: []containerUsage{{ID: "aaa", Name: "db", statsSample: sample}, {ID: "bbb", Name: "web", statsSample: sample}},
+		Containers: []containerUsage{{ID: "aaa", Name: "db", Sample: sample}, {ID: "bbb", Name: "web", Sample: sample}},
 		Skipped:    1,
 		Total:      usageTotals{CPUPercent: 200, MemoryUsage: 512 << 20, NetworkRx: 2048, NetworkTx: 512, BlockRead: 16384, BlockWrite: 1024},
 	}

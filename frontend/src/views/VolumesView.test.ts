@@ -7,13 +7,15 @@ import { currentUser } from '../session';
 import { admin, stubApi, stubSockets } from '../test-utils';
 import VolumesView from './VolumesView.vue';
 
-const vol = (name: string) => ({
+const vol = (name: string, size: number | null = null, measured: string | null = null) => ({
   name,
   driver: 'local',
   mountpoint: '',
   scope: 'local',
   created_at: null,
   labels: {},
+  size,
+  size_measured_at: measured,
 });
 
 async function mountView() {
@@ -38,6 +40,56 @@ afterEach(() => {
 });
 
 describe('VolumesView', () => {
+  it('shows sizes and sorts by them', async () => {
+    const at = '2026-10-26T12:00:00Z';
+    stubApi({
+      'GET /environments/1/volumes': {
+        body: [vol('a', 10, at), vol('b', 3000, at), vol('c'), vol('d', null, at)],
+      },
+    });
+    const wrapper = await mountView();
+    const sizes = () => wrapper.findAll('td.size').map((td) => td.text());
+    expect(sizes()).toEqual(['10 B', '3.0 KB', '—', '—']);
+    const titles = wrapper.findAll('td.size').map((td) => td.attributes('title'));
+    expect(titles[2]).toBe('Not measured yet');
+    expect(titles[3]).toContain("can't report");
+
+    await button(wrapper, 'Size').trigger('click');
+    expect(wrapper.findAll('tbody tr').map((tr) => tr.find('td').text())).toEqual(['b', 'a', 'c', 'd']);
+    expect(wrapper.find('th[aria-sort]').attributes('aria-sort')).toBe('descending');
+  });
+
+  it('measures sizes now and reloads', async () => {
+    let measured = false;
+    stubApi({
+      'GET /environments/1/volumes': () => ({
+        body: [vol('a', measured ? 2048 : null, measured ? '2026-10-26T12:00:00Z' : null)],
+      }),
+      'POST /environments/1/volumes/usage': () => {
+        measured = true;
+        return { status: 204 };
+      },
+    });
+    const wrapper = await mountView();
+    await button(wrapper, 'Measure sizes').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('td.size').text()).toBe('2.0 KB');
+  });
+
+  it('shows a measurement error', async () => {
+    stubApi({
+      'GET /environments/1/volumes': { body: [vol('a')] },
+      'POST /environments/1/volumes/usage': {
+        status: 409,
+        body: { error: 'a measurement of this environment is running' },
+      },
+    });
+    const wrapper = await mountView();
+    await button(wrapper, 'Measure sizes').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('[role="alert"]').text()).toContain('running');
+  });
+
   it('prunes anonymous volumes and reloads the list', async () => {
     let volumes = [vol('data'), vol('0123abcd')];
     stubApi({

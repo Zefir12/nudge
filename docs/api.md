@@ -9,9 +9,12 @@ Auth: the `nudge_session` cookie set by login or setup, or `Authorization: Beare
 with an API token (see Tokens). When an `Authorization` header is present it alone
 decides; the cookie is ignored. Routes marked *public* need neither; every other route
 answers `401 {"error":"authentication required"}` without a valid session or token.
-Routes marked *admin* are meant to answer `403 {"error":"admins only"}` to other users,
-but nudge has no roles yet: for now "admins only" means every logged-in user (and every
-API token).
+Users have a role, `admin` or `user` (see Users). Every authenticated route is for admins
+only and answers `403 {"error":"admins only"}` to a user's session or API token, except
+the routes marked *user* below: `GET /auth/me`, logout, the user's own API tokens, the
+deployments (whose handlers check the user's role on each deployment) and, in the
+environments an admin gave them, their own containers, volumes and networks (see
+Ownership). An API token has its owner's role.
 
 Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must carry
 `Sec-Fetch-Site: same-origin`, or an `Origin` whose host matches `Host`, or neither header
@@ -25,12 +28,24 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | GET | `/api/v1/setup` | public | `{"needed":true}` while no user exists |
 | POST | `/api/v1/setup` | public | create the admin and log in; see below |
 | POST | `/api/v1/auth/login` | public | log in; see below |
-| POST | `/api/v1/auth/logout` | public | end the session and clear the cookie; `204` (a no-op for API tokens) |
-| GET | `/api/v1/auth/me` | session | the logged-in user |
-| GET | `/api/v1/tokens` | session | the user's API tokens, oldest first; see below |
-| POST | `/api/v1/tokens` | session | create an API token `{"name": "ci"}`; `201` |
-| DELETE | `/api/v1/tokens/{id}` | session | revoke one of the user's tokens; `204`, or `404` |
+| POST | `/api/v1/auth/password` | user, session only | change your own password `{"current", "new"}`; `204`, other sessions end; see Setup and login |
+| POST | `/api/v1/auth/logout` | public | end the session and clear the cookie; `204` (a no-op for API tokens), or `200 {"logout_url": "..."}` for a single sign-on user: the provider's sign-out page to visit next |
+| GET | `/api/v1/auth/me` | user | the logged-in user |
+| GET | `/api/v1/auth/methods` | public | the login page's ways to sign in; see Single sign-on |
+| GET | `/api/v1/auth/oidc/login` | public | start a single sign-on login (a browser navigation); see Single sign-on |
+| GET | `/api/v1/auth/oidc/callback` | public | the provider's redirect back; starts the session |
+| GET | `/api/v1/tokens` | user | the user's API tokens, oldest first; see below |
+| POST | `/api/v1/tokens` | user, session only | create an API token `{"name": "ci"}`; `201` |
+| DELETE | `/api/v1/tokens/{id}` | user | revoke one of the user's tokens; `204`, or `404` |
+| GET | `/api/v1/users` | admin | every user by name; see Users |
+| POST | `/api/v1/users` | admin, session only | create a local user `{"username", "password", "role"}`; `201` |
+| PATCH | `/api/v1/users/{id}` | admin, session only | change `{"role", "disabled", "password"}` (each optional); `200` with the user |
+| DELETE | `/api/v1/users/{id}` | admin | delete a user with their sessions, tokens and webhooks; `204` |
+| POST | `/api/v1/users/{id}/relink` | admin, session only | re-link SSO identity: merge `{"duplicate": <id>}` into this SSO user; `200` with the user (see Users) |
+| GET | `/api/v1/users/{id}/environments` | admin | the environments a user may use `{"environments": [1, 3]}`; see Ownership |
+| PUT | `/api/v1/users/{id}/environments` | admin | replace them `{"environments": [1, 3]}`; `200` with the stored list |
 | GET | `/api/v1/audit` | session | the audit log, newest first, paged and filtered; see Audit log |
+| POST | `/api/v1/backup` | admin, session only | download an encrypted backup of the server's data `{"passphrase"}`; see Backup |
 | GET | `/api/v1/registries` | session | registry credentials for pulls, by name; see below |
 | POST | `/api/v1/registries` | session | add registry credentials; `201` |
 | GET | `/api/v1/registries/{id}` | session | one registry, without its password |
@@ -49,21 +64,35 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | POST | `/api/v1/environments/{env}/containers` | session | create (and start) a container; `201`; see Container create and recreate |
 | GET | `/api/v1/environments/{env}/containers/{id}/spec` | session | a container's settings in the create shape |
 | POST | `/api/v1/environments/{env}/containers/{id}/recreate` | session | replace a container, optionally pulling first or with changed settings |
-| POST | `/api/v1/environments/{env}/containers/{id}/update` | session | pull the container's image and recreate it if that brought a newer one; see Image updates |
-| GET | `/api/v1/environments/{env}/containers/{id}/logs` | session | WebSocket: a container's logs, one JSON frame per line; see Container logs |
-| GET | `/api/v1/environments/{env}/containers/{id}/stats` | session | WebSocket: a running container's usage, a sample about every second; see Stats |
-| GET | `/api/v1/environments/{env}/containers/{id}/exec` | session | WebSocket: a command with a terminal in a running container (audited); see Container exec |
-| GET | `/api/v1/environments/{env}/stats` | session | one usage sample of every running container, with totals; see Stats |
-| GET | `/api/v1/environments/{env}/events` | session | WebSocket: the environment's Docker events as they happen; see Events |
+| POST | `/api/v1/environments/{env}/user-containers` | user | create (and start) a container from a tenant spec; `201`; see User containers |
+| GET | `/api/v1/environments/{env}/user-containers/{id}/spec` | user | an owned container's settings as a tenant spec |
+| POST | `/api/v1/environments/{env}/user-containers/{id}/recreate` | user | pull the spec's image and replace an owned container with one built from the spec |
+| POST | `/api/v1/environments/{env}/containers/{id}/update` | user | pull the container's image and recreate it if that brought a newer one; see Image updates |
+| GET | `/api/v1/environments/{env}/containers/{id}/logs` | user | WebSocket: a container's logs, one JSON frame per line; see Container logs |
+| GET | `/api/v1/environments/{env}/containers/{id}/stats` | user | WebSocket: a running container's usage, a sample about every second; see Stats |
+| GET | `/api/v1/environments/{env}/containers/{id}/exec` | user | WebSocket: a command with a terminal in a running container (audited); see Container exec |
+| GET | `/api/v1/environments/{env}/stats` | user | one usage sample of every running container, with totals; see Stats |
+| GET | `/api/v1/environments/{env}/stats/summary` | user | the environment's CPU and memory totals from the latest collection; see Stats |
+| GET | `/api/v1/environments/{env}/metrics` | user | the environment's usage history (a user's: of their containers); see Metrics |
+| GET | `/api/v1/environments/{env}/containers/{id}/metrics` | user | one container's usage history; see Metrics |
+| GET | `/api/v1/environments/{env}/metrics/live` | user | WebSocket: the environment's usage as each sample is taken (a user's: of their containers); see Metrics |
+| GET | `/api/v1/environments/{env}/activity` | user | container events per hour for the last days (a user's: of their containers); see Activity |
+| GET | `/api/v1/environments/{env}/allowance` | user | a user's allowance with what they use and what is left (admin: `?user=`); see Allowances |
+| PUT | `/api/v1/environments/{env}/allowance?user={id}` | session | set a user's allowance in the environment; see Allowances |
+| DELETE | `/api/v1/environments/{env}/allowance?user={id}` | session | remove it; `204`, `404` if there was none |
+| GET | `/api/v1/environments/{env}/events` | user | WebSocket: the environment's Docker events as they happen; see Events |
 | POST | `/api/v1/environments/{env}/images/pull` | session | pull `{"image": "nginx:1.29"}`, progress as JSON lines; see Image actions |
 | POST | `/api/v1/environments/{env}/images/prune` | session | remove untagged images, or with `?all=true` every unused one |
 | DELETE | `/api/v1/environments/{env}/images/{id}` | session | remove an image or tag (`?force=true`); `204` |
-| POST | `/api/v1/environments/{env}/volumes` | session | create a volume; `201`; see Volume and network actions |
+| POST | `/api/v1/environments/{env}/volumes` | user | create a volume; `201`; see Volume and network actions (users: Ownership) |
 | POST | `/api/v1/environments/{env}/volumes/prune` | session | remove unused anonymous volumes, or with `?all=true` named ones too |
-| DELETE | `/api/v1/environments/{env}/volumes/{name}` | session | remove a volume (`?force=true`); `204` |
-| POST | `/api/v1/environments/{env}/networks` | session | create a network; `201` |
+| POST | `/api/v1/environments/{env}/volumes/usage` | session | measure the volume sizes now; `204` once stored |
+| GET | `/api/v1/environments/{env}/disk` | session | Docker's disk usage by kind and the disk's size; see Disk usage |
+| POST | `/api/v1/environments/{env}/disk` | session | measure the disk usage now (at most once a minute); `204` once stored |
+| DELETE | `/api/v1/environments/{env}/volumes/{name}` | user | remove a volume (`?force=true`); `204` |
+| POST | `/api/v1/environments/{env}/networks` | user | create a network; `201` (users: Ownership) |
 | POST | `/api/v1/environments/{env}/networks/prune` | session | remove custom networks no container uses |
-| DELETE | `/api/v1/environments/{env}/networks/{id}` | session | remove a network by ID or name; `204` |
+| DELETE | `/api/v1/environments/{env}/networks/{id}` | user | remove a network by ID or name; `204` |
 | POST | `/api/v1/stacks/check` | session | compose's errors for stack files `{"compose", "env"}` (writes nothing); see Stacks |
 | GET | `/api/v1/environments/{env}/stacks` | session | the environment's compose stacks with container counts; see Stacks |
 | POST | `/api/v1/environments/{env}/stacks` | session | create a stack `{"name", "compose", "env"}` (not deployed); `201` |
@@ -76,29 +105,74 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | GET | `/api/v1/environments/{env}/updates` | session | the last image update check; see Image updates |
 | POST | `/api/v1/environments/{env}/updates/check` | session | check the environment's images now |
 | GET | `/api/v1/environments/{env}/updates/history` | session | updates made through nudge, with the image each replaced |
+| GET | `/api/v1/system/update` | admin | the server's version and update state; see Self-update |
+| POST | `/api/v1/system/update/check` | admin | check the server's image now |
+| POST | `/api/v1/system/update` | admin | update the server to the newest image of its tag |
+| GET | `/api/v1/environments/{env}/agent/update` | admin | the agent's version and update state |
+| POST | `/api/v1/environments/{env}/agent/update/check` | admin | check the agent's image now |
+| POST | `/api/v1/environments/{env}/agent/update` | admin | update the agent to the newest image of its tag |
 | GET | `/api/v1/environments/{env}/webhooks` | session | the deploy webhooks the user may see (`?container=` / `?stack=` name); see Webhooks |
-| POST | `/api/v1/environments/{env}/webhooks` | session | create a deploy webhook `{"name", "container" or "stack", "tag_filter"}`; `201` with its secret |
+| POST | `/api/v1/environments/{env}/webhooks` | session only | create a deploy webhook `{"name", "container" or "stack", "tag_filter"}`; `201` with its secret |
 | DELETE | `/api/v1/environments/{env}/webhooks/{id}` | session | delete a deploy webhook and its runs; `204` |
-| POST | `/api/v1/environments/{env}/webhooks/{id}/secret` | session | new secret for a deploy webhook; the old one stops working at once |
+| POST | `/api/v1/environments/{env}/webhooks/{id}/secret` | session only | new secret for a deploy webhook; the old one stops working at once |
 | GET | `/api/v1/environments/{env}/webhooks/{id}/runs` | session | a deploy webhook's runs, newest first |
 | POST | `/api/v1/hooks/{id}` | public (webhook secret) | trigger a deploy webhook: pull and redeploy its target; see Webhooks |
+| GET | `/api/v1/deployments` | session | the deployments you may view (`?environment=` narrows), by name; see Deployments |
+| POST | `/api/v1/deployments` | admin | create a deployment on a stack; `201`, you become its owner |
+| GET | `/api/v1/deployments/{name}` | session | one deployment, with your `role` and what you `can` do |
+| PATCH | `/api/v1/deployments/{name}` | session | change `description`, `variables` or `health` (maintainer) |
+| DELETE | `/api/v1/deployments/{name}` | session | delete a deployment with its tokens and runs (owner); the stack stays; `204` |
+| GET | `/api/v1/deployments/{name}/members` | session | members and their roles |
+| POST | `/api/v1/deployments/{name}/members` | session | `{"username", "role"}` adds a member or changes their role (owner) |
+| DELETE | `/api/v1/deployments/{name}/members/{user}` | session | remove a member by user id (owner); `204` |
+| GET | `/api/v1/deployments/{name}/tokens` | session | deploy tokens, without their values (maintainer) |
+| POST | `/api/v1/deployments/{name}/tokens` | session only | create a deploy token `{"name", "scopes", "expires_at"}`; `201` with its value, shown once |
+| DELETE | `/api/v1/deployments/{name}/tokens/{id}` | session | revoke a deploy token; `204` |
+| POST | `/api/v1/deployments/{name}/deploys` | session or deploy token (`deploy`) | queue a run `{"variables": {...}}`; `?wait=1` waits for it, `?stream=1` streams its progress; see Deployments |
+| GET | `/api/v1/deployments/{name}/deploys` | session or deploy token (`runs:read`) | runs, newest first (the last 100) |
+| GET | `/api/v1/deployments/{name}/deploys/{run}` | session or deploy token (`runs:read`) | one run |
 
 "session" means a session cookie or an API token.
 
 Add a row (and a section below, for anything non-trivial) with every new endpoint.
 
+### Single sign-on
+With an OpenID Connect provider configured (docs/config/server.md, Single sign-on):
+
+- `GET /api/v1/auth/methods` answers `{"password": true, "oidc": {"name": "Authestra"}}`;
+  `oidc` is `null` without single sign-on, `password` is false with
+  `NUDGE_PASSWORD_LOGIN=false`.
+- `GET /api/v1/auth/oidc/login?redirect=/path` sets a binding cookie `nudge_oidc`
+  (`HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/api/v1/auth/oidc`, 10 minutes) and
+  answers `302` to the provider. `redirect` must be a path on this site, else `/`.
+- `GET /api/v1/auth/oidc/callback?state=...&code=...` needs the state (one use, 10
+  minutes) and the binding cookie of the browser that started the login. Success sets the
+  session cookie and answers `302` to the saved path. A failure answers `302` to
+  `/login?error=sso`; a valid sign-in without the admin or user role (or without `mfa` in `amr`
+  when MFA is required) answers a `403` page. Both are audited as
+  `GET /api/v1/auth/oidc/callback` with the subject as target. A sign-in refused for having
+  no role also ends every session and deletes every API token of that SSO user (if they
+  signed in before); its audit entry names the nudge user and says how many were revoked.
+  Every attempt counts against the per-IP login limit until it succeeds.
+- The session cookie stays `SameSite=Strict`: the callback's redirect follows the
+  provider's cross-site navigation, so the cookie isn't sent with that one request, but it
+  loads only the web UI, whose own API calls are same-site.
+- `POST /api/v1/setup` answers `403`, and `GET /api/v1/setup` always `{"needed":false}`.
+- Without single sign-on both `oidc` routes are `404`.
+
 ### Setup and login
 `POST /api/v1/setup` and `POST /api/v1/auth/login` take
 `{"username": "admin", "password": "..."}` and answer with the user
-`{"id": 1, "username": "admin", "created_at": "2026-10-24T12:00:00Z", "admin": true}`
+`{"id": 1, "username": "admin", "created_at": "2026-10-24T12:00:00Z", "role": "admin", "admin": true, "sso": false}`
 (`201` for setup,
 `200` for login) plus the session cookie: `HttpOnly`, `SameSite=Strict`, `Path=/`,
 `Secure` when nudge serves TLS or `NUDGE_PUBLIC_URL` is `https://`, else when the request
 came over HTTPS (or with `X-Forwarded-Proto: https` from a trusted proxy,
 `NUDGE_TRUSTED_PROXIES`),
 valid for 7 days. `GET /api/v1/auth/me` returns the same user object. `admin` says
-whether the user may use the *admin* routes (true for every user until nudge has roles);
-the web UI hides admin-only actions when it is false.
+whether the user may use the admin routes (`role` is `admin`); the web UI hides
+admin-only pages and actions when it is false. `sso` says the user signs in through
+single sign-on and has no password in nudge. Setup creates an admin.
 
 - Setup works only while no user exists, else `409`. The username is 1 to 64 bytes
   without control characters or surrounding spaces; the password at least 8 characters
@@ -114,6 +188,15 @@ the web UI hides admin-only actions when it is false.
   the proxy's IP.
 - When too many logins wait for a password check, login answers `503` with
   `Retry-After: 1`.
+
+`POST /api/v1/auth/password` with `{"current": "...", "new": "..."}` changes the
+signed-in user's own password and answers `204`. It ends the user's other sessions; the one
+that asked stays, and API tokens keep working. Session only: an API token gets `403`, so a
+leaked token can't take over the account. A wrong current password is
+`403 {"error":"the current password is wrong"}` and counts toward the failed-login limits
+above (`429` once they are reached); a new password that breaks the rules above, or an
+SSO user (no password in nudge), is `400`; `409` if an admin reset the password while it
+was checked. Audited without the passwords.
 
 ### Tokens
 `POST /api/v1/tokens` with `{"name": "ci"}` answers `201` with
@@ -133,13 +216,57 @@ nudge stores its SHA-256 hash. `GET /api/v1/tokens` lists the same objects witho
 - `last_used_at` is updated at most once a minute.
 - Deleting a user deletes their tokens.
 
+### Users
+`GET /api/v1/users` lists
+`{"id": 2, "username": "bob", "role": "user", "disabled": false, "sso": false,
+"display_name": "", "email": "", "created_at": "..."}` by username.
+
+- `POST /api/v1/users` creates a local user with a password (the rules of setup) and a
+  role, `admin` or `user`; a taken name is `409`.
+- `PATCH /api/v1/users/{id}` changes the given fields only. Disabling ends the user's
+  sessions; their API tokens, deploy tokens and deploy webhooks stop working until they
+  are enabled again, and they can't log in (`401`, as for a wrong password). A password
+  reset ends their sessions too.
+- SSO users get their role from the provider on every login: changing it, or setting a
+  password, is `400`; they can be disabled (their next login gets a 403 page).
+- With password login off (`NUDGE_PASSWORD_LOGIN=false`) the local break-glass `admin`
+  can't be demoted, disabled or deleted either (`409`); its password can be reset.
+- The last enabled admin can't be demoted, disabled or deleted: `409`. Concurrent changes
+  can't get around this (each change checks it in the statement that writes).
+- Creating a user and changing one are session-only, as a password is a credential.
+  So are the other routes that mint a credential: creating an agent environment or a join
+  token, creating a deploy webhook or rotating its secret, and creating a deploy token.
+- `DELETE /api/v1/users/{id}` removes the user and everything they own: sessions, API
+  tokens, deploy tokens, deploy webhooks and deployment memberships.
+- `POST /api/v1/users/{id}/relink` `{"duplicate": 7}` re-links an SSO identity: when
+  the provider's issuer or subject changed (a new provider), the next login created a
+  duplicate (`name-2`). In one transaction the duplicate is deleted (its sessions end,
+  so an admin signed in as the duplicate logs in again) and `{id}` takes its issuer,
+  subject, display name, email and role; `{id}` keeps its name, disabled flag and
+  everything it owns. The admin picks both users; nudge never matches them by email.
+  - Both must be SSO users and different (else `400`; an unknown `{id}` is `404`, an
+    unknown duplicate `400`).
+  - Nothing the duplicate owns is moved: a duplicate with API tokens, environment
+    access, allowances, pulled images, deployment memberships, deploy tokens or deploy
+    webhooks is `409` naming them; remove them first. (Containers, volumes and networks
+    carry their creator's owner key and can't be moved; a user only creates them while it
+    has environment access.)
+  - A merge that leaves no enabled admin is `409`.
+  - Session-only: it decides whose login signs in as the user. Audited with the target
+    `<duplicate> into <user>`.
+- Every change is in the audit log with the username as the target.
+
 ### Environments
 An environment is a Docker host; `{env}` in paths is its numeric `id`.
 `GET /api/v1/environments` answers
 `[{"id": 1, "name": "local", "kind": "local", "online": true, "created_at": "...", "last_seen_at": "..."}]`.
 `kind` is `local` (the server's own Docker socket) or `agent` (a remote host running
 `nudge agent`). Agent environments also carry `"agent": {"enrolled": true, "version":
-"..."}`: whether an agent holds credentials, and the version it reported. `online` comes
+"..."}`: whether an agent holds credentials, and the version it reported. While its tunnel
+is up, `agent` also has `address` (the IP the tunnel came from; behind
+`NUDGE_TRUSTED_PROXIES` the forwarded client IP; answered to admins only) and `rtt_ms`
+(round trip of the last yamux ping, taken at connect and every 30 s, in ms to 0.1; kept
+in memory only, absent until the first ping answers). `online` comes
 from pinging each host (3 s timeout) during the request; `last_seen_at` is the last time
 the host answered (updated at most once a minute, `null` if it never did).
 
@@ -152,11 +279,163 @@ the host answered (updated at most once a minute, `null` if it never did).
 (`mem_total` in bytes). Only these fields are passed on; Docker's proxy and registry
 settings are not.
 
+### User containers
+Users create and change containers only through a tenant spec, which the server turns into
+Docker's settings itself (api/tenant.go). Admins may use these routes too; the admin spec
+above stays admin-only.
+
+```json
+{"image": "nginx:1.29", "name": "web", "command": [], "entrypoint": [], "env": ["MODE=prod"],
+ "cpus_milli": 500, "memory_bytes": 268435456,
+ "ports": [{"host_port": 0, "container_port": 80, "protocol": "tcp"}],
+ "mounts": [{"volume": "u3-data", "target": "/data", "read_only": false}],
+ "networks": ["u3-front"], "restart_policy": "unless-stopped",
+ "healthcheck": {"command": ["/bin/check"], "interval_seconds": 30, "timeout_seconds": 5,
+                 "start_period_seconds": 10, "retries": 3},
+ "labels": {"app": "web"}}
+```
+
+- The JSON is decoded strictly: any other field (`privileged`, `cap_add`, `binds`,
+  `network_mode`, `pid`, `devices`, `security_opt`, `runtime`, `cgroup_parent`,
+  `volumes_from`, a mount's `type`, …) is `400 unknown field "…"`. Invalid values are `400`
+  with a message per field, like the admin spec.
+- `image` is a reference, never an image ID. `name` is required on create and gets the
+  user's `u<id>-` prefix; on a recreate an empty one keeps the name. `cpus_milli` (at most
+  1000000) and `memory_bytes` (6 MiB to 1 TiB) are required. At most 64 ports, mounts,
+  networks and labels and 256 environment entries; labels in Docker's `com.docker.`
+  namespace (compose projects) are refused like nudge's own, and so are labels starting
+  with a prefix of `NUDGE_TENANT_DENIED_LABELS` (reverse proxies, updaters; see
+  docs/config/server.md), also when the image sets them (400). `host_port` 0 takes the lowest free port of
+  the user's range. `mounts` name the user's own volumes; `networks` the user's own
+  networks by name (empty: their default network). `healthcheck` runs its command in exec
+  form; null keeps the image's.
+- The server sets, and nobody can change: capabilities Docker's default without
+  `NET_RAW`, `no-new-privileges`, 512 processes, the `json-file` log driver with
+  `max-size` 10m and `max-file` 3, an init process, a private IPC namespace, swap no larger
+  than the memory limit, no binds, no devices, the default seccomp and AppArmor profiles,
+  and the owner label. With the server's tenant settings (docs/config/server.md, "Hosting
+  other users") also the user's cgroup parent, the sandboxed runtime and a disk cap on
+  the writable layer (where the storage driver supports it).
+- With a runtime configured, a daemon that doesn't list it is `409` on create, recreate
+  and update. Starting or restarting a user's container is `409` when the daemon lacks
+  the runtime, or the container wasn't made with the current tenant settings (its runtime,
+  cgroup parent or, where the storage driver can set one, disk cap differ): recreate it.
+- The image is always pulled first, without any stored registry credentials (so only
+  public images), and must fit the allowance (its image patterns and disk). An image that
+  sets a label in the `net.zefirlabs.nudge.` namespace is refused, and so is one with a
+  `VOLUME` no mount covers (`fields.mounts` names the paths): Docker would make an
+  anonymous volume nobody owns. An image from a registry outside the server's
+  `NUDGE_USER_REGISTRIES` is `403` and never pulled (docs/config/server.md, "Registries
+  users can pull from"); this holds for every user's pull, also updates and deploy webhooks.
+- Someone else's volume or network is `400` on its field; going over the allowance or
+  outside the port range is `409`.
+- `POST .../user-containers` with a spec plus `"start": true` answers `201` with
+  `{"id", "warnings"}`. `POST .../user-containers/{id}/recreate` with a spec pulls, then
+  replaces the container like the admin recreate (stop, rename aside, create, start,
+  remove; rolled back on failure) and answers `200`.
+- A user's container is always rebuilt by the builder, whatever the path: an image update
+  (`.../containers/{id}/update`, deploy webhooks) and an admin recreate without a spec read
+  its settings back as a tenant spec and build it again. An admin recreate with the admin
+  spec is `409` for a user's container. The tenant spec and recreate routes answer `409` for an admin's
+  container (the builder would drop its binds, capabilities and devices), and an update
+  of a user's container whose old image is gone is `409` (recreate it with its spec).
+
+### Ownership
+Users (role `user`) reach only what is theirs; admins reach everything.
+
+- **Environments.** An admin chooses the environments each user may use
+  (`PUT /api/v1/users/{id}/environments` with every id; an unknown id is `400` and
+  changes nothing; the Users page has an Environments form). `GET /api/v1/environments`
+  lists only those to the user, and every route under any other environment is `404
+  environment not found`. Deleting an environment or the user removes the grant.
+- **Owner label.** A container, volume or network a user creates carries the label
+  `net.zefirlabs.nudge.owner=<owner key>`, set by the server. The owner key is random per
+  user (not the user id, which SQLite can hand to a later user). Objects without it
+  (created by an admin, by a stack or outside nudge) are the admins'. Labels starting
+  with `net.zefirlabs.nudge.` are reserved: a create that sets one is `400` (for
+  containers a field error on `labels`). The container spec leaves them out, and a
+  recreate keeps the old container's.
+- **What a user reaches**, marked *user* in the table: the container, volume and network
+  lists, details and removal, container start/stop/restart/kill, update, logs, stats and
+  exec, the environment's stats, summary and events, and the environment's details. Lists
+  hold only their objects; another user's or an admin's object is `404 ... not found`,
+  as if it did not exist. A container counts as theirs only if its image sets no owner
+  label (Docker copies an image's labels onto its containers, so an image could otherwise
+  hand a user a container an admin runs from it). Creating containers, recreating,
+  images, stacks, prunes, updates checks and webhooks stay with admins for now. Their own allowance
+  (see Allowances) is open to them too.
+- **Networks and volumes.** Giving a user an environment creates their default bridge
+  network `nudge-u-<user id>` there (best effort: an offline environment, or a network of
+  that name they don't own, is logged and the access is kept). Users create more through
+  the usual create routes, with limits: networks are `bridge` only, without `options`,
+  `subnet`/`gateway`/`ip_range` (Docker picks the subnet), `ipv6` or `attachable`, and
+  at most 8 per environment, the default one included (each takes a subnet from the
+  daemon's pools; `409` past it). The server names the Linux bridge of every user's
+  network `nudge` and ten hex digits (driver option `com.docker.network.bridge.name`) so
+  the host's firewall can match users' traffic (docs/config/server.md, "Network");
+  volumes are `local` only, without `options` (`o=bind` with `device=` would mount a host
+  path). `name` is required, and the server prefixes it with `u<user id>-`, so `{"name":
+  "data"}` from user 7 creates `u7-data` (the prefixed name is what the lists, details and
+  removal use). A refused field is `400` before Docker is asked; a volume of that name
+  someone else owns (a deleted user's leftover, user ids can come back) is `409`, never
+  handed over. Removing a user removes none of their objects; an admin sees what's left.
+- **Totals.** For a user, `GET /api/v1/environments/{env}` counts only their containers
+  (`images` is `0`, `name` and `docker_root_dir` are empty), the stats overview and
+  summary add up only their containers, and a network's detail lists only their
+  containers attached to it.
+- **Events.** A user's event stream has only the events of their own containers: no
+  volume, network, image or daemon events (they carry no owner), and none of a container
+  that was already gone when the stream first saw it.
+
+### Allowances
+An admin gives each user (role `user`) an allowance per environment: what all their
+containers there may take together. Admins and their containers have none.
+
+`PUT /api/v1/environments/{env}/allowance?user={id}` takes and answers
+`{"cpus_milli": 1000, "memory_bytes": 8589934592, "disk_bytes": 21474836480,
+"max_containers": 5, "port_min": 8000, "port_max": 8009, "images": []}` (the answer adds
+`updated_at`). Every field is required and not negative; `port_min`..`port_max` are the
+host ports the user may publish (both `0`: none). `images` are patterns (`path.Match`
+syntax) of the images they may run, matched against the reference or its repository
+(`nginx` allows `nginx:1.29`, `ghcr.io/me/*` everything under it); empty allows any. An
+invalid allowance is `400` with `fields` (`port_max`, `images.0`), an admin as the user is
+`400 admins have no allowance`.
+
+`GET /api/v1/environments/{env}/allowance` answers a user's own (an admin passes
+`?user=`; a user asking for someone else is `403`): `{"user": 2, "limits": {...} | null,
+"used": {"cpus_milli", "memory_bytes", "disk_bytes", "containers"}, "left": {...} | null}`.
+It asks the environment's Docker host, so an offline one answers like any Docker call.
+
+**The check.** Before a user's container is created, recreated, updated (the API or a
+deploy webhook), started or restarted, nudge adds up the CPU and memory limits of all
+their containers in the environment, running or not (a stopped container can start), and
+refuses with `409 over your allowance: ...` if the new total is over:
+- Without an allowance a user's container can't be created or started (`409 you have no
+  allowance in this environment`).
+- The container needs a CPU and a memory limit; an existing one without counts as the
+  whole allowance. A recreate leaves the old container out, so a bigger limit counts as
+  the difference.
+- The container count includes it.
+- A user's container can't run an image that sets a `net.zefirlabs.nudge.` label (`400`):
+  it would make the container the admins' and escape every later check.
+- Host ports must be in the range; a binding without a host port gets the lowest one in
+  the range that no container uses.
+- Disk: the writable layers of their containers, the volumes they own or their containers
+  mount (anonymous ones from an image's `VOLUME` too; sizes from the last volume
+  measurement) and the images their pulls brought. Once that reaches the allowance, creates,
+  recreates and pulls are refused (a start is not). An image a user's pull brings counts
+  toward their disk (an image already on the host does not); if it takes them over it is
+  removed again and the change refused. A user's pulls run one at a time.
+  After an update, the image the container ran before is removed if their pull brought it
+  and nothing else uses it. Disk is not enforced by the kernel (yet).
+- Checks of one user in one environment run one at a time, through the create or start
+  they allow, so two parallel creates can't both fit in what is left for one.
+
 ### Agent environments
 - `POST /api/v1/environments` `{"name": "nas", "kind": "agent"}` creates an agent
   environment (`kind` must be `agent`: the local one is created automatically) and answers
   `201` with the environment plus its join token:
-  `"join_token": {"token": "nudge_join_…", "expires_at": "...", "docker_run": "docker run -d … nudge:latest agent", "compose": "services:\n  nudge-agent: …"}`.
+  `"join_token": {"token": "nudge_join_…", "expires_at": "...", "docker_run": "docker run -d … nudge-agent:latest agent", "compose": "services:\n  nudge-agent: …"}`.
   `docker_run` starts the agent on the remote host, and `compose` is the same agent as a
   compose file (deploy/agent.compose.yml with the values filled in, quoted and with `$`
   escaped). In both, `NUDGE_SERVER_URL` is
@@ -166,9 +445,17 @@ settings are not.
 - `POST /api/v1/environments/{env}/join-tokens` replaces the environment's join token
   (`201`, same object as `join_token`), for an agent that never enrolled or lost its
   credentials. Existing credentials keep working until a new agent enrolls.
+- Creating an agent environment and creating a join token are session-only: an API token
+  gets `403`, since an agent enrolled with the join token keeps its credentials after the
+  API token is revoked.
 - `DELETE /api/v1/environments/{env}/credentials` revokes the agent: deletes its
   credentials and any pending join token (`204`). The environment stays.
   Both answer `409` for a non-agent environment.
+- `DELETE /api/v1/environments/{env}`, admins only (`403` otherwise), removes an agent
+  environment from nudge (`204`): its agent is disconnected and its credentials, join
+  token, stack files, deploy webhooks and update results are deleted. Nothing on the
+  host changes; its containers keep running. `409` for the local environment or while a
+  stack change runs there.
 - `POST /api/v1/agents/enroll` `{"join_token": "nudge_join_…"}`, public (the join token is
   the credential), answers `201` `{"environment_id": 2, "agent_id": "agt_…", "agent_secret":
   "nudge_agent_…"}` and replaces any credentials the environment had. The secret is shown
@@ -226,8 +513,11 @@ doesn't exist, answers `404` `{"error": "container not found"}` (or `image`, `vo
   "cmd", "entrypoint", "working_dir", "exposed_ports", "volumes", "labels"}, "layers"}`.
 - `GET /api/v1/environments/{env}/volumes` and `/volumes/{name}`, sorted by name:
   `{"name": "data", "driver": "local", "mountpoint": "/var/lib/docker/volumes/data/_data",
-  "scope": "local", "created_at": "...", "labels": {}}`. Driver options are left out:
-  CIFS and NFS volumes keep their mount credentials there.
+  "scope": "local", "created_at": "...", "labels": {}, "size": 4096, "size_measured_at":
+  "..."}`. Driver options are left out: CIFS and NFS volumes keep their mount credentials
+  there. `size` (bytes) is the last background measurement (`-usage-interval`): `null`
+  with a null `size_measured_at` before the first one, `null` with a time when the driver
+  can't report sizes. Volumes created since are not measured yet.
 - `GET /api/v1/environments/{env}/networks`, sorted by name: `{"id", "name", "driver",
   "scope", "created_at", "internal", "attachable", "ingress", "ipam": [{"subnet":
   "172.18.0.0/16", "ip_range": "", "gateway": "172.18.0.1"}], "labels"}`.
@@ -359,6 +649,103 @@ when the container stopped or `{"error": "..."}`.
 reading) and samples 8 containers at a time, for at most a minute; a container that stops
 meanwhile, or isn't sampled in time, is left out and counted in `skipped`.
 
+`GET /api/v1/environments/{env}/stats/summary` answers `{"sampled_at": "...", "cpu_percent":
+200, "memory_usage": 536870912, "containers": 2, "host": {"cpu_percent": 23.5,
+"memory_usage": 3221225472, "memory_total": 8589934592}}`: the totals of the metrics
+collector's latest tick (see Metrics) and how many containers it sampled; for a user, of
+their own containers. `host` is the whole machine's load at that tick, for an admin only:
+CPU as a percentage of every CPU (0-100, unlike the containers' percentage of one CPU),
+memory in use (MemTotal minus MemAvailable) and all of it, read from /proc on the server
+for the local environment and from the agent otherwise. It is left out when it can't be
+told: an agent from before it, or the first tick after the server started. It reads the database only, so it is cheap to ask for often (the global
+dashboard asks for every environment's). `404` `no recent usage sample` when there is
+none from the last three collection intervals: collection is off, it hasn't run yet, or
+the environment is offline.
+
+### Metrics
+The server collects every environment's usage in the background (`-metrics-interval`,
+every minute by default; docs/config/server.md) into `<data>/metrics.db`: one sample of
+every running container per tick, and the environment's totals. Raw samples are kept for
+48 hours, hourly rollups (average and maximum) for `-metrics-retention` (30 days).
+
+`GET /api/v1/environments/{env}/metrics?since=24h&resolution=15m` answers the
+environment's history: of every container for an admin, the sum of their own containers
+for a user (a tick where they ran nothing has no point). `GET
+/api/v1/environments/{env}/containers/{id}/metrics` answers one container's; the container
+must exist and, for a user, be theirs (`404` otherwise, `503` when the environment is
+offline). Parameters:
+
+- `since`: a duration back (`24h`, `90m`) or an RFC 3339 time; default `24h`, clamped to
+  the retention.
+- `resolution`: the bucket size, a duration of at least `1s` (`15m`); default the
+  collection interval for raw samples, an hour for rollups.
+
+Raw samples answer while `since` is within 48 hours and the resolution is under an hour;
+otherwise the hourly rollups do, in whole hours. A finer resolution than 3000 buckets
+over the span is coarsened. `400` for an unreadable `since` or `resolution`. The answer:
+
+```json
+{"source": "raw", "step": 900, "points": [{"time": "2026-10-27T11:45:00Z",
+  "cpu_percent": 12.5, "cpu_max": 30.1, "memory_usage": 268435456, "memory_max": 301989888,
+  "network_rx": 1024, "network_tx": 256, "block_read": 8192, "block_write": 512,
+  "host": {"cpu_percent": 23.5, "memory_usage": 3221225472, "memory_total": 8589934592}}]}
+```
+
+`source` is `raw` or `hourly`, `step` the bucket size in seconds; points are oldest first,
+each `time` the start of its bucket. CPU (a percentage of one CPU) and memory are averaged
+over the bucket and at their maximum (`cpu_max`, `memory_max`; for a user's rollups the
+sum of their containers' maximums, an upper bound). Network and block I/O are byte
+counters since each container started, at their largest in the bucket. `host` (an
+admin's environment history only, as in the summary) is the whole machine's load averaged
+over the samples in the bucket that had it, the memory total at its largest; left out of
+a bucket with none.
+
+`GET /api/v1/environments/{env}/metrics/live` upgrades to a WebSocket like the event
+stream (same auth, keep-alive pings) and sends a frame per sample of the environment:
+every container for an admin, their own for a user. While at least one client watches,
+the environment is sampled every `-metrics-live-interval` (5 s) instead of every
+`-metrics-interval`; those extra samples are only streamed, not stored, so the history
+keeps its cadence. The latest sample, if it is recent, comes at once. A frame is the
+environment overview's shape with the sample's time, containers sorted by name:
+
+```json
+{"time": "2026-10-27T12:00:05Z", "containers": [{"id": "3f2a…", "name": "web",
+  "time": "2026-10-27T12:00:04Z", "cpu_percent": 12.5, "memory_usage": 268435456,
+  "memory_limit": 1073741824, "memory_percent": 25, "network_rx": 1024, "network_tx": 256,
+  "block_read": 8192, "block_write": 512, "pids": 7}], "skipped": 0,
+  "total": {"cpu_percent": 12.5, "memory_usage": 268435456, "network_rx": 1024,
+  "network_tx": 256, "block_read": 8192, "block_write": 512},
+  "host": {"cpu_percent": 23.5, "memory_usage": 3221225472, "memory_total": 8589934592}}
+```
+
+`host` is as in the summary: for an admin, when it can be told.
+
+Before the upgrade: `404` when collection is off (`-metrics-interval 0`) or for an
+unknown environment, `503` past 100 live streams of one environment. A client that falls
+behind gets `{"error": "the usage stream fell behind; reconnect to resume"}` and is
+disconnected; every client gets an error frame when collection of the environment stops
+(it was removed, or the server is shutting down). An offline environment simply sends
+nothing until it is back.
+
+### Activity
+The server counts every environment's container events per hour (all container events
+except `exec_*`, which health checks fire every interval) into `<data>/metrics.db`, kept
+as long as the usage rollups (`-metrics-retention`, 30 days). Events while the server is
+down, or an environment is offline, are not counted. A user's counts are only their own
+containers' events; the events of a container that was gone before the server first saw
+it (a `destroy` right after a restart) count only toward the environment's total.
+
+`GET /api/v1/environments/{env}/activity?days=7&tz=Europe/Warsaw` answers the last
+`days` days (1 to 30, 7 if absent) in the time zone `tz` (an IANA name, UTC if absent),
+oldest first, today last and still counting, 24 counts each, by local hour:
+
+```json
+{"days": [{"date": "2026-10-21", "counts": [0, 2, 0, …, 14]}, …]}
+```
+
+An hour is filed under the local hour it starts in: on the day the clocks go forward one
+hour stays 0, on the day they go back one hour holds two. `400` for a bad `days` or `tz`.
+
 ### Events
 `GET /api/v1/environments/{env}/events` upgrades to a WebSocket like the log stream (same
 authentication, `Origin` check, pings and close behaviour). `type=container,image` (or
@@ -411,6 +798,11 @@ when the client falls more than 64 events behind; clients reconnect.
 - `POST /api/v1/environments/{env}/volumes/prune`: removes the anonymous volumes no
   container uses, or with `?all=true` named ones too. Answers `{"deleted": ["name"],
   "space_reclaimed": 1234}`; `409` while another prune runs.
+- `POST /api/v1/environments/{env}/volumes/usage`: measures every volume's size now
+  (Docker walks each one, so it can take minutes on a big host) and answers `204` once
+  the sizes are stored. `409` while a measurement of the environment runs, `503` when
+  the environment is offline. The measurement goes on if the request is cut short (by a
+  proxy's timeout, say); the list shows its sizes once it ends.
 - `DELETE /api/v1/environments/{env}/volumes/{name}`: `409` while a container (running
   or not) uses it; `?force=true` removes it even if its driver fails to.
 - `POST /api/v1/environments/{env}/networks` with `{"name": "apps", "driver": "bridge",
@@ -425,6 +817,38 @@ when the client falls more than 64 events behind; clients reconnect.
   uses; answers `{"deleted": ["name"]}`.
 - `DELETE /api/v1/environments/{env}/networks/{id}`: `409` while containers are attached
   and for Docker's predefined networks (`bridge`, `host`, `none`).
+
+### Disk usage
+The server measures every environment's disk usage on the volume size schedule
+(`-usage-interval`, 15 minutes): one `docker system df` call gives the volume sizes and
+Docker's usage by kind, which is kept (the last one per environment) in
+`<data>/metrics.db`. The disk's size is read live: statfs on Docker's root dir, mounted
+read-only into the server at `-docker-root` (docs/config/server.md), and for an agent
+environment the agent's own mount, asked over the tunnel.
+
+`GET /api/v1/environments/{env}/disk` answers:
+
+```json
+{"usage": {"measured_at": "2026-10-27T12:00:00Z",
+  "volumes": {"size": 46700000000, "reclaimable": 1200000000, "count": 14, "active": 10},
+  "images": {"size": 18400000000, "reclaimable": 6700000000, "count": 31, "active": 20},
+  "build_cache": {"size": 3300000000, "reclaimable": 3300000000, "count": 120, "active": 0},
+  "containers": {"size": 2100000000, "reclaimable": 0, "count": 22, "active": 22}},
+ "disk": {"total": 100000000000, "free": 21000000000}}
+```
+
+Sizes are bytes; `reclaimable` is what a prune of the unused ones would free, `count` how
+many there are and `active` how many are in use. `usage` is `null` before the first
+measurement; `disk` is `null` when the size is unknown: no mount (or `-docker-root` is
+empty), an agent older than this endpoint, an agent without the mount or an offline
+one. `free` is what unprivileged writers can still use, so `total - free` includes what
+the filesystem reserves and what isn't Docker's.
+
+Admins only: the usage covers every user's objects, so a user gets `403` (their own
+use is on the allowance page). `POST /api/v1/environments/{env}/disk` measures now and
+answers `204` once stored (also the volume sizes); `429` with `Retry-After` within a
+minute of the environment's last measurement, `409` while one runs, `503` when the
+environment is offline.
 
 ### Stacks
 A stack is a compose project: `compose.yaml` and an optional `.env` (the variables compose
@@ -546,7 +970,7 @@ grammar (`team/app`, lowercase; tags such as `v1.2`); anything else is `400`.
   other tags on the same digest (at most 100 tags are checked; `shared_tags_complete` is
   false when not all were).
 - `DELETE /api/v1/registries/{id}/tags?repository=…&tag=…&digest=sha256:…` deletes the
-  tag; admins only (`403` otherwise; with no roles yet, that is every logged-in user).
+  tag; admins only (`403` for a user).
   `digest` must be the tag's current digest (from the manifest call), else `409
   {"error": "the tag points to another digest now"}`, so a re-push in between is never
   deleted. Audited with target `<address>/<repository>:<tag>`.
@@ -568,7 +992,10 @@ nudge checks the images that containers run by tag (an implicit `latest` include
 newer version: it asks the environment's daemon for the registry's digest of the tag
 (with the stored registry credentials, as a pull would) and compares it with the digests
 the local image was pulled as. Images pinned to a digest, named by ID or built locally
-aren't updatable by tag. The check runs every `NUDGE_UPDATE_CHECK_INTERVAL` over every
+aren't updatable by tag. A container whose tag has since moved to a newer image (pulled
+but not applied), which Docker lists by image ID, is checked under the reference it was
+created from; it is `available` with no `local_digest` when its old image is gone (the
+containerd image store drops it once the tag moves). The check runs every `NUDGE_UPDATE_CHECK_INTERVAL` over every
 environment (see docs/config/server.md) and on request.
 
 - `GET /api/v1/environments/{env}/updates` answers the last check of the environment,
@@ -614,6 +1041,35 @@ hand: the previous image stays on the host (untagged) until it is pruned.
   stack's row; a digest is empty when the image has none from that repository. The last
   20 updates per container or stack (a stack's with a row per service) and 5000 rows per
   environment are kept. `400` an unknown kind.
+
+### Self-update
+nudge updates its own container, the server's or an agent's, to the newest image of the
+tag it runs (docs/architecture.md, Self-update). Admins only.
+
+- `GET /api/v1/system/update` and `GET /api/v1/environments/{env}/agent/update` answer
+  `{"version": "v1.2.0", "image": "registry.example/nudge:latest", "status": "available",
+  "local_digest": "sha256:…", "remote_digest": "sha256:…", "checked_at": "...", "error":
+  "", "can_update": true, "reason": ""}`. `status` and the digests are the last image
+  update check of `image` on that environment (Image updates); `error` says why it is
+  `unknown` (`not checked yet`, `checked before the last update; check again`, `the last
+  check didn't cover this image`, …).
+  `can_update` is false, with `reason`, when nudge can't replace the container itself:
+  it doesn't run in a container on that host, the Docker socket isn't bind-mounted, the
+  image is pinned by ID or digest, or the agent is too old (update it by hand once).
+  `version` is the server's, or the version the agent reported.
+- `POST .../check` checks the environment's images now (as `updates/check`, with its
+  `409` while another check runs) and answers the same.
+- `POST /api/v1/system/update` and `POST /api/v1/environments/{env}/agent/update` (no
+  body) pull the image with the stored registry credentials. If that brought nothing
+  newer: `200 {"started": false}`. Otherwise a helper container replaces nudge's
+  container and `202 {"started": true}` answers before it does; the server (or agent)
+  restarts a few seconds later, and if the new one doesn't come up the old one is
+  started again. `409` when it can't update itself (the reasons above) or an update is
+  already running; pull errors as in a recreate. The agent endpoints answer `404` on the
+  local environment.
+- Recreating or updating nudge's own container through the container endpoints, and
+  running its compose project through the stack endpoints, answers `409`: they would
+  stop nudge halfway.
 
 ### Notifications
 `POST /api/v1/webhooks` with `{"name": "Chat", "url": "https://hooks.example.com/T0/abc",
@@ -699,12 +1155,12 @@ request, like the agent join command).
   stack must exist in nudge (`404`).
 - Names are 1 to 64 bytes, unique per user (`409`); at most 100 webhooks per user (`409`).
   `tag_filter` is optional, a pattern with `*`, `?` and `[...]` (Go's `path.Match`).
-- Every user manages their own webhooks; others' answer `404`. Admins see and manage
-  all. nudge has no roles yet, so today every user is an admin: any user can list,
-  rotate and delete any user's webhooks (and, with the new secret, trigger them), and the
-  runs still go as the creator, so the audit log and update history name the creator,
-  not the user who rotated the secret. Deleting a user deletes their webhooks. API tokens
-  can manage webhooks like sessions (scoped tokens are #33).
+- Deploy webhooks are admin-only: a user gets `403`. Every admin sees and manages all
+  of them: any admin can list, rotate and delete another admin's webhooks (and, with the
+  new secret, trigger them), and the runs still go as the creator, so the audit log and
+  update history name the creator, not the admin who rotated the secret. Deleting a user deletes their webhooks. Creating a
+  webhook and rotating its secret are session-only (an API token gets `403`), as the
+  secret outlives the token's revocation; API tokens can list, delete and read the runs.
 - `last_status` is the newest run's `status` (below), `""` before the first run.
 - `GET .../webhooks/{id}/runs` lists the runs, newest first, at most 50 per webhook:
   `{"id": 7, "trigger": "signature", "status": "updated", "queued_at": "...",
@@ -772,6 +1228,76 @@ trigger on "Custom events" with "Package" to redeploy when a new image version i
 published; set `tag_filter` (say `latest` or `1.*`) so other tags of the package are
 skipped. A native webhook can't wait, so it gets `202`; the runs show the outcome.
 
+### Deployments
+
+A deployment is a stack in an environment that CI deploys through. Names are 1 to 63
+lowercase letters, digits and dashes, unique across all users (a taken name answers `409`
+even when you can't see that deployment); at most 1000 deployments.
+
+- **Roles.** Each member has a role: `viewer` (reads the deployment, its runs and
+  members), `deployer` (also deploys), `maintainer` (also edits it and manages deploy
+  tokens), `owner` (also manages members and deletes it). Admins may do everything. The
+  creator is the first owner, and a deployment always keeps one (`409` otherwise). A
+  deployment you can't view answers `404`; one you can view but not change, `403`.
+  `GET` answers `can`, the actions you may do: `view`, `deploy`, `edit`,
+  `manage_tokens`, `manage_members`, `delete`.
+- **Variables.** `variables` lists the stack's `.env` variables a deploy may set
+  (uppercase letters, digits and `_`, at most 20). The compose file uses them, such as
+  `image: ${API_IMAGE}`, so CI pins the exact image it built. A deploy's values may hold
+  only letters, digits and `._:/@+=-` (no `$`, quotes, spaces or line breaks), at most 512
+  bytes; another variable answers `400`. A run replaces the variables' lines in `.env`
+  (adding the ones it lacks) and keeps the rest of the file; a failed run puts the file
+  back as it was.
+- **Deploy tokens** (`nudge_dt_…`, stored hashed, shown once) work only on their
+  deployment's three `deploys` routes, for their scopes: `deploy` (start runs) and
+  `runs:read`. Any other route answers `403`, another deployment `401`; failed checks
+  count against the login limit per IP. A token acts for its creator and stops working
+  (`403`) when the creator may no longer deploy (or view, for `runs:read`). Creating one
+  needs a session, not an API token. `expires_at` (RFC 3339, in the future) is optional.
+- **Runs.** `POST .../deploys` with `{"variables": {"API_IMAGE": "registry/app@sha256:…"}}`
+  (body optional) pulls the stack's images and brings it up, like a stack update, as the
+  caller (a token's creator, for the update history). Runs of a deployment go one at a
+  time; one request waits behind the running one, and a newer request replaces it: the
+  replaced run ends `superseded` and its variables go into the newer run (the newer
+  value wins). Without `?wait=1` the answer is `202` with the run. With it, the run once
+  it ends: `200` `succeeded`, `502` `failed`, `409` `superseded`, or `202` if it still runs
+  after 10 minutes. A run:
+  `{"id", "actor", "actor_kind": "user"|"token", "status", "variables", "previous",
+  "queued_at", "started_at", "finished_at", "image_before", "image_after", "error"}`.
+  `status` is `queued`, `running`, `succeeded`, `failed`, `superseded` or `rolled_back`;
+  `image_before`/`image_after` list the changed services as `service=ID`. `previous` (the
+  values a run replaced) is shown to maintainers and owners only, `{}` otherwise.
+  `error` is nudge's own words, never the daemon's. `step` is the last step the run
+  reached (`pulling`, `deploying`, `checking`, `rolling_back`) and `warnings` what it
+  skipped or worked around (say, a check an older agent can't run).
+- **Health.** `health` (on create and `PATCH`; a `PATCH` replaces all of it) says when a
+  run succeeded: `{"wait_seconds": 0-1800, "stable_seconds": 0-600, "http_checks": [{"service",
+  "port", "path": "/", "status": 200, "timeout_seconds": 5}], "rollback": false, "remove_oneoffs": false}`,
+  the defaults shown; `http_checks` holds at most 10 checks and is always a list in
+  responses (`[]` for none). `wait_seconds` has compose wait for the services to run
+  and pass their healthchecks (`up --wait`). `stable_seconds` then requires every
+  container to keep running without a restart (a container that exited with 0 is a
+  finished one-off job). Each of `http_checks`, in order, then GETs
+  `http://127.0.0.1:port/path` inside a running container of its `service`, without
+  following redirects, and expects `status`; the first one that fails stops the run.
+  Validation errors name the check (`http_checks[1].port must be 1 to 65535`). The old
+  single `"http": {...}` object (before nudge kept a list) is still accepted on input and
+  read as a one-item `http_checks`; sending both is a `400`. A failure
+  ends the run `failed` with an `error` naming the step, the service and, for an HTTP
+  check, its port and path (`service web: HTTP check of port 8080/healthz: ...`), and puts the
+  `.env` back; with `rollback` the replaced values are also deployed again (recorded in
+  the update history) and the run ends `rolled_back` (`502` like a failure). Agents built
+  before a check skip it with a warning. With `remove_oneoffs`, a run that ended
+  `succeeded` then removes the stack's containers that exited with 0 and have restart
+  policy `no` (migrations); the progress names them, and a failed removal is a warning.
+  docs/deployments.md is the how-to.
+- **Progress stream.** `POST .../deploys?stream=1` answers `200` with JSON lines once the
+  run is queued (errors before that are ordinary JSON errors): `{"run": 7, "message":
+  "queued"}`, then progress `{"step", "service", "message", "warning"}`, an empty `{}`
+  every 25 s while nothing happens, and finally `{"status", "run", "step", "error",
+  "warnings"}`. CI passes only if the last line's `status` is `succeeded`. Leaving early
+  doesn't stop the run. Steps can be skipped in the stream when the run gets ahead of it.
+
 ### Audit log
 Every `POST`, `PUT`, `PATCH` and `DELETE` that reaches a route is recorded after it is
 answered, by one middleware: time, user, the API token's name (empty for a session), the
@@ -796,6 +1322,18 @@ Entries are deleted after `NUDGE_AUDIT_RETENTION_DAYS` (default 90); see
 docs/config/server.md, and beyond the newest million. A pull that fails after its stream
 started (answered `200`) is recorded as `502`. Entries carry the time the request
 started.
+
+### Backup
+`POST /api/v1/backup` with `{"passphrase": "..."}` (at least 12 characters) answers `200`
+with the backup as `application/octet-stream` and
+`Content-Disposition: attachment; filename="nudge-20261028-120000.nudgebak"`: the
+database snapshot, `secret.key` and the stacks' compose files, encrypted with the
+passphrase (docs/config/server.md, "Backup and restore", has the contents and the
+restore). The backup is written to a temporary file in the data directory first, so the
+data volume needs room for one. Admins only and session only: the file holds the key to
+the stored credentials. Errors: `400` a missing or short passphrase, `409` another backup
+is being made. Audited with the file name as the target; the passphrase is never
+recorded.
 
 Docker errors (every environment route):
 - `404` unknown environment.

@@ -58,7 +58,10 @@ func (s *server) runDocker(base context.Context, w http.ResponseWriter, r *http.
 	resp, err := call(ctx, c)
 	var bad *badRequestError
 	var se *statusError
+	var internal *internalFailure
 	switch {
+	case errors.As(err, &internal):
+		s.internalError(w, what, err)
 	case errors.As(err, &bad):
 		s.envs.Seen(r.Context(), &env)
 		s.writeError(w, http.StatusBadRequest, bad.msg)

@@ -15,7 +15,6 @@ import (
 	"github.com/moby/moby/client"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
-	"git.zefirlabs.net/zefir/nudge/backend/internal/tunnel"
 )
 
 // Kinds of environment.
@@ -34,8 +33,12 @@ const (
 	touchInterval = time.Minute
 )
 
-// ErrNotFound means there is no environment with that id.
-var ErrNotFound = errors.New("environment not found")
+var (
+	// ErrNotFound means there is no environment with that id.
+	ErrNotFound = errors.New("environment not found")
+	// ErrLocal means the call would remove the local environment, which nudge needs.
+	ErrLocal = errors.New("the local environment can't be removed")
+)
 
 // Environment is a Docker host.
 type Environment struct {
@@ -63,6 +66,8 @@ type Options struct {
 	// Connect builds the client of a local environment; it is called once per
 	// environment. Agent environments always use their tunnel.
 	Connect ConnectFunc
+	// After waits between an agent tunnel's pings (time.After by default).
+	After func(time.Duration) <-chan time.Time
 }
 
 // Service lists environments and hands out their Docker clients.
@@ -70,16 +75,19 @@ type Service struct {
 	db      *sql.DB
 	log     *slog.Logger
 	now     func() time.Time
+	after   func(time.Duration) <-chan time.Time
 	connect ConnectFunc
 
 	mu sync.Mutex
-	// clients are keyed by environment id, so bounded by the environments table.
-	clients map[int64]docker.Client
+	// clients are keyed by environment id, so bounded by the environments table (plus
+	// at most one per removed environment a request still held). Ids can be reused after
+	// a delete, so an entry is only served to the environment it was made for.
+	clients map[int64]cachedClient
 
 	sessMu sync.Mutex
 	// sessions are the agents' live tunnels, one per environment id, so bounded by the
 	// environments table like clients.
-	sessions map[int64]*tunnel.Session
+	sessions map[int64]*agentSession
 	closed   bool
 	// serving counts running ServeAgent calls.
 	serving sync.WaitGroup
@@ -91,15 +99,19 @@ func New(opts Options) *Service {
 		db:       opts.DB,
 		log:      opts.Log,
 		now:      opts.Now,
+		after:    opts.After,
 		connect:  opts.Connect,
-		clients:  map[int64]docker.Client{},
-		sessions: map[int64]*tunnel.Session{},
+		clients:  map[int64]cachedClient{},
+		sessions: map[int64]*agentSession{},
 	}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
 	}
 	if s.now == nil {
 		s.now = time.Now
+	}
+	if s.after == nil {
+		s.after = time.After
 	}
 	return s
 }
@@ -189,8 +201,9 @@ func (s *Service) Get(ctx context.Context, id int64) (Environment, error) {
 func (s *Service) Client(env Environment) (docker.Client, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if c, ok := s.clients[env.ID]; ok {
-		return c, nil
+	old, ok := s.clients[env.ID]
+	if ok && old.created.Equal(env.CreatedAt) {
+		return old.Client, nil
 	}
 	connect := s.connect
 	if env.Kind == KindAgent {
@@ -200,8 +213,45 @@ func (s *Service) Client(env Environment) (docker.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect environment %d: %w", env.ID, err)
 	}
-	s.clients[env.ID] = c
+	if ok {
+		// A removed environment's client, made by a request that still held it.
+		if err := old.Close(); err != nil {
+			s.log.Warn("close removed environment's client", "env", env.ID, "err", err)
+		}
+	}
+	s.clients[env.ID] = cachedClient{Client: c, created: env.CreatedAt}
 	return c, nil
+}
+
+// Delete removes the environment and, through foreign keys, everything stored for it;
+// nothing on its Docker host changes. Its agent tunnel and Docker client are closed.
+// A tunnel that is still connecting is closed by ServeAgent's credential check.
+func (s *Service) Delete(ctx context.Context, id int64) error {
+	env, err := s.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if env.Kind == KindLocal {
+		return ErrLocal
+	}
+	res, err := s.db.ExecContext(ctx, `DELETE FROM environments WHERE id = ? AND kind = ?`, id, KindAgent)
+	if err != nil {
+		return fmt.Errorf("delete environment %d: %w", id, err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return ErrNotFound
+	}
+	s.dropSession(id)
+	s.mu.Lock()
+	c, ok := s.clients[id]
+	delete(s.clients, id)
+	s.mu.Unlock()
+	if ok {
+		if err := c.Close(); err != nil {
+			s.log.Warn("close removed environment's client", "env", id, "err", err)
+		}
+	}
+	return nil
 }
 
 // Online pings env's Docker host and records when it last answered. It reports false
@@ -251,6 +301,12 @@ func (s *Service) Close() error {
 		delete(s.clients, id)
 	}
 	return errors.Join(errs...)
+}
+
+// cachedClient is a Docker client and the creation time of the environment it is for.
+type cachedClient struct {
+	docker.Client
+	created time.Time
 }
 
 // columns are what scan reads.

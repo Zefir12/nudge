@@ -197,7 +197,7 @@ func TestLoginAndSessions(t *testing.T) {
 	}
 
 	// Logout ends the session.
-	if err := s.Logout(ctx, sess.Token); err != nil {
+	if _, err := s.Logout(ctx, sess.Token); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.SessionUser(ctx, sess.Token); !errors.Is(err, ErrNoSession) {

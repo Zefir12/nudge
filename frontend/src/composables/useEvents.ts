@@ -1,10 +1,7 @@
-import { onScopeDispose, ref, watch, type Ref } from 'vue';
+import { onScopeDispose, type Ref } from 'vue';
 
 import { streamEvents, type DockerEvent } from '../api/client';
-
-// Reconnect delays after a stream ends: doubling from 1 s up to 30 s, reset by an event.
-const firstDelay = 1000;
-const maxDelay = 30_000;
+import { useStream } from './useStream';
 
 // useEvents follows env's Docker events of the given types (all when empty) for as long
 // as the calling component lives, reopening the stream when it ends and when env changes.
@@ -16,48 +13,13 @@ export function useEvents(
   onEvent: (e: DockerEvent) => void,
   onReconnect?: () => void,
 ) {
-  const error = ref('');
-  let close: (() => void) | null = null;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let delay = firstDelay;
-
-  function stop() {
-    clearTimeout(timer);
-    close?.();
-    close = null;
-  }
-
-  function open(e: string) {
-    close = streamEvents(e, types, {
-      onEvent: (ev) => {
-        delay = firstDelay;
-        error.value = '';
-        onEvent(ev);
-      },
-      onEnd: (msg) => {
-        close = null;
-        error.value = msg ?? 'The event stream ended.';
-        timer = setTimeout(() => {
-          open(e);
-          onReconnect?.();
-        }, delay);
-        delay = Math.min(delay * 2, maxDelay);
-      },
-    });
-  }
-
-  watch(
+  return useStream<DockerEvent>(
     env,
-    (e) => {
-      stop();
-      error.value = '';
-      delay = firstDelay;
-      if (e) open(e);
-    },
-    { immediate: true },
+    (e, onItem, onEnd) => streamEvents(e, types, { onEvent: onItem, onEnd }),
+    onEvent,
+    'The event stream ended.',
+    onReconnect,
   );
-  onScopeDispose(stop);
-  return { error };
 }
 
 // useLiveReload calls reload shortly after env's events of the given types, once for a

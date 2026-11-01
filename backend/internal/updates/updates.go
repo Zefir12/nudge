@@ -215,7 +215,12 @@ func (s *Service) lock() bool {
 func (s *Service) unlock() { <-s.running }
 
 // use is one reference and image ID the containers run.
-type use struct{ ref, id string }
+// use is an image a container runs; moved is true when the daemon listed it by ID, its
+// tag having moved on to another image.
+type use struct {
+	ref, id string
+	moved   bool
+}
 
 func (s *Service) check(ctx context.Context, env environments.Environment, r *run) ([]Result, error) {
 	c, err := s.envs.Client(env)
@@ -297,6 +302,11 @@ func (s *Service) images(ctx context.Context, c docker.Client) ([]use, error) {
 	var out []use
 	for _, ctr := range list.Items {
 		img := use{ref: ctr.Image, id: ctr.ImageID}
+		if imageID.MatchString(img.ref) && ctr.ID != "" {
+			// The daemon lists the image by ID once its tag names a newer one (pulled,
+			// not applied); the container's config still has the reference.
+			img.ref, img.moved = s.createdFrom(lctx, c, ctr.ID, img.ref), true
+		}
 		if seen[img] || !byTag(img.ref) || img.id == "" {
 			continue
 		}
@@ -310,13 +320,30 @@ func (s *Service) images(ctx context.Context, c docker.Client) ([]use, error) {
 	return out, nil
 }
 
-// localDigest is the digest the image was pulled as from the reference's repository.
+// createdFrom returns the reference container id was created from, or ref when it can't
+// be inspected.
+func (s *Service) createdFrom(ctx context.Context, c docker.Client, id, ref string) string {
+	res, err := c.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
+	if err != nil || res.Container.Config == nil {
+		s.log.Debug("update check: inspect container", "container", id, "err", err)
+		return ref
+	}
+	return res.Container.Config.Image
+}
+
+// localDigest is the digest the image was pulled as from the reference's repository;
+// empty when the image is gone after its tag moved.
 func (s *Service) localDigest(ctx context.Context, c docker.Client, img use, repoDigests map[string][]string) (string, error) {
 	digests, ok := repoDigests[img.id]
 	if !ok {
 		ictx, cancel := context.WithTimeout(ctx, lookupTimeout)
 		res, err := c.ImageInspect(ictx, img.id)
 		cancel()
+		if img.moved && docker.NotFound(err) {
+			// The containerd image store drops an image once its tag moves, though a
+			// container still runs it. Any digest of the tag is newer than that.
+			return "", nil
+		}
 		if err != nil {
 			s.log.Warn("update check: inspect image", "image", img.ref, "err", err)
 			return "", errors.New("the image couldn't be inspected")

@@ -6,6 +6,7 @@ export interface Reply {
   body?: unknown;
   // raw is sent as the body as is, instead of body as JSON.
   raw?: string;
+  headers?: Record<string, string>;
 }
 
 export type Routes = Record<string, Reply | ((init?: RequestInit) => Reply)>;
@@ -18,13 +19,29 @@ export function stubApi(routes: Routes) {
     const reply = typeof route === 'function' ? route(init) : route;
     const status = reply.status ?? 200;
     if (status === 204) return new Response(null, { status });
-    return new Response(reply.raw ?? JSON.stringify(reply.body ?? {}), { status });
+    return new Response(reply.raw ?? JSON.stringify(reply.body ?? {}), { status, headers: reply.headers });
   });
   vi.stubGlobal('fetch', fn);
   return fn;
 }
 
-export const admin = { id: 1, username: 'admin', created_at: '2026-10-24T12:00:00Z', admin: true };
+export const admin = {
+  id: 1,
+  username: 'admin',
+  created_at: '2026-10-24T12:00:00Z',
+  role: 'admin' as const,
+  admin: true,
+  sso: false,
+};
+// user is a signed-in user without the admin role.
+export const user = {
+  id: 2,
+  username: 'bob',
+  created_at: '2026-10-24T12:00:00Z',
+  role: 'user' as const,
+  admin: false,
+  sso: false,
+};
 
 // FakeWebSocket stands in for the browser's WebSocket: stubSockets() installs it and
 // returns the sockets opened so far; a test sends frames with message() (JSON) or

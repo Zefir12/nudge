@@ -127,7 +127,8 @@ func (s *Service) DeleteToken(ctx context.Context, userID, id int64) error {
 	return nil
 }
 
-// TokenUser returns the owner of a valid API token, or ErrNoSession.
+// TokenUser returns the owner of a valid API token, with their role, or ErrNoSession
+// (also when the owner is disabled).
 func (s *Service) TokenUser(ctx context.Context, secret string) (User, error) {
 	if !strings.HasPrefix(secret, TokenPrefix) {
 		return User{}, ErrNoSession
@@ -136,10 +137,10 @@ func (s *Service) TokenUser(ctx context.Context, secret string) (User, error) {
 	var id, created int64
 	var lastUsed, expires sql.NullInt64
 	err := s.db.QueryRowContext(ctx, `
-		SELECT t.id, t.name, t.last_used_at, t.expires_at, u.id, u.username, u.created_at
+		SELECT t.id, t.name, t.last_used_at, t.expires_at, u.id, u.username, u.created_at, u.oidc_issuer <> '', u.role
 		FROM api_tokens t JOIN users u ON u.id = t.user_id
-		WHERE t.token_hash = ?`, tokenHash(secret)).
-		Scan(&id, &u.Token, &lastUsed, &expires, &u.ID, &u.Username, &created)
+		WHERE t.token_hash = ? AND NOT u.disabled`, tokenHash(secret)).
+		Scan(&id, &u.Token, &lastUsed, &expires, &u.ID, &u.Username, &created, &u.SSO, &u.Role)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrNoSession
 	}

@@ -415,8 +415,8 @@ func (c credential) verify(secret, body []byte) bool {
 }
 
 // Authenticate checks a trigger of webhook id: its header carries the bearer secret or
-// a signature of body. An unknown webhook, a missing and a wrong credential are all
-// ErrUnauthorized.
+// a signature of body. An unknown webhook, one whose creator is disabled, a missing and
+// a wrong credential are all ErrUnauthorized.
 func (s *Service) Authenticate(ctx context.Context, id string, header http.Header, body []byte) (Hook, Trigger, error) {
 	c, ok := credentialOf(header)
 	if !ok {
@@ -427,7 +427,7 @@ func (s *Service) Authenticate(ctx context.Context, id string, header http.Heade
 	var err error
 	if ValidID(id) {
 		h, err = scanHook(s.db.QueryRowContext(ctx, `SELECT `+hookColumns+`, h.secret_enc
-			FROM deploy_hooks h JOIN users u ON u.id = h.created_by WHERE h.id = ?`, id), &sealed)
+			FROM deploy_hooks h JOIN users u ON u.id = h.created_by WHERE h.id = ? AND NOT u.disabled`, id), &sealed)
 	} else {
 		err = sql.ErrNoRows
 	}

@@ -243,3 +243,85 @@ func TestAgentCallsNeedAgentEnvironment(t *testing.T) {
 		t.Errorf("Revoke(999) = %v, want ErrNotFound", err)
 	}
 }
+
+func TestDelete(t *testing.T) {
+	t.Parallel()
+	s, clock, _ := newTestService(t, &dockertest.Fake{})
+	ctx := context.Background()
+	if _, err := s.EnsureLocal(ctx); err != nil {
+		t.Fatal(err)
+	}
+	env, jt, err := s.CreateAgent(ctx, "nas")
+	if err != nil {
+		t.Fatal(err)
+	}
+	creds, err := s.Enroll(ctx, jt.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := s.RegenerateJoinToken(ctx, env.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Client(env); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Delete(ctx, env.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get(ctx, env.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Get after delete: err = %v, want ErrNotFound", err)
+	}
+	if _, err := s.AuthenticateAgent(ctx, creds.AgentID, creds.Secret); !errors.Is(err, ErrInvalidCredentials) {
+		t.Errorf("credentials after delete: err = %v, want ErrInvalidCredentials", err)
+	}
+	if _, err := s.Enroll(ctx, pending.Token); !errors.Is(err, ErrInvalidJoinToken) {
+		t.Errorf("join token after delete: err = %v, want ErrInvalidJoinToken", err)
+	}
+	var tokens int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM join_tokens`).Scan(&tokens); err != nil || tokens != 0 {
+		t.Errorf("join_tokens rows = %d, %v; want 0", tokens, err)
+	}
+	s.mu.Lock()
+	_, cached := s.clients[env.ID]
+	s.mu.Unlock()
+	if cached {
+		t.Error("the removed environment's client is still cached")
+	}
+	if err := s.Delete(ctx, env.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("second delete: err = %v, want ErrNotFound", err)
+	}
+
+	// A request that still held the removed environment gets a client; a new environment
+	// that reuses the id must not be served that one.
+	if _, err := s.Client(env); err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(time.Second)
+	reused, _, err := s.CreateAgent(ctx, "nas2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reused.ID != env.ID {
+		t.Fatalf("new environment id = %d, want the reused %d", reused.ID, env.ID)
+	}
+	if _, err := s.Client(reused); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	got := s.clients[reused.ID].created
+	s.mu.Unlock()
+	if !got.Equal(reused.CreatedAt) {
+		t.Errorf("cached client is for an environment created at %v, want %v", got, reused.CreatedAt)
+	}
+	if err := s.Delete(ctx, reused.ID); err != nil {
+		t.Fatal(err)
+	}
+	envs, err := s.List(ctx)
+	if err != nil || len(envs) != 1 {
+		t.Fatalf("List = %v, %v", envs, err)
+	}
+	if err := s.Delete(ctx, envs[0].ID); !errors.Is(err, ErrLocal) {
+		t.Errorf("delete local: err = %v, want ErrLocal", err)
+	}
+}

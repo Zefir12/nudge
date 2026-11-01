@@ -13,17 +13,28 @@ browser ──HTTPS──▶ nudge serve ──unix socket──▶ local docker
                        ▲
                        │ WebSocket (agent dials out), yamux streams
                        │
-                  nudge agent ──unix socket──▶ remote dockerd
+                  nudge-agent ──unix socket──▶ remote dockerd
 ```
 
 - **Server** (`nudge serve`): API under `/api/v1`, embedded web UI, SQLite store in
-  `/data/nudge.db`, the registry of connected agents.
-- **Agent** (`nudge agent`): same binary and image, on each remote host with that host's
-  socket mounted. It dials the server; it has no API of its own and stores only its
-  credential in `/data`.
+  `/data/nudge.db`, usage history in `/data/metrics.db`, the registry of connected agents.
+- **Agent** (`nudge-agent`): its own binary (`cmd/nudge-agent`) and image, on each remote
+  host with that host's socket mounted. It dials the server; it has no API of its own and
+  stores only its credential in `/data`.
 - **Environment**: one Docker host the server manages. Kinds: `local` (a socket on the
   server's host, created on first start if `/var/run/docker.sock` is reachable) and
   `agent`. Every Docker route is scoped to one: `/api/v1/environments/{env}/...`.
+
+### Images (#89)
+Two images from one Dockerfile, built and tagged together: `nudge` (`--target server`,
+the default) and `nudge-agent` (`--target agent`). Until #89 one binary and image served
+both roles; the split keeps the API, auth, SQLite, the stack store and the web UI off agent
+hosts (a smaller attack surface, and a binary about half the size). Both images carry
+docker-compose, since stacks deploy next to the daemon they run on. The shared
+subcommands (`agent`, `probe`) live in `internal/cli`; a test in `cmd/nudge-agent` fails
+if the agent binary starts importing server packages. The server binary keeps `nudge
+agent` as well: either image is a valid agent, `nudge-agent` is the smaller one. Server and agent of different
+versions still meet through the tunnel's protocol version check.
 
 ## Docker access
 `internal/docker` builds one `*client.Client` (github.com/moby/moby/client) per
@@ -76,11 +87,26 @@ refuses `ws://` unless `NUDGE_INSECURE=1`.
   in SQLite with expiry; writes additionally require a matching `Origin`.
 - Scripts: API tokens (`Authorization: Bearer nudge_...`), stored hashed, shown once.
 - Decision (#33): routes that mint a credential which outlives the token's revocation
-  (creating API tokens) are **session-only**, not scoped: a token request gets `403`,
+  (creating API tokens, deploy tokens, users and passwords; #77 added agent environments,
+  join tokens, deploy webhooks and their secrets) are **session-only**, not scoped: a token request gets `403`,
   audited under the token's name. They are listed in `sessionOnlyRoutes` in
   `internal/api` and enforced in the auth middleware; a new route of that kind goes on
   the list. Scopes stay a later option.
 - Login attempts are rate-limited per IP and username, with bounded memory.
+- Roles, ownership, allowances and users' containers: see [Permission model](#permission-model-multi-user-118).
+- Single sign-on (#110, internal/oidc): one OpenID Connect provider, nudge a confidential
+  client (authorization code + PKCE S256, `client_secret_basic`). Discovery, JWKS and ID
+  token checks are go-oidc's (RS256 only, issuer, audience, expiry against the injected
+  clock, one JWKS refetch on an unknown kid); nudge checks the nonce, `azp`, `iat`, the
+  admin or user role in `roles` and, optionally, `mfa` in `amr`. Discovery is lazy (nudge starts
+  while the provider is down) and retried at most every 30 s. Started logins live
+  server-side in a bounded map (10 minutes, keyed by state) and are bound to the browser
+  by a `SameSite=Lax` cookie; each state is used once. Every provider call has a timeout
+  and a capped body. Users are matched by issuer + `sub`, never by name or email (after a
+  provider change an admin re-links the new identity to the old user explicitly); they
+  have no password, and their sessions are nudge sessions capped by
+  `NUDGE_OIDC_SESSION_TTL`. With SSO, setup is off; `NUDGE_PASSWORD_LOGIN=false` keeps
+  password login only for the local break-glass `admin`.
 - Deploy webhooks (`POST /api/v1/hooks/{id}`, internal/deployhooks): a public route whose
   credential is the webhook's own secret, as a bearer token or as the key of an
   HMAC-SHA256 body signature (Forgejo, Gitea, GitHub headers), compared in constant time.
@@ -89,6 +115,203 @@ refuses `ws://` unless `NUDGE_INSECURE=1`.
   failed checks count against the login limit per IP, and each webhook takes 10 triggers
   a minute. This is the credential to put in CI instead of an API token, which is its user
   on every route.
+- Deployments (internal/deployments) have their own access model, so it can grow (teams,
+  environment roles) in one place: members with a role (viewer < deployer < maintainer <
+  owner, admins above all), and one check, `Service.Authorize(actor, name, action)`,
+  that every deployment handler calls; `Role.Allows` maps roles to actions. Deploy
+  tokens (`nudge_dt_`, hashed, scoped `deploy` / `runs:read`) never reach the API mux:
+  `server.protect` sends any request carrying one to a mux with only the deployment's
+  `deploys` routes, which check the token against the deployment in the path, its
+  scopes and its creator's current role.
+
+## Permission model (multi-user, #118)
+nudge can host other people on a Docker host it manages: each user signs in (usually
+through the OIDC provider), gets an allowance per environment, deploys containers from a
+short form, and can't see or reach anything that isn't theirs. Raw compose and the admin
+container form are root on the host for whoever can use them, so users never get either.
+Instead every check below sits in the API (`internal/api`); the web UI's `meta.users`
+routes only hide pages, they protect nothing.
+
+A request from a user passes these layers in order. Each one fails closed: a new route,
+object or setting is the admins' until something explicitly opens it to users.
+
+### 1. Identity and role (#110, #111)
+- Every account is an `admin` or a `user` (`users.role`). Setup, `NUDGE_ADMIN_PASSWORD`
+  and accounts made before roles existed are admins; an admin creates local users on the
+  Users page (`users.go`).
+- SSO users (`internal/oidc`, see the Single sign-on bullet in Auth) get their role from
+  the ID token's `roles` claim on every login: `NUDGE_OIDC_ADMIN_ROLE` makes an admin,
+  `NUDGE_OIDC_USER_ROLE` a user, neither refuses the login (audited). They are matched by
+  issuer + `sub` only and never linked to a local account, so a provider account can't
+  take over a local one by name or email. The role is fixed at login: a demotion at the
+  provider takes effect at the next login or when `NUDGE_OIDC_SESSION_TTL` ends the
+  session; disabling the user in nudge ends it at once.
+- Credentials carry their user's role: a session, an API token (its owner's role), a
+  deploy token or deploy webhook (its creator's, checked on every use). A disabled user's
+  sessions end and all their credentials stop working. The last enabled admin (and the
+  break-glass `admin` while password login is off) can't be demoted, disabled or deleted;
+  the check is in the writing statement.
+
+### 2. Routes: admin vs user (#111)
+- One table decides: `userRoutes` in `api.go` lists the routes open to users. The auth
+  middleware (`server.authenticate`) answers every other authenticated route with
+  `403 admins only` for a user's session or API token, and audits it. A route added
+  without thought is therefore admin-only; `TestRoutesForUsers` walks every registered
+  route.
+- Open to users: their account, their API tokens, deployments they are a member of, and
+  in the environments they were given: the environment's overview and stats, events, the
+  containers, volumes and networks they own (list, inspect, start/stop/restart/kill,
+  remove, logs, stats, exec, image update), their allowance (read only), creating
+  bridge networks and local volumes, and creating or recreating containers through the
+  tenant spec (`/user-containers`).
+- Admin-only: users and roles, environments and agents, allowances, images, pulls by
+  reference, prunes, stacks, the admin container spec (create and recreate), registries,
+  notification and deploy webhooks, the audit log.
+- Routes open to users check the object themselves (layers 3 and 4). Deployments have
+  their own check, `deployments.Authorize` with the user's role on the deployment
+  (Auth, Deployments): a deployment's stack is an admin's and runs as one, so making a
+  user a member trusts them with that stack and the variables it lets deploys set.
+
+### 3. Environments (#112)
+- An admin grants a user environments (`user_environments`, Users page). `server.environment`,
+  which every `{env}` route goes through, answers `404 environment not found` for any
+  other, and `GET /environments` lists only the granted ones.
+- A user's environment detail shows the host's OS, kernel, CPUs and memory (so they can
+  size their containers) but counts only their own containers, no images, and leaves out
+  the host name and Docker's root directory.
+
+### 4. Ownership (#112)
+- An object is a user's when it carries `net.zefirlabs.nudge.owner=<owner key>`
+  (`ownerLabel`). The owner key is random per user (`users.owner_key`), not the user's id,
+  because SQLite reuses the newest deleted user's id. Objects without the label (made by
+  an admin, a stack or outside nudge) are the admins'.
+- `scopeOf` turns the request's user into a `scope`: everything for an admin (no extra
+  Docker calls), the owner key for a user. Lists filter by the label in the Docker call
+  and check each result again. `{id}` routes inspect first (`ownedContainer`,
+  `ownedVolume`, `ownedNetwork`) and answer someone else's object as `404`, so a user
+  can't learn that it exists; the daemon is then called by the inspected ID, not the
+  name the request gave. Networks are matched by name only, as an ID prefix could name
+  someone else's.
+- A container is a user's only if its image sets no owner label: Docker merges image
+  labels into the container's, so an image could otherwise hand a user a container an
+  admin runs from it. Creating a user's container from such an image is refused
+  (`refuseImageLabels`).
+- The event stream passes a user only events of containers they own (each container
+  checked once, bounded `ownerCache` per stream); volume and network events carry no
+  labels, so users get none. Environment stats sample only the user's containers; the
+  usage summary and history add up the collected rows filed under their owner key (see
+  Metrics).
+- The `net.zefirlabs.nudge.` label namespace is reserved: no request can set it, a
+  recreate keeps it, and users' objects get it from `ownerLabels` / `buildTenant`.
+
+### 5. A user's networks and volumes (#114)
+- Users create networks and volumes through the same routes as admins, with stricter
+  rules (`userobjects.go`). Names get the prefix `u<id>-`, so users can't take or guess
+  each other's names; a name is theirs only if the owner label is, so a deleted user's
+  leftover is a conflict and never handed over.
+- Networks: bridge only, with Docker's own addressing; no driver options, subnet,
+  gateway, IP range, IPv6 or attachable (other drivers reach the host's network or run
+  plugins, a chosen subnet could shadow the host's routes). At most `maxUserNetworks` (8)
+  per environment, as each bridge takes a subnet from the daemon's shared pools.
+- Volumes: the local driver without options (`o=bind` with `device=` would mount a host
+  path).
+- Granting an environment creates the user's default bridge network `nudge-u-<id>`
+  (best effort); their containers join it when the spec names no network. Each user's
+  containers sit on their own bridges, which Docker isolates from other bridges.
+
+### 6. The tenant container builder (#115, #116)
+- A user's container is built by the server from `tenantSpec` (`tenant.go`): image, name,
+  command, entrypoint, env, CPU and memory limits (both required), ports, mounts of the
+  user's own volumes, the user's own networks, restart policy, healthcheck (exec form)
+  and labels. It is decoded with `decodeStrict` (unknown fields refused) and never from
+  Docker's own options, so privileged mode, binds, the Docker socket, devices,
+  capabilities and the host's namespaces can't be asked for at all.
+- `validate` checks the fields; `tenantOwner.resolve` adds the name prefix and the default
+  network and checks every volume and network carries the user's owner label;
+  `imageVolumes` refuses an image whose `VOLUME` paths the spec doesn't cover (Docker would
+  create an anonymous volume nobody owns or counts). Labels in nudge's or Docker's
+  (`com.docker.`, e.g. compose project) namespaces are refused, and so are the prefixes
+  in `NUDGE_TENANT_DENIED_LABELS` (`Options.DeniedLabels`: reverse proxies, updaters and
+  schedulers by default, #125), on the spec and on the image's own labels
+  (`refuseImageLabels`).
+- `buildTenant` is a pure function that adds fixed hardening: Docker's default
+  capabilities minus `NET_RAW`, `no-new-privileges`, default seccomp and AppArmor, an init
+  process, private IPC, a pids limit of 512, no swap beyond the memory limit, capped
+  json-file logs, then the host hardening of layer 8 and, last, the owner label.
+- The image is always pulled for the user, with their allowance and without the admins'
+  stored registry credentials (`pullOwned`), so a user can't run a private image an admin
+  pulled. The reference's registry must be in `NUDGE_USER_REGISTRIES` (`userRegistries`,
+  #126), so a pull can't make the daemon probe internal hosts; an image the pull brought
+  that the builder then refuses (labels, volumes) is removed again (#127).
+- Every path that replaces a user's container (recreate, image update, deploy webhooks)
+  goes through `replace` → `tenantSettings`, which rebuilds it through the builder from
+  the requested spec or from its own settings read back as a spec (`toTenantSpec`), so a
+  setting the builder doesn't make can't survive a replace. The admin spec is refused on
+  a user's container, and the tenant routes on an admin's.
+- The UI's deploy form (`TenantDeployView`, `TenantForm`) uses only these routes, with
+  sliders capped at what the allowance leaves.
+
+### 7. Allowances (#113)
+- An admin sets each user's allowance per environment (`internal/allowances`, table
+  `allowances`): CPUs, memory, disk, number of containers, a host port range and,
+  optionally, image patterns (`path.Match`). Without an allowance a user can create and
+  start nothing there (409).
+- `allowances.Check` is the one rule, run by `fitAllowance` under the user's lock (one
+  check per user and environment at a time, held until the container is created or
+  started) before every create, recreate, image update and start/restart (`fitStart`, in
+  case the allowance was lowered since). `allowanceUsage` adds up the user's containers,
+  running or not (a stopped one can start; one without a CPU or memory limit counts as
+  the whole allowance), their volumes and the images their pulls brought
+  (`image_pulls`).
+- CPU and memory are hard limits on each container and checked as a sum. Host ports must
+  be in the user's range, and a port of `0` gets the lowest free one in it. Disk is
+  checked against what is measured: a create or pull is refused once the user is at their
+  allowance, and an image that takes them over it is removed again; what a running
+  container writes is bounded by the disk cap of layer 8, not by this check.
+- Users read their own allowance, use and what is left (`GET .../allowance`); only admins
+  set one.
+
+### 8. Tenant hardening on the host (#117)
+nudge's checks share the host's kernel with everyone. `TenantHosting`
+(`tenant_host.go`, `NUDGE_TENANT_*`, docs/config/server.md "Hosting other users") adds
+backstops that need host setup, applied by `buildTenant` to users' containers only:
+- Cgroup parent per user (`NUDGE_TENANT_CGROUP_PARENT`, e.g. `nudge-u{id}.slice`): the
+  kernel caps a user's total CPU, memory and tasks even if nudge's own check were wrong.
+  The admin creates each slice with its limits (systemd makes a missing one without).
+- Sandboxed runtime (`NUDGE_TENANT_RUNTIME`, e.g. `runsc` for gVisor, or Kata): users'
+  system calls don't reach the host's kernel directly. A daemon that doesn't list the
+  runtime creates and starts no user containers (409), so they never run unsandboxed by
+  accident.
+- Disk cap (`NUDGE_TENANT_STORAGE_SIZE`): `storage_opt size` on the writable layer where
+  the storage driver supports it (`storageSizeSupported`: overlay2 on xfs, btrfs, zfs,
+  devicemapper); elsewhere it is left out with a warning.
+- `checkStartHosting` refuses to start or restart a user's container built with other
+  hosting than the current settings (runtime, cgroup parent, disk cap); recreating it
+  applies them.
+- Daemon-wide options (`userns-remap`, rootless Docker) are the operator's choice and
+  documented in the config page.
+
+### What users still share
+- The kernel (unless the runtime sandboxes it), the daemon, the host's disk and network.
+- Network: users' bridges are isolated from each other, but Docker lets containers reach
+  the host's addresses, so a user's container can connect to anything listening on the
+  host, including ports other users and admins publish (which listen on all addresses)
+  and the host's own services. nudge can't change the host's firewall: it names users'
+  bridges `nudge…` (#132) so two host rules (`DOCKER-USER` and `INPUT` on `-i nudge+`)
+  close this; docs/config/server.md, "Network", has them and a manual check. Without
+  them it stays open.
+- Labels outside nudge's and Docker's namespaces and the denied prefixes (#125) are free,
+  so a tool on the host that acts on container labels and isn't in
+  `NUDGE_TENANT_DENIED_LABELS` acts on users' containers too; docs/config/server.md,
+  "Labels", has the default list and how to extend it.
+- The host's size: a user's environment detail shows its CPUs, memory and kernel.
+
+### Alternative: one VM per user
+For untrusted users the stronger setup is a small VM per user running `nudge-agent`,
+with the user granted only that environment (layer 3): the hypervisor enforces the
+limits and a kernel bug reaches only their own VM. Roles, environment access and
+ownership (#111, #112) already cover that setup; the shared-host layers 5 to 8 are only
+needed when users share one host. nudge doesn't provision the VMs.
 
 ## Stacks (phase 5)
 Decision (approved by zefir for #25): **compose runs next to the daemon it deploys to**: in
@@ -162,6 +385,26 @@ to the UI as they are.
     `{"stream": "stdout"|"stderr", "line": "..."}` frames, then `{"exit_code": N}`.
     Cancelling the request kills the process.
   - `POST /v1/stacks/{name}/down` `{"volumes": bool}`: the same output format.
+  - `up` also takes `"wait_seconds"` (left out when zero), compose's `--wait
+    --wait-timeout`. An agent from before it refuses the field with `400`, and the server
+    deploys again without waiting and warns.
+  - `POST /v1/stacks/{name}/probe` `{"container", "port", "path", "status", "timeout"}`
+    (timeout in nanoseconds): a deployment's HTTP check. The agent starts a helper
+    container from its own image with `network_mode: container:<id>` running `nudge-agent
+    probe` against `127.0.0.1`, and answers `{"failed": "..."}` (empty when it passed);
+    `409` when the agent doesn't run in a container of that daemon. An agent from before
+    it answers `404`, and the server skips the check with a warning. The local
+    environment runs the same helper through the server's own container.
+  - `GET /v1/self`: `{"id", "hostname", "docker_host"}`, the agent's own container
+    (`stacks.SelfID`) and how it reaches Docker, so the server can update the agent
+    (Self-update below). An agent from before it answers `404`.
+  - `GET /v1/disk`: `{"total", "free"}`, statfs on the agent's read-only mount of the
+    host's Docker root dir (`hostdisk`), for the dashboard's disk bar; `503` without the
+    mount, `404` from an agent before it. Either way the size is unknown.
+  - `GET /v1/host`: `{"cpu_busy", "cpu_total", "memory_total", "memory_available"}`,
+    the host's CPU time counters and memory from /proc (`hostload`); the server's
+    metrics collector turns two readings into the host's CPU percentage. `503` without
+    /proc, `404` from an agent before it.
   - `DELETE /v1/stacks/{name}`: removes the files after `down`.
   - Not built yet: `GET /v1/stacks` with names and a SHA-256 of each project's files, so
     the server can show a stack that differs from what it last sent.
@@ -201,6 +444,89 @@ for registry credentials; update it" (`stacks.ErrOldAgent`).
 
 Out of scope for phase 5: swarm stacks, compose `build` with large contexts (git URLs
 are fine), and editing a project's extra files beyond compose.yaml and `.env` in the UI.
+
+## Self-update (#159)
+nudge replaces its own container (the server's, or an agent's) with a newer image of the
+same tag, from Settings in the UI or the API. A process can't recreate the container it
+runs in: stopping it ends the process halfway (the generic container update stops the
+old container first), so `internal/selfupdate` hands the swap to a helper.
+
+1. Find: the container is `stacks.SelfID` (mountinfo/hostname), inspected on the
+   environment's daemon and checked by hostname; for an agent, the server asks the agent
+   over its control stream (`GET /v1/self`). It needs the Docker socket bind-mounted
+   (the helper mounts the same one) and an image by tag.
+2. The server pulls the tag with the stored registry credentials (through the tunnel for
+   an agent). If that brought nothing newer, nothing else happens.
+3. Launch: a helper container from the new image runs `self-update -docker-host <socket>
+   <container>` (both binaries have the subcommand), labelled
+   `net.zefirlabs.nudge.self-update=<container>` and removed when it exits. A running
+   helper for the same container refuses a second update.
+4. Swap (the helper, independent of the old process): wait two seconds so the server's
+   answer gets out; stop the old container, rename it `<name>-nudge-old`, create the new
+   one with the same settings (`docker.RecreateSettings`, the old image's defaults
+   dropped, anonymous volumes kept), start it and wait until it has run, or been healthy
+   if it has a health check, for 15 s (at most 3 min). Then the old one is removed. If
+   any step fails, the new one is removed and the old one renamed back and started.
+5. The UI waits for the server (health) or the agent to stop answering and come back.
+   For the server a modal overlay with a spinner covers the page; once health answers
+   twice in a row, a new version reloads the page for its UI, the same version (a
+   rollback) closes the overlay and says so. For the agent it checks again. The
+   "nudge is unreachable" screen polls health too and loads the page once it answers.
+
+Limits: the rollback needs the helper to live. If it is killed or the host reboots
+between the stop and the end of the settle wait, the old container is left stopped as
+`<name>-nudge-old`: start it (or rename it back) by hand. A leftover stopped
+`<name>-nudge-old` is removed by the next update; a running one refuses it. Rolling back
+to the old image after the new one migrated the database may not work: the backups
+(docs/config/server.md, backups) are the safety net. One update per environment runs at a time
+(the API's lock and the helper label).
+
+The generic container recreate/update and stack runs refuse nudge's own container and its
+compose project (`409`), since they would stop it halfway. Agents from before
+`GET /v1/self` can't be found, so they are updated by hand once.
+
+## Metrics (#164)
+`internal/metrics` collects usage in the background into its own SQLite file,
+`<data>/metrics.db` (`store.OpenDB` with the package's own migrations), apart from
+`nudge.db`: it is rewritten every tick, is not part of backups, and losing it loses only
+history.
+
+- `Service.Run` lists the environments every interval and keeps one collector goroutine
+  per environment (owned by Run, cancelled when the environment goes or Run's context
+  ends). Each tick (`Collect`) lists the running containers, samples them with the one-shot
+  stats call the API's overview uses (`SampleContainers`, 8 at a time, bounded by a
+  minute) and stores every container's row and the environment's totals in one
+  transaction. A tick cut short or one that sampled nothing is dropped; an offline
+  environment simply has no ticks.
+- Each container row carries its owner key, from the API's ownership rule
+  (`api.ContainerOwners`: the owner label unless the image sets one). A user's history is
+  the sum of their rows at query time rather than kept per owner: no third copy of every
+  tick, and it is exactly the rows the user may see.
+- `Cleanup` (every 10 minutes) rolls finished hours up into `*_hours` (average, maximum,
+  the counters' largest, sample count), re-rolling the newest rolled hour so a tick that
+  straddled it counts, then drops raw rows after 48 h, rollups after the retention and
+  every row of a removed environment.
+- `stats/summary` answers the latest tick if it is at most three intervals old, so the API
+  keeps no cache of its own; the history endpoints bucket raw rows or rollups in SQL.
+- Live usage (#166, live.go): each tick also goes to the environment's live subscribers
+  (`SubscribeLive`, the `metrics/live` WebSocket), each getting its own scope's share,
+  like `events.Hub`: a bounded buffer per subscriber, a slow one dropped, at most 100
+  per environment. The first subscriber wakes the environment's collector, which then
+  samples every live interval while anyone watches; only the ticks on the background
+  cadence (`nextSave`) are stored. The hub keeps each environment's latest tick for a
+  new subscriber; its subscriptions end when the collector stops.
+- Activity (#168, activity.go): `Activity` counts container events per hour for the
+  tile's heatmap. Like the notify watcher it holds a reserved `events.Hub` subscription
+  per online environment (reserved slots are named, one per name, outside the client
+  limit), so counting costs no extra Docker stream. Exec events are skipped (health
+  checks fire them every interval). Counts are kept per owner key (`api.EventOwner`, the
+  same ownership rule, cached per container so a `destroy` still has its owner): unlike
+  the usage history these are counts, so per-owner rows are what a user's scope needs and
+  an admin's answer is their sum. They wait in memory (bounded; past the bound new owners
+  go to the unowned bucket, so totals stay right), are added to `activity_hours` every
+  hour and when `Run` stops, and reads add the waiting ones. Days are cut in the
+  client's time zone at read time; rows go with the rollups' retention. Events while the
+  server or a stream is down are not counted.
 
 ## Storage
 SQLite (`modernc.org/sqlite`, pure Go, so the image stays static) with numbered SQL

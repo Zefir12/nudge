@@ -21,6 +21,7 @@ import (
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker/dockertest"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/probe"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/stacks"
 )
 
@@ -41,6 +42,15 @@ type fakeRunner struct {
 	cancelled chan struct{}
 	// onRun, if set, is called as a run ends, so a test can change the Docker fake.
 	onRun func()
+	// upErrs, if set, are the errors of the next ups before they run (nil runs it).
+	upErrs []error
+	// probes are the HTTP checks asked for; probeErr is their answer, unless
+	// probePortErr has one for the check's port.
+	probes       []probe.Request
+	probeErr     error
+	probePortErr map[int]error
+	// syncErr, if set, fails every sync after recording it.
+	syncErr error
 }
 
 func (f *fakeRunner) Sync(_ context.Context, name string, files stacks.Files) error {
@@ -50,7 +60,7 @@ func (f *fakeRunner) Sync(_ context.Context, name string, files stacks.Files) er
 		f.synced = map[string]stacks.Files{}
 	}
 	f.synced[name] = files
-	return nil
+	return f.syncErr
 }
 
 func (f *fakeRunner) run(ctx context.Context, call string, out func(stacks.Line)) (int, error) {
@@ -77,8 +87,35 @@ func (f *fakeRunner) run(ctx context.Context, call string, out func(stacks.Line)
 	return f.code, f.err
 }
 
-func (f *fakeRunner) Up(ctx context.Context, name string, pull bool, out func(stacks.Line)) (int, error) {
-	return f.run(ctx, fmt.Sprintf("up %s pull=%v", name, pull), out)
+func (f *fakeRunner) Up(ctx context.Context, name string, opts stacks.UpOptions, out func(stacks.Line)) (int, error) {
+	call := fmt.Sprintf("up %s pull=%v", name, opts.Pull)
+	if opts.Wait > 0 {
+		call += fmt.Sprintf(" wait=%s", opts.Wait)
+	}
+	if f.upErrs != nil {
+		f.mu.Lock()
+		err := f.upErrs[0]
+		f.upErrs = f.upErrs[1:]
+		f.mu.Unlock()
+		if err != nil {
+			f.mu.Lock()
+			f.calls = append(f.calls, call)
+			f.mu.Unlock()
+			return 0, err
+		}
+	}
+	return f.run(ctx, call, out)
+}
+
+// Probe records the check and answers probePortErr[r.Port] or probeErr.
+func (f *fakeRunner) Probe(_ context.Context, _ string, r probe.Request) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.probes = append(f.probes, r)
+	if err, ok := f.probePortErr[r.Port]; ok {
+		return err
+	}
+	return f.probeErr
 }
 
 func (f *fakeRunner) Down(ctx context.Context, name string, volumes bool, out func(stacks.Line)) (int, error) {
@@ -109,7 +146,8 @@ type stackTest struct {
 
 // newStackTest has the environments local (the fake runner) and broken (no runner, like
 // an agent environment). The local fake has containers of the projects web and other.
-func newStackTest(t *testing.T) stackTest {
+// mods change the API's options after the test's own.
+func newStackTest(t *testing.T, mods ...func(*Options)) stackTest {
 	t.Helper()
 	label := func(project, service string) map[string]string {
 		return map[string]string{stacks.ProjectLabel: project, stacks.ServiceLabel: service}
@@ -131,6 +169,9 @@ func newStackTest(t *testing.T) stackTest {
 			return st.runner
 		}
 		o.StackChecker = st.checker.check
+		for _, mod := range mods {
+			mod(o)
+		}
 	})
 	return st
 }
@@ -564,5 +605,38 @@ func TestCheckStackBusy(t *testing.T) {
 	}
 	if code := check(); code != http.StatusOK {
 		t.Errorf("check after the others finished = %d, want 200", code)
+	}
+}
+
+// A failed sync puts the edited files back before the stack is released, so nothing
+// claims the stack while the edit is still on disk.
+func TestStartStackEditSyncFails(t *testing.T) {
+	t.Parallel()
+	runner := &fakeRunner{syncErr: errors.New("agent gone")}
+	s := &server{stacksDir: t.TempDir(), stackBusy: map[string]bool{}, stackRunner: func(environments.Environment) stacks.Runner { return runner }}
+	env := environments.Environment{ID: 1, Name: "local"}
+	original := stacks.Files{Compose: "services: {}\n", Env: "A=1\n"}
+	if err := s.stackDir(env.ID).Create("web", original); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := s.startStackEdit(t.Context(), env, "web", func(f stacks.Files) stacks.Files {
+		f.Env = "A=2\n"
+		return f
+	})
+	if err == nil || !strings.Contains(err.Error(), "agent gone") {
+		t.Fatalf("startStackEdit = %v, want the sync's error", err)
+	}
+	if got := runner.synced["web"].Env; got != "A=2\n" {
+		t.Errorf("synced .env = %q, want the edit", got)
+	}
+	f, err := s.stackDir(env.ID).Read("web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f != original {
+		t.Errorf("files after the failed sync = %+v, want %+v", f, original)
+	}
+	if !s.lockStack(stackKey(env.ID, "web")) {
+		t.Error("the stack is still claimed")
 	}
 }

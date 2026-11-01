@@ -11,6 +11,7 @@ import (
 	"github.com/moby/moby/client"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/usage"
 )
 
 // volumeTimeout bounds a volume create or remove; a plugin driver may mount or unmount
@@ -26,17 +27,28 @@ type volumeResponse struct {
 	Scope      string            `json:"scope"`
 	CreatedAt  *time.Time        `json:"created_at"`
 	Labels     map[string]string `json:"labels"`
+	// Size is the last measured size in bytes; null when the volume wasn't measured yet
+	// or its driver can't tell, and then SizeMeasuredAt says which.
+	Size           *int64     `json:"size"`
+	SizeMeasuredAt *time.Time `json:"size_measured_at"`
 }
 
 func (s *server) listVolumes(w http.ResponseWriter, r *http.Request) {
 	s.dockerCall(w, r, "list volumes", func(ctx context.Context, c docker.Client) (any, error) {
-		res, err := c.VolumeList(ctx, client.VolumeListOptions{})
+		sc, err := s.scopeOf(ctx)
 		if err != nil {
 			return nil, err
 		}
-		resp := make([]volumeResponse, len(res.Items))
-		for i, v := range res.Items {
-			resp[i] = toVolume(v)
+		res, err := c.VolumeList(ctx, client.VolumeListOptions{Filters: sc.filters(nil)})
+		if err != nil {
+			return nil, err
+		}
+		sizes := s.volumeSizes(ctx, envID(r))
+		resp := []volumeResponse{}
+		for _, v := range res.Items {
+			if sc.owns(v.Labels) {
+				resp = append(resp, withSize(toVolume(v), sizes))
+			}
 		}
 		sortBy(resp, func(v volumeResponse) string { return v.Name })
 		return resp, nil
@@ -49,12 +61,47 @@ func (s *server) getVolume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.dockerCall(w, r, "volume", func(ctx context.Context, c docker.Client) (any, error) {
+		sc, err := s.scopeOf(ctx)
+		if err != nil {
+			return nil, err
+		}
 		res, err := c.VolumeInspect(ctx, id, client.VolumeInspectOptions{})
 		if err != nil {
 			return nil, err
 		}
-		return toVolume(res.Volume), nil
+		if !sc.owns(res.Volume.Labels) {
+			return nil, docker.ErrNotFound
+		}
+		return withSize(toVolume(res.Volume), s.volumeSizes(ctx, envID(r))), nil
 	})
+}
+
+// volumeSizes are the environment's last measured volume sizes. Best effort: without
+// them the volumes are still listed.
+func (s *server) volumeSizes(ctx context.Context, env int64) map[string]usage.Volume {
+	if s.usage == nil {
+		return nil
+	}
+	sizes, err := s.usage.Volumes(ctx, env)
+	if err != nil {
+		s.log.Warn("volume sizes", "env", env, "err", err)
+		return nil
+	}
+	return sizes
+}
+
+func withSize(v volumeResponse, sizes map[string]usage.Volume) volumeResponse {
+	if u, ok := sizes[v.Name]; ok {
+		at := u.MeasuredAt.UTC()
+		v.Size, v.SizeMeasuredAt = u.Size, &at
+	}
+	return v
+}
+
+// measureVolumes measures the environment's volume sizes (and the rest of its disk
+// usage) now; see measureNow.
+func (s *server) measureVolumes(w http.ResponseWriter, r *http.Request) {
+	s.measureNow(w, r, "measure volumes", (*usage.Service).Measure)
 }
 
 func toVolume(v volume.Volume) volumeResponse {
@@ -79,7 +126,9 @@ type pruneVolumesResponse struct {
 }
 
 // createVolume creates a volume and answers 201 with it. Docker answers an existing
-// volume of the same name and driver instead of failing, like `docker volume create`.
+// volume of the same name and driver instead of failing, like `docker volume create`. A
+// user's volume is a local one without options named with their prefix
+// (userVolumeRefusal, userName).
 func (s *server) createVolume(w http.ResponseWriter, r *http.Request) {
 	var req createVolumeRequest
 	if !s.decodeJSON(w, r, &req) {
@@ -90,10 +139,38 @@ func (s *server) createVolume(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, msg)
 		return
 	}
+	if s.refuseReservedLabels(w, req.Labels) {
+		return
+	}
+	u, admin, err := requestUser(r)
+	if err != nil {
+		s.internalError(w, "volume create", err)
+		return
+	}
+	name := req.Name
+	if !admin {
+		msg := userVolumeRefusal(req)
+		if msg == "" {
+			name, msg = userName(u.ID, req.Name)
+		}
+		if msg != "" {
+			s.writeError(w, http.StatusBadRequest, msg)
+			return
+		}
+	}
 	resp, ok := s.runDocker(context.WithoutCancel(r.Context()), w, r, "volume create", "a volume with this name already exists with another driver", volumeTimeout, func(ctx context.Context, c docker.Client) (any, error) {
-		res, err := c.VolumeCreate(ctx, client.VolumeCreateOptions{Name: req.Name, Driver: req.Driver, DriverOpts: req.Options, Labels: req.Labels})
+		labels, err := s.ownerLabels(ctx, req.Labels)
+		if err != nil {
+			return nil, err
+		}
+		res, err := c.VolumeCreate(ctx, client.VolumeCreateOptions{Name: name, Driver: req.Driver, DriverOpts: req.Options, Labels: labels})
 		if err != nil {
 			return nil, createError(err, "volume")
+		}
+		// Docker answers an existing volume of the name as it is: a user gets it only if
+		// it is theirs.
+		if !admin && res.Volume.Labels[ownerLabel] != labels[ownerLabel] {
+			return nil, errNameTaken("volume")
 		}
 		return toVolume(res.Volume), nil
 	})
@@ -114,6 +191,9 @@ func (s *server) removeVolume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.dockerAction(w, r, "volume", "the volume is in use by a container", volumeTimeout, func(ctx context.Context, c docker.Client) error {
+		if err := s.ownedVolume(ctx, c, id); err != nil {
+			return err
+		}
 		_, err := c.VolumeRemove(ctx, id, client.VolumeRemoveOptions{Force: force})
 		return err
 	})

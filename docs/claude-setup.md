@@ -20,7 +20,8 @@ Docker, make, fj. The Forgejo runners (`runs-on: docker`) are shared with go-gua
    `idea`, `task` and `bug`.
 4. **Registry secrets.** Add the repo Actions secrets `REGISTRY_USER` and
    `REGISTRY_PASSWORD` for `registrydedic.zefirlabs.net` (image.yaml pushes
-   `nudge:develop` and `nudge:develop-<sha>` on every push to develop).
+   `nudge` and `nudge-agent`, each as `develop` and `develop-<sha>`, on every push to
+   develop).
 5. **Milestones** (optional): one per PLAN.md phase, so issues can be grouped.
 
 ## First run

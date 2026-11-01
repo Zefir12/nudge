@@ -31,12 +31,16 @@ type userResponse struct {
 	ID        int64     `json:"id"`
 	Username  string    `json:"username"`
 	CreatedAt time.Time `json:"created_at"`
+	// Role is "admin" or "user".
+	Role auth.Role `json:"role"`
 	// Admin says whether the user may do admin-only actions, so the UI can hide them.
 	Admin bool `json:"admin"`
+	// SSO says the user signs in through the SSO provider and has no password in nudge.
+	SSO bool `json:"sso"`
 }
 
 func (s *server) toUserResponse(u auth.User) userResponse {
-	return userResponse{ID: u.ID, Username: u.Username, CreatedAt: u.CreatedAt.UTC(), Admin: s.isAdmin(u)}
+	return userResponse{ID: u.ID, Username: u.Username, CreatedAt: u.CreatedAt.UTC(), Role: u.Role, Admin: isAdmin(u), SSO: u.SSO}
 }
 
 type credentials struct {
@@ -49,6 +53,11 @@ type setupStatusResponse struct {
 }
 
 func (s *server) setupStatus(w http.ResponseWriter, r *http.Request) {
+	if s.oidc != nil {
+		// The first admin is whoever the SSO provider gives the admin role.
+		s.writeJSON(w, http.StatusOK, setupStatusResponse{})
+		return
+	}
 	needed, err := s.auth.SetupNeeded(r.Context())
 	if err != nil {
 		s.internalError(w, "setup status", err)
@@ -59,6 +68,10 @@ func (s *server) setupStatus(w http.ResponseWriter, r *http.Request) {
 
 // setup creates the admin and logs them in.
 func (s *server) setup(w http.ResponseWriter, r *http.Request) {
+	if s.oidc != nil {
+		s.writeError(w, http.StatusForbidden, "setup is off: users sign in with single sign-on")
+		return
+	}
 	var c credentials
 	if !s.decodeJSON(w, r, &c) {
 		return
@@ -119,12 +132,77 @@ func (s *server) startSession(w http.ResponseWriter, r *http.Request, c credenti
 	s.writeJSON(w, code, s.toUserResponse(sess.User))
 }
 
+// changePassword changes the logged-in user's own password and ends their other
+// sessions; this one stays.
+func (s *server) changePassword(w http.ResponseWriter, r *http.Request) {
+	u, ok := userFrom(r.Context())
+	if !ok {
+		s.writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	var req struct {
+		Current string `json:"current"`
+		New     string `json:"new"`
+	}
+	if !s.decodeJSON(w, r, &req) {
+		return
+	}
+	ip := clientIP(r)
+	err := s.auth.ChangePassword(r.Context(), ip, u.ID, sessionToken(r), req.Current, req.New)
+	var limited *auth.RateLimitedError
+	var inputErr *auth.InputError
+	switch {
+	case errors.As(err, &inputErr):
+		s.writeError(w, http.StatusBadRequest, inputErr.Msg)
+		return
+	case errors.As(err, &limited):
+		s.log.Warn("password change rate limited", "username", u.Username, "ip", ip)
+		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(limited.RetryAfter.Seconds()))))
+		s.writeError(w, http.StatusTooManyRequests, "too many failed attempts, try again later")
+		return
+	case errors.Is(err, auth.ErrBusy):
+		w.Header().Set("Retry-After", "1")
+		s.writeError(w, http.StatusServiceUnavailable, "too many password checks at once, try again")
+		return
+	case errors.Is(err, context.Canceled):
+		return
+	case errors.Is(err, auth.ErrUserNotFound):
+		s.writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	case errors.Is(err, auth.ErrPasswordChanged):
+		s.writeError(w, http.StatusConflict, "your password was changed meanwhile; sign in again")
+		return
+	case errors.Is(err, auth.ErrInvalidCredentials):
+		s.log.Warn("password change: wrong current password", "username", u.Username, "ip", ip)
+		s.writeError(w, http.StatusForbidden, "the current password is wrong")
+		return
+	case err != nil:
+		s.internalError(w, "change password", err)
+		return
+	}
+	s.log.Info("password changed", "username", u.Username, "ip", ip)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type logoutResponse struct {
+	// LogoutURL is the SSO provider's sign-out page, for the browser to visit next.
+	LogoutURL string `json:"logout_url"`
+}
+
+// logout ends the session. An SSO user's answer names the provider's sign-out page.
 func (s *server) logout(w http.ResponseWriter, r *http.Request) {
-	if err := s.auth.Logout(r.Context(), sessionToken(r)); err != nil {
+	sso, err := s.auth.Logout(r.Context(), sessionToken(r))
+	if err != nil {
 		s.internalError(w, "logout", err)
 		return
 	}
 	s.setSessionCookie(w, r, "", time.Time{}, -1)
+	if sso && s.oidc != nil {
+		if u := s.oidc.LogoutURL(); u != "" {
+			s.writeJSON(w, http.StatusOK, logoutResponse{LogoutURL: u})
+			return
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

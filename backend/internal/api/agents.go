@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -15,8 +17,9 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/tunnel"
 )
 
-// agentImage is the image the docker run command starts; the agent is the same binary.
-const agentImage = "registrydedic.zefirlabs.net/nudge:latest"
+// agentImage is the image the docker run command and the compose file start: the
+// agent's own image, nudge-agent, with the same tag as the server's.
+const agentImage = "registrydedic.zefirlabs.net/nudge-agent:latest"
 
 // hostHeader matches the host names and ports allowed into the docker run command, which
 // users paste into a shell.
@@ -102,6 +105,59 @@ func (s *server) revokeAgent(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// deleteEnvironment removes an agent environment from nudge with its stack files; the
+// containers on its host keep running. Admins only.
+func (s *server) deleteEnvironment(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	id, ok := s.envID(w, r)
+	if !ok {
+		return
+	}
+	// The lock stays held until the row is gone, so no stack change starts in between.
+	if !s.lockEnvironmentStacks(id) {
+		s.writeError(w, http.StatusConflict, "a stack change is running in this environment")
+		return
+	}
+	defer s.unlockEnvironmentStacks(id)
+	env, err := s.envs.Get(r.Context(), id)
+	if s.removeError(w, err) {
+		return
+	}
+	if env.Kind == environments.KindLocal {
+		s.writeError(w, http.StatusConflict, environments.ErrLocal.Error())
+		return
+	}
+	// Files first: ids can be reused, so a later environment must never find these.
+	if s.stacksDir != "" {
+		if err := os.RemoveAll(filepath.Join(s.stacksDir, strconv.FormatInt(id, 10))); err != nil { // #nosec G703 -- id is a number
+			s.internalError(w, "remove environment's stack files", err)
+			return
+		}
+	}
+	if s.removeError(w, s.envs.Delete(r.Context(), id)) {
+		return
+	}
+	s.log.Info("environment removed", "env", id, "ip", clientIP(r))
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// removeError answers err from removing an environment; it reports whether it did.
+func (s *server) removeError(w http.ResponseWriter, err error) bool {
+	switch {
+	case err == nil:
+		return false
+	case errors.Is(err, environments.ErrNotFound):
+		s.writeError(w, http.StatusNotFound, "environment not found")
+	case errors.Is(err, environments.ErrLocal):
+		s.writeError(w, http.StatusConflict, err.Error())
+	default:
+		s.internalError(w, "delete environment", err)
+	}
+	return true
+}
+
 // enrollAgent is public: the join token is the credential.
 func (s *server) enrollAgent(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -159,7 +215,7 @@ func (s *server) connectAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	peer := sess.Peer()
 	s.log.Info("agent connected", "env", env.ID, "agent", agentID, "hostname", peer.Hostname, "version", peer.Version, "ip", clientIP(r))
-	if err := s.envs.ServeAgent(r.Context(), env, agentID, sess); err != nil {
+	if err := s.envs.ServeAgent(r.Context(), env, agentID, clientIP(r), sess); err != nil {
 		s.log.Warn("agent tunnel refused", "env", env.ID, "err", err)
 		return
 	}
@@ -220,7 +276,7 @@ func (s *server) serverURL(r *http.Request) string {
 
 func dockerRun(server, token string) string {
 	return fmt.Sprintf("docker run -d --name nudge-agent --restart unless-stopped "+
-		"-v /var/run/docker.sock:/var/run/docker.sock -v nudge-agent:/data "+
+		"-v /var/run/docker.sock:/var/run/docker.sock -v nudge-agent:/data -v /var/lib/docker:/host/docker:ro "+
 		"-e NUDGE_SERVER_URL=%s -e NUDGE_JOIN_TOKEN=%s %s agent", server, token, agentImage)
 }
 
@@ -236,6 +292,7 @@ func agentCompose(server, token string) string {
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - nudge-agent:/data
+      - /var/lib/docker:/host/docker:ro
     environment:
       NUDGE_SERVER_URL: %s
       NUDGE_JOIN_TOKEN: %s

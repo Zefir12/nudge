@@ -41,7 +41,7 @@ var (
 	// ErrStream ends every subscription of an environment whose Docker stream ended.
 	ErrStream = errors.New("events: docker event stream ended")
 	// ErrTooMany refuses a subscription over Options.MaxSubscribers, or a second
-	// reserved one.
+	// reserved one of the same name.
 	ErrTooMany = errors.New("events: too many subscribers")
 )
 
@@ -54,7 +54,7 @@ type Options struct {
 	// Buffer is how many events a subscriber may lag behind before it is dropped.
 	Buffer int
 	// MaxSubscribers bounds the subscriptions per environment, not counting the
-	// reserved one.
+	// reserved ones.
 	MaxSubscribers int
 }
 
@@ -72,8 +72,8 @@ type Hub struct {
 // feed is one environment's Docker stream and its subscribers.
 type feed struct {
 	subs map[*Subscription]bool
-	// reserved is the SubscribeReserved subscription, nil if there is none.
-	reserved *Subscription
+	// reserved are the SubscribeReserved subscriptions by name.
+	reserved map[string]*Subscription
 	cancel   context.CancelFunc
 }
 
@@ -82,6 +82,8 @@ type Subscription struct {
 	hub  *Hub
 	env  int64
 	feed *feed
+	// name is a reserved subscription's name, empty for the others.
+	name string
 	c    chan Event
 	err  error // set under hub.mu before c is closed
 }
@@ -103,37 +105,41 @@ func New(opts Options) *Hub {
 // Subscribe adds a subscriber to env's feed, opening the Docker stream from src when it
 // is the first. The caller must Close the subscription.
 func (h *Hub) Subscribe(env int64, src Source) (*Subscription, error) {
-	return h.subscribe(env, src, false)
+	return h.subscribe(env, src, "")
 }
 
-// SubscribeReserved is Subscribe for the one internal reader of env (the notification
-// watcher): it doesn't count against Options.MaxSubscribers, so UI clients can't crowd
-// it out, and a second one while it is open fails with ErrTooMany.
-func (h *Hub) SubscribeReserved(env int64, src Source) (*Subscription, error) {
-	return h.subscribe(env, src, true)
+// SubscribeReserved is Subscribe for an internal reader of env (the notification
+// watcher, the activity counter), named by name: it doesn't count against
+// Options.MaxSubscribers, so UI clients can't crowd it out, and a second one of the same
+// name while it is open fails with ErrTooMany.
+func (h *Hub) SubscribeReserved(env int64, name string, src Source) (*Subscription, error) {
+	if name == "" {
+		return nil, errors.New("events: reserved subscription without a name")
+	}
+	return h.subscribe(env, src, name)
 }
 
-func (h *Hub) subscribe(env int64, src Source, reserved bool) (*Subscription, error) {
+func (h *Hub) subscribe(env int64, src Source, name string) (*Subscription, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	f := h.feeds[env]
 	if f == nil {
 		ctx, cancel := context.WithCancel(h.ctx)
-		f = &feed{subs: map[*Subscription]bool{}, cancel: cancel}
+		f = &feed{subs: map[*Subscription]bool{}, reserved: map[string]*Subscription{}, cancel: cancel}
 		h.feeds[env] = f
 		// Events waits for the daemon's answer, so it runs outside the lock.
 		go h.run(ctx, env, f, src)
 	}
-	if reserved && f.reserved != nil {
+	if name != "" && f.reserved[name] != nil {
 		return nil, ErrTooMany
 	}
-	if !reserved && len(f.subs)-f.count() >= h.maxSubscribers {
+	if name == "" && len(f.subs)-len(f.reserved) >= h.maxSubscribers {
 		return nil, ErrTooMany
 	}
-	s := &Subscription{hub: h, env: env, feed: f, c: make(chan Event, h.buffer)}
+	s := &Subscription{hub: h, env: env, feed: f, name: name, c: make(chan Event, h.buffer)}
 	f.subs[s] = true
-	if reserved {
-		f.reserved = s
+	if name != "" {
+		f.reserved[name] = s
 	}
 	return s, nil
 }
@@ -164,8 +170,8 @@ func (s *Subscription) Close() {
 func (h *Hub) drop(s *Subscription, err error) {
 	f := s.feed
 	delete(f.subs, s)
-	if f.reserved == s {
-		f.reserved = nil
+	if s.name != "" && f.reserved[s.name] == s {
+		delete(f.reserved, s.name)
 	}
 	s.err = err
 	close(s.c)
@@ -173,14 +179,6 @@ func (h *Hub) drop(s *Subscription, err error) {
 		delete(h.feeds, s.env)
 		f.cancel()
 	}
-}
-
-// count is 1 if f has a reserved subscription, else 0.
-func (f *feed) count() int {
-	if f.reserved != nil {
-		return 1
-	}
-	return 0
 }
 
 // run passes the Docker stream's events to f's subscribers until the stream ends or ctx

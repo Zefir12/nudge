@@ -234,7 +234,7 @@ func (s *server) deleteRegistryTag(w http.ResponseWriter, r *http.Request) {
 // requireAdmin answers 403 unless the request's user is an admin.
 func (s *server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 	u, ok := userFrom(r.Context())
-	if !ok || !s.isAdmin(u) {
+	if !ok || !isAdmin(u) {
 		s.writeError(w, http.StatusForbidden, "admins only")
 		return false
 	}

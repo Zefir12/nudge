@@ -16,12 +16,16 @@ import { useLoad } from '../composables/useLoad';
 import { useParams } from '../composables/params';
 import { useUpdates } from '../composables/useUpdates';
 import { formatDate, formatPort, shortId } from '../format';
+import { currentUser } from '../session';
 
 // The terminal (xterm.js) loads on the page of a running container only.
 const ContainerTerminal = defineAsyncComponent(() => import('../components/ContainerTerminal.vue'));
 
 const { env, id } = useParams();
 const router = useRouter();
+// A user edits their container through the tenant form; recreating with the admin spec,
+// images, update history and webhooks are for admins.
+const isAdmin = computed(() => !!currentUser.value?.admin);
 const {
   data: c,
   error,
@@ -105,7 +109,10 @@ const labels = computed(() =>
         @changed="reload"
         @removed="onRemoved"
       />
-      <div class="recreate">
+      <div v-if="!isAdmin" class="recreate">
+        <RouterLink class="button" :to="{ name: 'tenant-edit', params: { env, id: c.id } }">Edit</RouterLink>
+      </div>
+      <div v-else class="recreate">
         <RouterLink class="button" :to="{ name: 'container-edit', params: { env, id: c.id } }"
           >Edit</RouterLink
         >
@@ -142,14 +149,16 @@ const labels = computed(() =>
             ['Privileged', c.privileged],
           ]"
         />
-        <p>
+        <p v-if="isAdmin">
           <RouterLink :to="{ name: 'image', params: { env, id: c.image_id } }">Open the image</RouterLink>
         </p>
       </section>
 
-      <UpdateHistory :env="env" kind="container" :target="c.name" />
+      <template v-if="isAdmin">
+        <UpdateHistory :env="env" kind="container" :target="c.name" />
 
-      <WebhooksCard :key="`${env}/${c.name}`" :env="env" kind="container" :target="c.name" />
+        <WebhooksCard :key="`${env}/${c.name}`" :env="env" kind="container" :target="c.name" />
+      </template>
 
       <ContainerStats v-if="c.state.running" :env="env" :id="c.id" />
 

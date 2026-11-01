@@ -113,6 +113,11 @@ func (s *server) updateContainer(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	id, err := s.ownedContainerID(r.Context(), c, id)
+	if err != nil {
+		s.replaceError(w, r, env, err)
+		return
+	}
 	u, _ := userFrom(r.Context())
 	res, err := s.updateContainerImage(r.Context(), env, c, id, u.Username)
 	if err != nil {
@@ -144,7 +149,7 @@ func (s *server) updateContainerImage(ctx context.Context, env environments.Envi
 	if digest.MatchString(ref) || strings.Contains(ref, "@") || !validPullRef(ref) {
 		return containerUpdate{}, errPinnedImage
 	}
-	if err := s.pullWithAuth(ctx, rp.c, ref); err != nil {
+	if err := s.pullOwned(ctx, rp.env.ID, rp.c, ref, rp.owner, rp.mounts()); err != nil {
 		return containerUpdate{}, err
 	}
 	ictx, cancel := context.WithTimeout(ctx, dockerTimeout)
@@ -163,6 +168,7 @@ func (s *server) updateContainerImage(ctx context.Context, env environments.Envi
 	if err != nil {
 		return containerUpdate{}, err
 	}
+	s.dropPulledImage(ctx, rp.env.ID, rp.c, rp.owner, rp.old.Image)
 	s.recordUpdates(ctx, user, []updates.Change{{
 		Environment: rp.env.ID, Kind: updates.KindContainer, Target: strings.TrimPrefix(rp.old.Name, "/"), Image: ref,
 		OldImageID: rp.old.Image, OldDigest: updates.DigestFor(ref, rp.oldImage.RepoDigests),
@@ -192,7 +198,7 @@ func (s *server) pullAndDeploy(ctx context.Context, run stackRun, user string) (
 		// The update can go on; only its history is lost.
 		s.log.Warn("stack update: list containers", "env", run.env.ID, "stack", run.name, "err", err)
 	}
-	code, err := run.runner.Up(ctx, run.name, true, run.out)
+	code, err := run.runner.Up(ctx, run.name, stacks.UpOptions{Pull: true, Wait: run.wait}, run.out)
 	// Even a failed or cut-short run may have replaced some services.
 	var changes []updates.Change
 	if before != nil {

@@ -234,6 +234,16 @@ func (s *Session) Close() error {
 	return nil
 }
 
+// Ping times a round trip to the other side with a yamux ping. Any agent answers it, as
+// yamux does so itself. It fails with ErrClosed once the session is closed.
+func (s *Session) Ping() (time.Duration, error) {
+	rtt, err := s.mux.Ping()
+	if err != nil {
+		return 0, s.streamErr("ping", err)
+	}
+	return rtt, nil
+}
+
 // Done is closed once the session is closed, for whatever reason.
 func (s *Session) Done() <-chan struct{} { return s.done }
 

@@ -5,8 +5,10 @@ import { ApiError, getMe, type User } from './api/client';
 
 export const currentUser = ref<User | null>(null);
 
-// apiError is set when the router guard couldn't reach the API; App shows it.
+// apiError is set when the router guard couldn't reach the API; App shows it, with
+// apiErrorPath, the page it was going to, to load once the API answers again.
 export const apiError = ref('');
+export const apiErrorPath = ref('');
 
 // loadUser asks the server who is logged in; null when nobody is.
 export async function loadUser(): Promise<User | null> {

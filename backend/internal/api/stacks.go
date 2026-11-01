@@ -84,7 +84,8 @@ func stackKey(envID int64, name string) string {
 func (s *server) lockStack(key string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.stackBusy[key] {
+	env, _, _ := strings.Cut(key, "/")
+	if s.stackBusy[key] || s.stackBusy[env+"/*"] {
 		return false
 	}
 	s.stackBusy[key] = true
@@ -95,6 +96,25 @@ func (s *server) unlockStack(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.stackBusy, key)
+}
+
+// lockEnvironmentStacks claims every stack of environment envID: false if a change of
+// one is running. Until unlockEnvironmentStacks, lockStack refuses them all.
+func (s *server) lockEnvironmentStacks(envID int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prefix := strconv.FormatInt(envID, 10) + "/"
+	for key := range s.stackBusy {
+		if strings.HasPrefix(key, prefix) {
+			return false
+		}
+	}
+	s.stackBusy[prefix+"*"] = true
+	return true
+}
+
+func (s *server) unlockEnvironmentStacks(envID int64) {
+	s.unlockStack(strconv.FormatInt(envID, 10) + "/*")
 }
 
 // stackName returns the {id} path value if it can name a stack, else answers 404.
@@ -379,7 +399,7 @@ func (s *server) upStack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.runStack(w, r, "up", func(ctx context.Context, run stackRun) (int, error) {
-		return run.runner.Up(ctx, run.name, req.Pull, run.out)
+		return run.runner.Up(ctx, run.name, stacks.UpOptions{Pull: req.Pull}, run.out)
 	})
 }
 
@@ -445,9 +465,19 @@ var (
 // startStack claims stack name of env for one change at a time and syncs its files to
 // the environment's runner. The caller defers unlock.
 func (s *server) startStack(ctx context.Context, env environments.Environment, name string) (stacks.Runner, func(), error) {
+	return s.startStackEdit(ctx, env, name, nil)
+}
+
+// startStackEdit is startStack with edit, if not nil, changing the stack's files once it
+// is claimed and before they sync; the change is written to the stacks directory. If the
+// write or the sync fails, the files are put back before the stack is released.
+func (s *server) startStackEdit(ctx context.Context, env environments.Environment, name string, edit func(stacks.Files) stacks.Files) (stacks.Runner, func(), error) {
 	runner := s.stackRunner(env)
 	if runner == nil {
 		return nil, nil, errNoStackRunner
+	}
+	if s.selfStack(ctx, env, name) {
+		return nil, nil, errSelfStack
 	}
 	key := stackKey(env.ID, name)
 	if !s.lockStack(key) {
@@ -463,9 +493,28 @@ func (s *server) startStack(ctx context.Context, env environments.Environment, n
 		unlock()
 		return nil, nil, &internalFailure{msg: "read stack", err: err}
 	}
-	if err := runner.Sync(ctx, name, f); err != nil {
+	edited := edit != nil
+	original := f
+	if edited {
+		f = edit(f)
+	}
+	// fail puts back the files an edit changed, then releases the stack.
+	fail := func(err error) (stacks.Runner, func(), error) {
+		if edited {
+			if err := s.stackDir(env.ID).Update(name, original); err != nil {
+				s.log.Error("restore stack after a failed edit", "env", env.ID, "stack", name, "err", err)
+			}
+		}
 		unlock()
-		return nil, nil, fmt.Errorf("sync stack: %w", err)
+		return nil, nil, err
+	}
+	if edited {
+		if err := s.stackDir(env.ID).Update(name, f); err != nil {
+			return fail(&internalFailure{msg: "write stack", err: err})
+		}
+	}
+	if err := runner.Sync(ctx, name, f); err != nil {
+		return fail(fmt.Errorf("sync stack: %w", err))
 	}
 	return runner, unlock, nil
 }
@@ -492,6 +541,8 @@ type stackRun struct {
 	name   string
 	// out sends a line of compose's output.
 	out func(stacks.Line)
+	// wait, if set, has compose wait for running and healthy services (deployments).
+	wait time.Duration
 }
 
 // runStack syncs a stack to its environment's runner and runs compose, streaming the

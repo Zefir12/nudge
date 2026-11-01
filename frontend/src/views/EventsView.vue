@@ -5,7 +5,8 @@ import { RouterLink } from 'vue-router';
 import type { DockerEvent } from '../api/client';
 import { useEvents } from '../composables/useEvents';
 import { useParams } from '../composables/params';
-import { formatDate, matches, shortId } from '../format';
+import { eventLabel, eventPage } from '../eventLinks';
+import { formatDate, matches } from '../format';
 
 // maxEvents bounds the events kept on the page; older ones drop off the end.
 const maxEvents = 500;
@@ -29,21 +30,6 @@ const shown = computed(() =>
     (e) => (!type.value || e.type === type.value) && matches(query.value, e.action, e.name, e.id),
   ),
 );
-
-// Only containers, images, volumes and networks have pages to link to.
-const pages: Record<string, string> = {
-  container: 'container',
-  image: 'image',
-  volume: 'volume',
-  network: 'network',
-};
-
-function linkable(e: DockerEvent) {
-  return pages[e.type] && e.action !== 'destroy' && e.action !== 'delete' && e.action !== 'untag';
-}
-
-const label = (e: DockerEvent) =>
-  e.name || (e.type === 'container' || e.type === 'network' ? shortId(e.id) : e.id);
 </script>
 
 <template>
@@ -89,10 +75,10 @@ const label = (e: DockerEvent) =>
               <code>{{ e.action }}</code>
             </td>
             <td class="break">
-              <RouterLink v-if="linkable(e)" :to="{ name: pages[e.type], params: { env, id: e.id } }">{{
-                label(e)
+              <RouterLink v-if="eventPage(e)" :to="{ name: eventPage(e), params: { env, id: e.id } }">{{
+                eventLabel(e)
               }}</RouterLink>
-              <template v-else>{{ label(e) }}</template>
+              <template v-else>{{ eventLabel(e) }}</template>
             </td>
           </tr>
         </tbody>
