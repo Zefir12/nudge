@@ -153,7 +153,7 @@ With an OpenID Connect provider configured (docs/config/server.md, Single sign-o
   `GET /api/v1/auth/oidc/callback` with the subject as target. A sign-in refused for having
   no role also ends every session and deletes every API token of that SSO user (if they
   signed in before); its audit entry names the nudge user and says how many were revoked.
-  Every attempt counts against the per-IP login limit until it succeeds.
+  Every attempt counts against the per-IP credential limit until it succeeds.
 - The session cookie stays `SameSite=Strict`: the callback's redirect follows the
   provider's cross-site navigation, so the cookie isn't sent with that one request, but it
   loads only the web UI, whose own API calls are same-site.
@@ -179,13 +179,12 @@ single sign-on and has no password in nudge. Setup creates an admin.
   (at most 1024 bytes). Invalid input is `400` with the reason.
 - Usernames are case-insensitive. A wrong password and an unknown user both get
   `401 {"error":"invalid username or password"}`.
-- Failed logins are limited to 20 per client IP (per /64 for IPv6) and 10 per existing
-  username in 15 minutes; then login answers `429` with `Retry-After` (seconds), even
-  with the right password. So ten wrong guesses lock that user out for up to 15 minutes;
-  sessions already open keep working. The client IP is the TCP peer, or behind a
-  proxy listed in `NUDGE_TRUSTED_PROXIES` the client it names in `X-Forwarded-For`
-  (docs/config/server.md, Trusted proxies); behind an unlisted proxy all clients share
-  the proxy's IP.
+- Failed logins block nobody: nudge has no lockout and no login rate limit, so an attacker
+  can't lock an account or learn from the answer that a username exists. Limits and bans
+  belong in front of nudge (a reverse proxy, fail2ban): a failure is logged as `login
+  failed` with the client IP. That IP is the TCP peer, or behind a proxy listed in
+  `NUDGE_TRUSTED_PROXIES` the client it names in `X-Forwarded-For` (docs/config/server.md,
+  Trusted proxies); behind an unlisted proxy all clients share the proxy's IP.
 - When too many logins wait for a password check, login answers `503` with
   `Retry-After: 1`.
 
@@ -193,8 +192,7 @@ single sign-on and has no password in nudge. Setup creates an admin.
 signed-in user's own password and answers `204`. It ends the user's other sessions; the one
 that asked stays, and API tokens keep working. Session only: an API token gets `403`, so a
 leaked token can't take over the account. A wrong current password is
-`403 {"error":"the current password is wrong"}` and counts toward the failed-login limits
-above (`429` once they are reached); a new password that breaks the rules above, or an
+`403 {"error":"the current password is wrong"}` and, like a failed login, blocks nobody; a new password that breaks the rules above, or an
 SSO user (no password in nudge), is `400`; `409` if an admin reset the password while it
 was checked. Audited without the passwords.
 
@@ -1179,8 +1177,8 @@ as either
   `Bearer nudge_hook_…` header decides alone; any other `Authorization` header (a
   proxy's Basic auth, say) is ignored and the signature counts.
 
-Both are compared in constant time. The client IP's failed-login limit is checked first
-(20 in 15 minutes, shared with logins; then `429` with `Retry-After`, before the body is
+Both are compared in constant time. The client IP's credential limit is checked first
+(20 in 15 minutes; then `429` with `Retry-After`, before the body is
 read). The body is then read, at most 1 MiB (`413`, refused up front when
 `Content-Length` says more) within 30 seconds (`400` if it can't be read), and never
 echoed. An unknown webhook, a missing and a wrong credential all answer
@@ -1251,7 +1249,7 @@ even when you can't see that deployment); at most 1000 deployments.
 - **Deploy tokens** (`nudge_dt_…`, stored hashed, shown once) work only on their
   deployment's three `deploys` routes, for their scopes: `deploy` (start runs) and
   `runs:read`. Any other route answers `403`, another deployment `401`; failed checks
-  count against the login limit per IP. A token acts for its creator and stops working
+  count against the credential limit per IP. A token acts for its creator and stops working
   (`403`) when the creator may no longer deploy (or view, for `runs:read`). Creating one
   needs a session, not an API token. `expires_at` (RFC 3339, in the future) is optional.
 - **Runs.** `POST .../deploys` with `{"variables": {"API_IMAGE": "registry/app@sha256:…"}}`

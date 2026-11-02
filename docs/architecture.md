@@ -92,7 +92,9 @@ refuses `ws://` unless `NUDGE_INSECURE=1`.
   audited under the token's name. They are listed in `sessionOnlyRoutes` in
   `internal/api` and enforced in the auth middleware; a new route of that kind goes on
   the list. Scopes stay a later option.
-- Login attempts are rate-limited per IP and username, with bounded memory.
+- Password logins have no lockout or rate limit: limits and bans belong to the services in
+  front of nudge, which read the `login failed` log line. Guesses at other credentials
+  (webhook secrets, deploy tokens, SSO callbacks) are limited per IP, with bounded memory.
 - Roles, ownership, allowances and users' containers: see [Permission model](#permission-model-multi-user-118).
 - Single sign-on (#110, internal/oidc): one OpenID Connect provider, nudge a confidential
   client (authorization code + PKCE S256, `client_secret_basic`). Discovery, JWKS and ID
@@ -112,7 +114,7 @@ refuses `ws://` unless `NUDGE_INSECURE=1`.
   HMAC-SHA256 body signature (Forgejo, Gitea, GitHub headers), compared in constant time.
   The secret is sealed with the secretbox key (not hashed: a signature check needs its
   value). A webhook can do one thing, update its one target, and runs as its creator;
-  failed checks count against the login limit per IP, and each webhook takes 10 triggers
+  failed checks count against the credential limit per IP, and each webhook takes 10 triggers
   a minute. This is the credential to put in CI instead of an API token, which is its user
   on every route.
 - Deployments (internal/deployments) have their own access model, so it can grow (teams,

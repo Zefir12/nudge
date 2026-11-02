@@ -35,10 +35,11 @@ const (
 	maxConcurrentHashes = 4
 	maxHashWaiters      = 64
 
-	ipFailureLimit   = 20
-	userFailureLimit = 10
-	failureWindow    = 15 * time.Minute
-	maxLimiterKeys   = 10000
+	// ipFailureLimit, failureWindow and maxLimiterKeys bound guesses at other credentials
+	// (Attempt); password logins have no limit.
+	ipFailureLimit = 20
+	failureWindow  = 15 * time.Minute
+	maxLimiterKeys = 10000
 )
 
 var (
@@ -57,10 +58,10 @@ type InputError struct{ Msg string }
 
 func (e *InputError) Error() string { return e.Msg }
 
-// RateLimitedError means too many failed logins from this IP or for this username.
+// RateLimitedError means too many failed credential checks from this IP (Attempt).
 type RateLimitedError struct{ RetryAfter time.Duration }
 
-func (e *RateLimitedError) Error() string { return "too many failed login attempts" }
+func (e *RateLimitedError) Error() string { return "too many failed attempts" }
 
 // Role is what a user may do: an admin everything, a user only the routes opened to
 // users.
@@ -124,10 +125,9 @@ type Service struct {
 	// adminOnly is Options.AdminPasswordOnly.
 	adminOnly bool
 
-	hashes    chan struct{}
-	waiters   chan struct{}
-	ipLimit   *limiter
-	userLimit *limiter
+	hashes  chan struct{}
+	waiters chan struct{}
+	ipLimit *limiter
 
 	dummyOnce sync.Once
 	dummyHash string
@@ -147,7 +147,6 @@ func New(opts Options) *Service {
 		hashes:    make(chan struct{}, maxConcurrentHashes),
 		waiters:   make(chan struct{}, maxHashWaiters),
 		ipLimit:   newLimiter(ipFailureLimit, failureWindow, maxLimiterKeys),
-		userLimit: newLimiter(userFailureLimit, failureWindow, maxLimiterKeys),
 	}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
@@ -226,17 +225,12 @@ func (s *Service) EnsureAdmin(ctx context.Context, password string) (bool, error
 	return true, nil
 }
 
-// Login checks the credentials and starts a session. ip and the username of an
-// existing user are rate-limited separately; each attempt is counted before the
-// password check, so parallel requests can't exceed the limit. An unknown user costs as
-// much time as a wrong password.
-func (s *Service) Login(ctx context.Context, ip, username, password string) (Session, error) {
-	now := s.now()
-	if d, ok := s.ipLimit.reserve(ip, now); !ok {
-		return Session{}, &RateLimitedError{RetryAfter: d}
-	}
+// Login checks the credentials and starts a session. Failed attempts block nobody:
+// rate limits and bans belong to the services in front of nudge. An unknown user costs as
+// much time as a wrong password, and gets the same answer.
+func (s *Service) Login(ctx context.Context, username, password string) (Session, error) {
 	if len(username) > maxUsernameLen || len(password) > maxPasswordLen {
-		// No such user can exist; the IP keeps the failure.
+		// No such user can exist.
 		return Session{}, ErrInvalidCredentials
 	}
 	if s.adminOnly && !strings.EqualFold(username, AdminUsername) {
@@ -254,33 +248,21 @@ func (s *Service) Login(ctx context.Context, ip, username, password string) (Ses
 	// SSO users have no password: they count as unknown.
 	known := err == nil && hash != ""
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		s.ipLimit.release(ip, now)
 		return Session{}, fmt.Errorf("look up user: %w", err)
 	}
-	// Only real users get a window, so made-up names can't evict theirs.
-	userKey := strings.ToLower(u.Username)
-	if known {
-		if d, ok := s.userLimit.reserve(userKey, now); !ok {
-			return Session{}, &RateLimitedError{RetryAfter: d}
+	if !known {
+		if hash, err = s.dummy(); err != nil {
+			return Session{}, err
 		}
-	} else if hash, err = s.dummy(); err != nil {
-		return Session{}, err
 	}
 	ok, err := s.verify(ctx, hash, password)
 	if err != nil {
-		// Not the client's fault (busy, cancelled): don't count it.
-		s.ipLimit.release(ip, now)
-		if known {
-			s.userLimit.release(userKey, now)
-		}
 		return Session{}, err
 	}
 	// A disabled user's right password still fails, without saying the account exists.
 	if !known || !ok || disabled {
 		return Session{}, ErrInvalidCredentials
 	}
-	s.ipLimit.release(ip, now)
-	s.userLimit.reset(userKey)
 	u.CreatedAt = time.Unix(created, 0)
 	return s.newSession(ctx, u, s.ttl)
 }
@@ -291,46 +273,33 @@ var ErrPasswordChanged = errors.New("the password was changed meanwhile")
 
 // ChangePassword sets user id's password to next if current is their password, and ends
 // their other sessions (keep is the session token that asked, which stays). A wrong
-// current password counts toward the login rate limits like a failed login, and is
-// ErrInvalidCredentials; an SSO user has no password to change (InputError).
-func (s *Service) ChangePassword(ctx context.Context, ip string, id int64, keep, current, next string) error {
+// current password is ErrInvalidCredentials, and like a failed login blocks nobody; an SSO
+// user has no password to change (InputError).
+func (s *Service) ChangePassword(ctx context.Context, id int64, keep, current, next string) error {
 	if err := validPassword(next); err != nil {
 		return err
 	}
 	now := s.now()
-	if d, ok := s.ipLimit.reserve(ip, now); !ok {
-		return &RateLimitedError{RetryAfter: d}
-	}
-	var username, hash string
-	err := s.db.QueryRowContext(ctx, `SELECT username, password_hash FROM users WHERE id = ?`, id).Scan(&username, &hash)
+	var hash string
+	err := s.db.QueryRowContext(ctx, `SELECT password_hash FROM users WHERE id = ?`, id).Scan(&hash)
 	if err != nil {
-		s.ipLimit.release(ip, now)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrUserNotFound
 		}
 		return fmt.Errorf("look up user: %w", err)
 	}
 	if hash == "" {
-		s.ipLimit.release(ip, now)
 		return &InputError{Msg: "an SSO user has no password in nudge"}
-	}
-	userKey := strings.ToLower(username)
-	if d, ok := s.userLimit.reserve(userKey, now); !ok {
-		return &RateLimitedError{RetryAfter: d}
 	}
 	ok := false
 	if len(current) <= maxPasswordLen {
 		if ok, err = s.verify(ctx, hash, current); err != nil {
-			s.ipLimit.release(ip, now)
-			s.userLimit.release(userKey, now)
 			return err
 		}
 	}
 	if !ok {
 		return ErrInvalidCredentials
 	}
-	s.ipLimit.release(ip, now)
-	s.userLimit.reset(userKey)
 	newHash, err := s.hash(ctx, next)
 	if err != nil {
 		return err
@@ -430,7 +399,6 @@ func (s *Service) Logout(ctx context.Context, token string) (sso bool, err error
 func (s *Service) Cleanup(ctx context.Context) (int64, error) {
 	now := s.now()
 	s.ipLimit.prune(now)
-	s.userLimit.prune(now)
 	res, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at <= ?`, now.Unix())
 	if err != nil {
 		return 0, fmt.Errorf("delete expired sessions: %w", err)

@@ -12,7 +12,7 @@ import (
 // are believed. Anyone else can forge them, so for every other peer they are ignored.
 type proxies []netip.Prefix
 
-// requester is who sent a request: the address the login limiter keys on and logs show,
+// requester is who sent a request: the address the credential limiter keys on and logs show,
 // and whether the browser reached nudge over HTTPS.
 type requester struct {
 	ip  string

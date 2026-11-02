@@ -452,7 +452,7 @@ func TestTriggerDeployHookRateLimits(t *testing.T) {
 				t.Fatalf("attempt %d = %d", i, rec.Code)
 			}
 		}
-		// Blocked like failed logins, even with the right secret.
+		// Blocked, even with the right secret.
 		rec := trigger(t, et.h, hook.ID, "", "", bearer(hook.Secret))
 		if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") == "" {
 			t.Errorf("trigger after 20 failures = %d %v", rec.Code, rec.Header())

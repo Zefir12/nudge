@@ -105,7 +105,7 @@ func TestSSOLogin(t *testing.T) {
 	}
 
 	// SSO users have no password.
-	if _, err := s.Login(ctx, "10.0.0.1", "zefir-2", ""); !errors.Is(err, ErrInvalidCredentials) {
+	if _, err := s.Login(ctx, "zefir-2", ""); !errors.Is(err, ErrInvalidCredentials) {
 		t.Errorf("password login of an SSO user err = %v", err)
 	}
 	if sso, err := s.Logout(ctx, sess.Token); err != nil || !sso {
@@ -183,10 +183,10 @@ func TestAdminPasswordOnly(t *testing.T) {
 	if _, err := s.db.Exec(`INSERT INTO users (username, password_hash, created_at, updated_at) SELECT 'bob', password_hash, 0, 0 FROM users`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Login(ctx, "10.0.0.1", "bob", "longenough"); !errors.Is(err, ErrInvalidCredentials) {
+	if _, err := s.Login(ctx, "bob", "longenough"); !errors.Is(err, ErrInvalidCredentials) {
 		t.Errorf("bob err = %v, want ErrInvalidCredentials", err)
 	}
-	if _, err := s.Login(ctx, "10.0.0.1", "ADMIN", "longenough"); err != nil {
+	if _, err := s.Login(ctx, "ADMIN", "longenough"); err != nil {
 		t.Errorf("break-glass admin err = %v", err)
 	}
 }
