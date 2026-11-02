@@ -3,7 +3,6 @@ package auth
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -148,7 +147,7 @@ func TestEnsureAdmin(t *testing.T) {
 	if ok, err := s.EnsureAdmin(ctx, "longenough"); err != nil || !ok {
 		t.Fatalf("EnsureAdmin = %v, %v; want true", ok, err)
 	}
-	if _, err := s.Login(ctx, "10.0.0.1", "admin", "longenough"); err != nil {
+	if _, err := s.Login(ctx, "admin", "longenough"); err != nil {
 		t.Errorf("Login as admin: %v", err)
 	}
 }
@@ -163,13 +162,13 @@ func TestLoginAndSessions(t *testing.T) {
 	}
 
 	for _, tc := range []struct{ user, pw string }{{"Admin", "wrong-password"}, {"nobody", "longenough"}} {
-		if _, err := s.Login(ctx, "10.0.0.1", tc.user, tc.pw); !errors.Is(err, ErrInvalidCredentials) {
+		if _, err := s.Login(ctx, tc.user, tc.pw); !errors.Is(err, ErrInvalidCredentials) {
 			t.Errorf("Login(%q) err = %v, want ErrInvalidCredentials", tc.user, err)
 		}
 	}
 
 	// The username is case-insensitive.
-	sess, err := s.Login(ctx, "10.0.0.1", "admin", "longenough")
+	sess, err := s.Login(ctx, "admin", "longenough")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +204,7 @@ func TestLoginAndSessions(t *testing.T) {
 	}
 
 	// A session expires after the TTL and is deleted on lookup.
-	sess, err = s.Login(ctx, "10.0.0.1", "admin", "longenough")
+	sess, err = s.Login(ctx, "admin", "longenough")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +228,7 @@ func TestSessionTouchesLastSeen(t *testing.T) {
 	if _, err := s.CreateFirstUser(ctx, "admin", "longenough"); err != nil {
 		t.Fatal(err)
 	}
-	sess, err := s.Login(ctx, "10.0.0.1", "admin", "longenough")
+	sess, err := s.Login(ctx, "admin", "longenough")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,16 +264,19 @@ func TestCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if _, err := s.Login(ctx, "10.0.0.1", "admin", "longenough"); err != nil {
+		if _, err := s.Login(ctx, "admin", "longenough"); err != nil {
 			t.Fatal(err)
 		}
 	}
 	clock.Advance(time.Hour)
-	fresh, err := s.Login(ctx, "10.0.0.1", "admin", "longenough")
+	fresh, err := s.Login(ctx, "admin", "longenough")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Login(ctx, "10.0.0.2", "admin", "nope-nope"); !errors.Is(err, ErrInvalidCredentials) {
+	if _, err := s.Login(ctx, "admin", "nope-nope"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatal(err)
+	}
+	if _, err := s.Attempt("10.0.0.2"); err != nil {
 		t.Fatal(err)
 	}
 	clock.Advance(DefaultSessionTTL - time.Hour)
@@ -285,7 +287,7 @@ func TestCleanup(t *testing.T) {
 	if _, err := s.SessionUser(ctx, fresh.Token); err != nil {
 		t.Errorf("fresh session gone: %v", err)
 	}
-	if l := s.ipLimit.len() + s.userLimit.len(); l != 0 {
+	if l := s.ipLimit.len(); l != 0 {
 		t.Errorf("limiter keys left = %d, want 0", l)
 	}
 }
@@ -307,58 +309,28 @@ func TestRunCleanupStopsOnCancel(t *testing.T) {
 	}
 }
 
-func TestLoginRateLimit(t *testing.T) {
+// Failed logins block nobody and don't tell a real username from a made-up one.
+func TestFailedLoginsBlockNobody(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s, clock := newTestService(t)
+	s, _ := newTestService(t)
 	if _, err := s.CreateFirstUser(ctx, "admin", "longenough"); err != nil {
 		t.Fatal(err)
 	}
-
-	// Per username: from many IPs, the username locks after userFailureLimit failures,
-	// even for the right password.
-	for i := range userFailureLimit {
-		if _, err := s.Login(ctx, ip(i), "admin", "wrong-password"); !errors.Is(err, ErrInvalidCredentials) {
-			t.Fatalf("attempt %d: %v", i, err)
+	for i := range 30 {
+		for _, name := range []string{"admin", "ghost"} {
+			if _, err := s.Login(ctx, name, "wrong-password"); !errors.Is(err, ErrInvalidCredentials) {
+				t.Fatalf("failure %d for %s: %v", i, name, err)
+			}
 		}
 	}
-	var rl *RateLimitedError
-	if _, err := s.Login(ctx, "10.9.9.9", "ADMIN", "longenough"); !errors.As(err, &rl) {
-		t.Fatalf("err = %v, want RateLimitedError", err)
+	if _, err := s.Login(ctx, "ADMIN", "longenough"); err != nil {
+		t.Errorf("right password after the failures: %v", err)
 	}
-	if rl.RetryAfter <= 0 || rl.RetryAfter > failureWindow {
-		t.Errorf("RetryAfter = %v", rl.RetryAfter)
-	}
-	clock.Advance(failureWindow)
-	if _, err := s.Login(ctx, "10.9.9.9", "admin", "longenough"); err != nil {
-		t.Fatalf("after the window: %v", err)
-	}
-
-	// Per IP: one IP trying many usernames.
-	for i := range ipFailureLimit {
-		_, err := s.Login(ctx, "10.1.1.1", fmt.Sprintf("user%d", i), "wrong-password")
-		if !errors.Is(err, ErrInvalidCredentials) {
-			t.Fatalf("attempt %d: %v", i, err)
-		}
-	}
-	if _, err := s.Login(ctx, "10.1.1.1", "admin", "longenough"); !errors.As(err, &rl) {
-		t.Fatalf("err = %v, want RateLimitedError", err)
-	}
-	if _, err := s.Login(ctx, "10.1.1.2", "admin", "longenough"); err != nil {
-		t.Errorf("other IP: %v", err)
-	}
-
-	// Oversized usernames count against the IP but never become limiter keys.
-	before := s.userLimit.len()
-	if _, err := s.Login(ctx, "10.2.2.2", strings.Repeat("u", 10000), "x"); !errors.Is(err, ErrInvalidCredentials) {
-		t.Errorf("long username err = %v", err)
-	}
-	if s.userLimit.len() != before {
-		t.Error("long username stored in the limiter")
+	if n := s.ipLimit.len(); n != 0 {
+		t.Errorf("logins kept %d limiter keys", n)
 	}
 }
-
-func ip(i int) string { return fmt.Sprintf("10.0.0.%d", i) }
 
 func TestLimiterBounded(t *testing.T) {
 	t.Parallel()
@@ -412,36 +384,6 @@ func TestLimiterRelease(t *testing.T) {
 	}
 }
 
-func TestLoginParallelRespectsLimit(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	s, _ := newTestService(t)
-	if _, err := s.CreateFirstUser(ctx, "admin", "longenough"); err != nil {
-		t.Fatal(err)
-	}
-	const n = 40
-	errs := make([]error, n)
-	var wg sync.WaitGroup
-	for i := range n {
-		wg.Go(func() { _, errs[i] = s.Login(ctx, ip(i), "admin", "wrong-password") })
-	}
-	wg.Wait()
-	guesses := 0
-	for _, err := range errs {
-		var rl *RateLimitedError
-		switch {
-		case errors.Is(err, ErrInvalidCredentials):
-			guesses++
-		case errors.As(err, &rl), errors.Is(err, ErrBusy):
-		default:
-			t.Errorf("err = %v", err)
-		}
-	}
-	if guesses > userFailureLimit {
-		t.Errorf("%d password guesses, limit %d", guesses, userFailureLimit)
-	}
-}
-
 func TestLoginBusy(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -455,43 +397,14 @@ func TestLoginBusy(t *testing.T) {
 	for range maxHashWaiters {
 		s.waiters <- struct{}{}
 	}
-	if _, err := s.Login(ctx, "10.0.0.1", "admin", "longenough"); !errors.Is(err, ErrBusy) {
+	if _, err := s.Login(ctx, "admin", "longenough"); !errors.Is(err, ErrBusy) {
 		t.Fatalf("err = %v, want ErrBusy", err)
 	}
-	if n := s.ipLimit.len() + s.userLimit.len(); n != 0 {
-		t.Errorf("a busy refusal was counted: %d limiter keys", n)
-	}
 }
 
-func TestLoginCounting(t *testing.T) {
+func TestAttemptLimit(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
-	s, _ := newTestService(t)
-	if _, err := s.CreateFirstUser(ctx, "admin", "longenough"); err != nil {
-		t.Fatal(err)
-	}
-	// Successful logins don't use up the IP's attempts.
-	for i := range ipFailureLimit + 5 {
-		if _, err := s.Login(ctx, "10.0.0.1", "admin", "longenough"); err != nil {
-			t.Fatalf("login %d: %v", i, err)
-		}
-	}
-	// Unknown usernames count for the IP only.
-	if _, err := s.Login(ctx, "10.0.0.2", "ghost", "longenough"); !errors.Is(err, ErrInvalidCredentials) {
-		t.Fatal(err)
-	}
-	if s.userLimit.len() != 0 || s.ipLimit.len() != 1 {
-		t.Errorf("limiter keys: user %d, ip %d; want 0, 1", s.userLimit.len(), s.ipLimit.len())
-	}
-}
-
-func TestAttemptSharesTheLoginLimit(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
 	s, clock := newTestService(t)
-	if _, err := s.CreateFirstUser(ctx, "admin", "longenough"); err != nil {
-		t.Fatal(err)
-	}
 	// Valid credentials hand their attempt back.
 	for range ipFailureLimit * 2 {
 		ok, err := s.Attempt("10.0.0.1")
@@ -500,21 +413,17 @@ func TestAttemptSharesTheLoginLimit(t *testing.T) {
 		}
 		ok()
 	}
-	// Failed webhook checks and failed logins fill the same window.
-	for i := range ipFailureLimit - 1 {
+	for i := range ipFailureLimit {
 		if _, err := s.Attempt("10.0.0.1"); err != nil {
 			t.Fatalf("attempt %d: %v", i, err)
 		}
-	}
-	if _, err := s.Login(ctx, "10.0.0.1", "admin", "wrong-password"); !errors.Is(err, ErrInvalidCredentials) {
-		t.Fatalf("login = %v", err)
 	}
 	var rl *RateLimitedError
 	if _, err := s.Attempt("10.0.0.1"); !errors.As(err, &rl) {
 		t.Fatalf("attempt over the limit = %v, want RateLimitedError", err)
 	}
-	if _, err := s.Login(ctx, "10.0.0.1", "admin", "longenough"); !errors.As(err, &rl) {
-		t.Fatalf("login over the limit = %v, want RateLimitedError", err)
+	if rl.RetryAfter <= 0 || rl.RetryAfter > failureWindow {
+		t.Errorf("RetryAfter = %v", rl.RetryAfter)
 	}
 	if _, err := s.Attempt("10.0.0.2"); err != nil {
 		t.Errorf("another IP = %v", err)

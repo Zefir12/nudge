@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// limiter counts failed logins per key (an IP or a username) in a fixed window and
+// limiter counts failed credential checks per key (an IP) in a fixed window and
 // blocks a key that reached its limit until the window ends. It holds at most max keys:
 // when full it drops expired windows, then the oldest one.
 type limiter struct {
@@ -68,13 +68,6 @@ func (l *limiter) release(key string, reservedAt time.Time) {
 	}
 }
 
-// reset forgets key, after a successful login.
-func (l *limiter) reset(key string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	delete(l.entries, key)
-}
-
 // prune drops every expired window.
 func (l *limiter) prune(now time.Time) {
 	l.mu.Lock()
@@ -108,8 +101,8 @@ func (l *limiter) len() int {
 	return len(l.entries)
 }
 
-// Attempt counts a check of another credential from ip (a deploy webhook's secret)
-// against ip's failed-login limit, so guessing secrets is as slow as guessing passwords.
+// Attempt counts a check of a credential other than a password from ip (a deploy
+// webhook's secret, a deploy token, an SSO callback) against ip's limit.
 // It fails with a *RateLimitedError while ip is blocked; otherwise the caller calls
 // succeeded once the credential turned out valid, which hands the attempt back.
 func (s *Service) Attempt(ip string) (succeeded func(), err error) {

@@ -3,9 +3,7 @@ package api
 import (
 	"context"
 	"errors"
-	"math"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -104,14 +102,8 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) startSession(w http.ResponseWriter, r *http.Request, c credentials, code int) {
 	ip := clientIP(r)
-	sess, err := s.auth.Login(r.Context(), ip, c.Username, c.Password)
-	var limited *auth.RateLimitedError
+	sess, err := s.auth.Login(r.Context(), c.Username, c.Password)
 	switch {
-	case errors.As(err, &limited):
-		s.log.Warn("login rate limited", "ip", ip)
-		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(limited.RetryAfter.Seconds()))))
-		s.writeError(w, http.StatusTooManyRequests, "too many failed login attempts, try again later")
-		return
 	case errors.Is(err, auth.ErrBusy):
 		w.Header().Set("Retry-After", "1")
 		s.writeError(w, http.StatusServiceUnavailable, "too many concurrent logins, try again")
@@ -148,17 +140,11 @@ func (s *server) changePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := clientIP(r)
-	err := s.auth.ChangePassword(r.Context(), ip, u.ID, sessionToken(r), req.Current, req.New)
-	var limited *auth.RateLimitedError
+	err := s.auth.ChangePassword(r.Context(), u.ID, sessionToken(r), req.Current, req.New)
 	var inputErr *auth.InputError
 	switch {
 	case errors.As(err, &inputErr):
 		s.writeError(w, http.StatusBadRequest, inputErr.Msg)
-		return
-	case errors.As(err, &limited):
-		s.log.Warn("password change rate limited", "username", u.Username, "ip", ip)
-		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(limited.RetryAfter.Seconds()))))
-		s.writeError(w, http.StatusTooManyRequests, "too many failed attempts, try again later")
 		return
 	case errors.Is(err, auth.ErrBusy):
 		w.Header().Set("Retry-After", "1")

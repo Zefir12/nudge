@@ -119,7 +119,7 @@ type Options struct {
 	// (hostdisk.Stat locally, hostdisk.Remote for an agent); nil means unknown.
 	DiskSpace func(ctx context.Context, env environments.Environment) (hostdisk.Space, error)
 	// TrustedProxies are the reverse proxies whose X-Forwarded-For (client IP for the
-	// login limiter and logs) and X-Forwarded-Proto are believed; empty means none.
+	// credential limiter and logs) and X-Forwarded-Proto are believed; empty means none.
 	TrustedProxies []netip.Prefix
 }
 
