@@ -85,6 +85,9 @@ refuses `ws://` unless `NUDGE_INSECURE=1`.
   `NUDGE_ADMIN_PASSWORD` creates it at startup.
 - Browser: session cookie (`HttpOnly`, `Secure` behind TLS, `SameSite=Strict`), sessions
   in SQLite with expiry; writes additionally require a matching `Origin`.
+- Every response carries a CSP (scripts only from nudge's own files, no framing),
+  `X-Content-Type-Options`, `X-Frame-Options` and `Referrer-Policy` (`api/headers.go`).
+  Inline styles stay allowed because xterm creates them at runtime; nudge's own code uses none.
 - Scripts: API tokens (`Authorization: Bearer nudge_...`), stored hashed, shown once.
 - Decision (#33): routes that mint a credential which outlives the token's revocation
   (creating API tokens, deploy tokens, users and passwords; #77 added agent environments,

@@ -201,6 +201,9 @@ location / {
 
 Set `NUDGE_PUBLIC_URL=https://nudge.example.net` as well.
 
+nudge sets its own `Content-Security-Policy`, `X-Frame-Options`, `X-Content-Type-Options`
+and `Referrer-Policy`, so a proxy needn't add them. HSTS is left to whoever terminates TLS.
+
 ### Trusted proxies
 `X-Forwarded-For` and `X-Forwarded-Proto` are only believed when the TCP peer is in
 `NUDGE_TRUSTED_PROXIES`, a comma-separated list of CIDRs or single IPs (IPv4 or IPv6),
