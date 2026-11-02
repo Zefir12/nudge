@@ -434,7 +434,7 @@ func New(opts Options) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/api/", s.protect(api))
 	mux.Handle("/", opts.Web)
-	return proxies(opts.TrustedProxies).handler(mux)
+	return proxies(opts.TrustedProxies).handler(securityHeaders(mux))
 }
 
 type server struct {

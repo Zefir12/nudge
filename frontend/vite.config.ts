@@ -17,7 +17,7 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
-    // The server's CSP will allow no inline scripts or styles.
+    // The server's CSP allows no inline scripts; inline styles only for the terminal.
     assetsInlineLimit: 0,
   },
   test: {

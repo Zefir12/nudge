@@ -13,7 +13,7 @@ docs/config/; grep there, not in README. The API reference is docs/api.md; the d
 `prepareDataDir` and `store.Open` (migrations), `secretbox.LoadKey` + `registries.New`, `auth.New` (+ `EnsureAdmin`,
 `RunCleanup`), `audit.New` (+ `RunCleanup`), `environments.New` (+ `EnsureLocal`), `metrics.Open` + `metrics.New` (`Run`), `notify.New` + `NewWatcher` (both `Run`, sharing one `events.Hub` with the API), `metrics.NewActivity` (`Run`, on the same hub), `deployhooks.New` (+ `FailStale`, `Close` deferred), then builds
 `oidc.New` (when SSO is configured), `api.New(api.Options{Auth: …, Envs: …, OIDC: …, Web: web.Handler(web.Dist())})`
-→ root `http.ServeMux` (wrapped in `proxies.handler`): `/api/` goes through `server.protect` (with an `Authorization`
+→ root `http.ServeMux` (wrapped in `proxies.handler` and `securityHeaders`, api/headers.go): `/api/` goes through `server.protect` (with an `Authorization`
 header an API token, else the cross-origin check and a session; `server.authenticate`
 lets patterns in `publicRoutes` through without either credential, refuses tokens on
 `sessionOnlyRoutes` and refuses a `user` (not admin) every route outside `userRoutes`; `POST /api/v1/hooks/{id}` checks its webhook secret itself) to the API mux
