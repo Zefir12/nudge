@@ -305,9 +305,17 @@ func TestAgentLink(t *testing.T) {
 				t.Errorf("environment agent = %+v, want address %s and a round trip", env.Agent, tt.wantAddr)
 			}
 			_ = a.Session.Close()
+			// Pings fail as soon as the tunnel is down, so the environment can read offline
+			// just before ServeAgent wakes and drops the session the link comes from.
 			at.waitOnline(t, false)
-			if got := agentOf(t, at.envTest, at.envID); got.Address != "" || got.RTTMs != nil {
-				t.Errorf("after disconnect: agent = %+v, want no address or round trip", got)
+			deadline = time.Now().Add(5 * time.Second)
+			got = agentOf(t, at.envTest, at.envID)
+			for got.Address != "" || got.RTTMs != nil {
+				if time.Now().After(deadline) {
+					t.Fatalf("after disconnect: agent = %+v, want no address or round trip", got)
+				}
+				time.Sleep(10 * time.Millisecond)
+				got = agentOf(t, at.envTest, at.envID)
 			}
 		})
 	}
