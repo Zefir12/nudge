@@ -50,6 +50,8 @@ const (
 	// dockerLabels is Docker's own label namespace (compose projects and services): a
 	// user's container could otherwise join an admin's stack.
 	dockerLabels = "com.docker."
+	// composeLabels are the ones of dockerLabels an image may not set either.
+	composeLabels = "com.docker.compose."
 )
 
 // deniedLabel returns the prefix of denied (Options.DeniedLabels) that label k starts
@@ -468,7 +470,7 @@ func volumesRefusal(cfg *dockerspec.DockerOCIImageConfig, mounts []tenantMount) 
 }
 
 // tenantImageRefusal is what the tenant builder refuses in an image for a user's container
-// with mounts: nudge's own or denied labels (refuseImageLabels) or an uncovered VOLUME
+// with mounts: nudge's own, compose's or denied labels (refuseImageLabels) or an uncovered VOLUME
 // (imageVolumes).
 func tenantImageRefusal(cfg *dockerspec.DockerOCIImageConfig, mounts []tenantMount, denied []string) error {
 	if err := imageLabelsRefusal(cfg, denied); err != nil {

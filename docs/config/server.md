@@ -423,7 +423,9 @@ default, so repeat the default's prefixes you want to keep and add your own, for
 
 A user's create or edit with such a label is refused with a field error on `labels`, and
 so is a container whose image sets one (Docker copies an image's labels onto its
-containers). A container made before a prefix was added keeps running, but its next
+containers). A user's labels also can't start with `com.docker.`, nor an image's with
+`com.docker.compose.`, whatever this setting says: such a container would count as part
+of an admin's stack. A container made before a prefix was added keeps running, but its next
 recreate or update is refused until the label is gone (edit it out in the user's form).
 nudge's own `net.zefirlabs.nudge.` and Docker's `com.docker.` labels are always refused.
 Admins' containers are not affected.

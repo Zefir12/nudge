@@ -434,7 +434,9 @@ func refuseImageLabels(ctx context.Context, c docker.Client, image string, denie
 	return imageLabelsRefusal(img.Config, denied)
 }
 
-// imageLabelsRefusal is refuseImageLabels for an image's config.
+// imageLabelsRefusal is refuseImageLabels for an image's config. Of Docker's own labels it
+// refuses only compose's, which could join the container to an admin's stack; public images
+// may carry other com.docker.* labels, which do no harm.
 func imageLabelsRefusal(cfg *dockerspec.DockerOCIImageConfig, denied []string) error {
 	if cfg == nil {
 		return nil
@@ -442,6 +444,9 @@ func imageLabelsRefusal(cfg *dockerspec.DockerOCIImageConfig, denied []string) e
 	for _, k := range slices.Sorted(maps.Keys(cfg.Labels)) {
 		if reservedKey(k) {
 			return &statusError{code: http.StatusBadRequest, msg: "the image sets labels starting with " + reservedLabels + ", which are reserved for nudge"}
+		}
+		if strings.HasPrefix(strings.ToLower(k), composeLabels) {
+			return &statusError{code: http.StatusBadRequest, msg: "the image sets labels starting with " + composeLabels + ", which are Docker's own"}
 		}
 		if p := deniedLabel(k, denied); p != "" {
 			return &statusError{code: http.StatusBadRequest, msg: "the image sets labels starting with " + p + ", which are not allowed on this server"}
