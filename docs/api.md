@@ -414,6 +414,8 @@ refuses with `409 over your allowance: ...` if the new total is over:
   whole allowance. A recreate leaves the old container out, so a bigger limit counts as
   the difference.
 - The container count includes it.
+- A user's container can't run an image that sets a `com.docker.compose.` label (`400`), which
+  would count it as part of an admin's stack.
 - A user's container can't run an image that sets a `net.zefirlabs.nudge.` label (`400`):
   it would make the container the admins' and escape every later check.
 - Host ports must be in the range; a binding without a host port gets the lowest one in

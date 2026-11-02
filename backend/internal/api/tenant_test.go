@@ -111,6 +111,9 @@ func newTenantTestOpts(t *testing.T, mod func(*Options)) ownTest {
 	ot.fake.ImageDetails["routed:1"] = image.InspectResponse{ID: "sha256:routed", Config: &dockerspec.DockerOCIImageConfig{ImageConfig: ocispec.ImageConfig{
 		Labels: map[string]string{"maintainer": "x", "Traefik.http.routers.shop.rule": "Host(`shop.example`)"},
 	}}}
+	ot.fake.ImageDetails["composed:1"] = image.InspectResponse{ID: "sha256:composed", Config: &dockerspec.DockerOCIImageConfig{ImageConfig: ocispec.ImageConfig{
+		Labels: map[string]string{"com.docker.compose.project": "shop", "com.docker.compose.service": "db"},
+	}}}
 	ot.fake.Volumes = append(ot.fake.Volumes, volume.Volume{Name: "pgdata", Driver: "local", Labels: map[string]string{ownerLabel: ot.bobKey}})
 	return ot
 }
@@ -228,6 +231,7 @@ func TestCreateTenantRefusals(t *testing.T) {
 		{"proxy label", `,"labels":{"app":"web","Traefik.http.routers.shop.rule":"Host(x)"}`, 400, `"labels":"labels starting with traefik. are not allowed on this server"`},
 		{"proxy label without a dot", `,"labels":{"caddy_0":"shop.example"}`, 400, `labels starting with caddy are not allowed`},
 		{"image sets a proxy label", `,"image":"routed:1"`, 400, "the image sets labels starting with traefik., which are not allowed"},
+		{"image sets a compose label", `,"image":"composed:1"`, 400, "the image sets labels starting with com.docker.compose., which are Docker's own"},
 		{"no name", `,"name":""`, 400, `"name":"required"`},
 		{"internal registry", `,"image":"10.0.0.5:5000/x:1"`, 403, "pulls from 10.0.0.5:5000 are not allowed"},
 		{"upper-case host", `,"image":"Intranet/x:1"`, 403, "pulls from intranet are not allowed"},
@@ -493,6 +497,36 @@ func TestTenantRefusedPullRemoved(t *testing.T) {
 			}
 			if tt.code != 201 && len(pulls) > 0 {
 				t.Errorf("pulls = %v, want the refused image not counted", pulls)
+			}
+		})
+	}
+}
+
+func TestImageLabelsRefusal(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		labels map[string]string
+		want   string
+	}{
+		{"no labels", nil, ""},
+		{"ordinary label", map[string]string{"maintainer": "x"}, ""},
+		{"other com.docker label", map[string]string{"com.docker.extension.vendor": "x"}, ""},
+		{"compose project", map[string]string{"com.docker.compose.project": "shop"}, "com.docker.compose."},
+		{"compose label in another case", map[string]string{"COM.Docker.Compose.Service": "db"}, "com.docker.compose."},
+		{"denied label", map[string]string{"traefik.enable": "true"}, "traefik."},
+		{"nudge's own label", map[string]string{ownerLabel: "x"}, "reserved for nudge"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := &dockerspec.DockerOCIImageConfig{ImageConfig: ocispec.ImageConfig{Labels: tt.labels}}
+			err := imageLabelsRefusal(cfg, []string{"traefik."})
+			switch {
+			case tt.want == "" && err != nil:
+				t.Errorf("refused: %v", err)
+			case tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)):
+				t.Errorf("err = %v, want one naming %q", err, tt.want)
 			}
 		})
 	}
