@@ -3,6 +3,7 @@ import { computed, ref } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
 
 import { getNetwork, removeNetwork } from '../api/client';
+import FoldCard from '../components/FoldCard.vue';
 import KeyValues from '../components/KeyValues.vue';
 import LoadState from '../components/LoadState.vue';
 import { useLoad } from '../composables/useLoad';
@@ -53,8 +54,8 @@ const options = computed(() => sorted(n.value?.options));
         <button type="button" class="danger" :disabled="removing" @click="onRemove">Remove</button>
       </div>
       <p v-if="removeError" class="error" role="alert">{{ removeError }}</p>
-      <section class="card">
-        <h2>Overview</h2>
+      <FoldCard fold-id="network.overview">
+        <template #title>Overview</template>
         <KeyValues
           :rows="[
             ['ID', shortId(n.id)],
@@ -77,9 +78,9 @@ const options = computed(() => sorted(n.value?.options));
             ['Gateway', c.gateway],
           ]"
         />
-      </section>
-      <section class="card">
-        <h2>Containers</h2>
+      </FoldCard>
+      <FoldCard fold-id="network.containers">
+        <template #title>Containers</template>
         <p v-if="n.containers.length === 0" class="muted">No containers.</p>
         <div v-else class="table-wrap">
           <table>
@@ -105,17 +106,17 @@ const options = computed(() => sorted(n.value?.options));
             </tbody>
           </table>
         </div>
-      </section>
-      <section class="card">
-        <h2>Options</h2>
+      </FoldCard>
+      <FoldCard fold-id="network.options">
+        <template #title>Options</template>
         <p v-if="options.length === 0" class="muted">No options.</p>
         <KeyValues v-else :rows="options" mono />
-      </section>
-      <section class="card">
-        <h2>Labels</h2>
+      </FoldCard>
+      <FoldCard fold-id="network.labels">
+        <template #title>Labels</template>
         <p v-if="labels.length === 0" class="muted">No labels.</p>
         <KeyValues v-else :rows="labels" mono />
-      </section>
+      </FoldCard>
     </template>
   </LoadState>
 </template>

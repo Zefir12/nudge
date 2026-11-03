@@ -6,6 +6,7 @@ import { RouterLink } from 'vue-router';
 import type { DockerEvent } from '../api/client';
 import { useEvents } from '../composables/useEvents';
 import { eventLabel, eventPage } from '../eventLinks';
+import FoldCard from './FoldCard.vue';
 
 const props = defineProps<{ env: string }>();
 
@@ -27,11 +28,11 @@ const time = (iso: string) => new Date(iso).toLocaleTimeString();
 </script>
 
 <template>
-  <section class="card recent">
-    <div class="title">
-      <h2>Recent events</h2>
-      <RouterLink :to="{ name: 'events', params: { env } }">All events</RouterLink>
-    </div>
+  <FoldCard fold-id="recentevents.recent-events" class="recent">
+    <template #title>Recent events</template>
+    <template #actions>
+      <RouterLink class="all" :to="{ name: 'events', params: { env } }">All events</RouterLink>
+    </template>
     <p v-if="error" class="error" role="alert">{{ error }} Reconnecting…</p>
     <p v-if="events.length === 0" class="muted">No events since the page was opened.</p>
     <ul v-else>
@@ -46,18 +47,11 @@ const time = (iso: string) => new Date(iso).toLocaleTimeString();
         </span>
       </li>
     </ul>
-  </section>
+  </FoldCard>
 </template>
 
 <style scoped>
-.title {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 1rem;
-}
-
-.title a {
+.all {
   font-size: 12.5px;
 }
 

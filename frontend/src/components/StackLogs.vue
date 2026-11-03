@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue
 
 import { streamLogs, type LogLine } from '../api/client';
 import { matches, timeKey } from '../format';
+import FoldCard from './FoldCard.vue';
 
 // StackLogs follows the logs of a stack's containers in one view: one log stream per
 // container, lines merged by the daemon's timestamp and tagged with the service.
@@ -135,8 +136,8 @@ const statusText = computed(() => {
 </script>
 
 <template>
-  <section class="card">
-    <h2>Logs</h2>
+  <FoldCard fold-id="stacklogs.logs">
+    <template #title>Logs</template>
     <p v-if="containers.length === 0" class="muted">The stack has no containers.</p>
     <template v-else>
       <div class="controls">
@@ -167,7 +168,7 @@ const statusText = computed(() => {
         </div>
       </div>
     </template>
-  </section>
+  </FoldCard>
 </template>
 
 <style scoped>

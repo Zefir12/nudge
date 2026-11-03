@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vite-plus/test';
 import { createMemoryHistory } from 'vue-router';
 
 import type { Environment } from '../api/client';
@@ -171,6 +171,11 @@ describe('EnvironmentTile', () => {
   });
 
   it('shows the counted events per hour in the heatmap', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(2026, 9, 27, 13, 30));
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
     const days = [
       '2026-10-21',
@@ -204,7 +209,7 @@ describe('EnvironmentTile', () => {
       'Tue',
     ]);
     const cells = heatmap.findAll('rect');
-    expect(cells).toHaveLength(7 * 24);
+    expect(cells).toHaveLength(6 * 24 + 14);
     expect(cells[6 * 24 + 13]?.find('title').text()).toBe('Tue 13:00, 7 events');
   });
 

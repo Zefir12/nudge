@@ -5,6 +5,7 @@ import { RouterLink } from 'vue-router';
 import { getEnvironmentStats, type EnvironmentStats } from '../api/client';
 import { useLiveUsage } from '../composables/useLiveUsage';
 import { formatBytes } from '../format';
+import FoldCard from './FoldCard.vue';
 
 const props = defineProps<{ env: string }>();
 
@@ -70,8 +71,8 @@ onBeforeUnmount(stop);
 </script>
 
 <template>
-  <section class="card">
-    <h2>Usage</h2>
+  <FoldCard fold-id="environmentusage.usage">
+    <template #title>Usage</template>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
     <p v-if="!stats && !error" class="muted">Sampling running containers…</p>
     <template v-if="stats">
@@ -124,7 +125,7 @@ onBeforeUnmount(stop);
         </button>
       </template>
     </template>
-  </section>
+  </FoldCard>
 </template>
 
 <style scoped>

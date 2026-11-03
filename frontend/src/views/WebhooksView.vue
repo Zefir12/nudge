@@ -13,6 +13,7 @@ import {
   type WebhookInput,
 } from '../api/client';
 import { formatDate } from '../format';
+import FoldCard from '../components/FoldCard.vue';
 
 const webhooks = ref<Webhook[] | null>(null);
 const error = ref('');
@@ -121,8 +122,8 @@ onMounted(load);
     update once. URLs and header values are stored encrypted and never shown again.
   </p>
 
-  <section class="card">
-    <h2>{{ editing ? `Edit ${editing.name}` : 'Add a webhook' }}</h2>
+  <FoldCard fold-id="webhooks.form" :force-open="!!editing">
+    <template #title>{{ editing ? `Edit ${editing.name}` : 'Add a webhook' }}</template>
     <form class="webhook" @submit.prevent="onSubmit">
       <label>
         Name
@@ -180,7 +181,7 @@ onMounted(load);
       </div>
     </form>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
-  </section>
+  </FoldCard>
 
   <section class="card">
     <p v-if="webhooks === null && !error" class="muted">Loading…</p>

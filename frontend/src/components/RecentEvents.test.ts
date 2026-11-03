@@ -32,7 +32,7 @@ describe('RecentEvents', () => {
   it('shows the latest events, newest first, without exec events', async () => {
     const wrapper = mountPanel();
     expect(wrapper.text()).toContain('No events since the page was opened.');
-    expect(wrapper.find('.title a').attributes('href')).toBe('/env/1/events');
+    expect(wrapper.find('a.all').attributes('href')).toBe('/env/1/events');
 
     sockets[0]!.message(event('start', 'web'));
     sockets[0]!.message(event('exec_start: sh', 'web'));

@@ -64,6 +64,42 @@ const posts = (fetch: ReturnType<typeof stubApi>, path: string) =>
   );
 
 describe('DeploymentView', () => {
+  it.each([
+    {
+      name: 'one value each',
+      variables: { API_IMAGE: 'app:2' },
+      images: 'app=sha256:abcdef0123456789',
+      varLabel: 'API_IMAGE',
+      varTitle: 'API_IMAGE=app:2',
+      imageLabel: 'app abcdef0',
+      imageTitle: 'app=sha256:abcdef0123456789',
+    },
+    {
+      name: 'several values',
+      variables: { API_IMAGE: 'app:2', WEB_IMAGE: 'web:2' },
+      images: 'app=sha256:abcdef0123456789,web=sha256:0123456789abcdef',
+      varLabel: 'API_IMAGE +1',
+      varTitle: 'API_IMAGE=app:2\nWEB_IMAGE=web:2',
+      imageLabel: 'app abcdef0 +1',
+      imageTitle: 'app=sha256:abcdef0123456789\nweb=sha256:0123456789abcdef',
+    },
+  ])("shortens a run's values to tokens with $name", async (c) => {
+    stubApi({
+      'GET /deployments/shop': { body: shop() },
+      'GET /deployments/shop/deploys': {
+        body: [{ ...run(1, 'succeeded'), variables: c.variables, image_after: c.images }],
+      },
+      'GET /deployments/shop/members': { body: [member] },
+      'GET /deployments/shop/tokens': { body: [] },
+    });
+    const { wrapper } = await mountView();
+    const [vars, images] = wrapper.findAll('.runs .token');
+    expect(vars!.text()).toBe(c.varLabel);
+    expect(vars!.attributes('title')).toBe(c.varTitle);
+    expect(images!.text()).toBe(c.imageLabel);
+    expect(images!.attributes('title')).toBe(c.imageTitle);
+  });
+
   it('shows runs and deploys with the values set', async () => {
     let runs = [run(1, 'failed')];
     const fetch = stubApi({
@@ -119,6 +155,9 @@ describe('DeploymentView', () => {
     await flushPromises();
     expect(posts(fetch, '/deployments/shop/tokens')).toHaveLength(1);
     expect(wrapper.find('.secret').text()).toBe('nudge_dt_ABCDsecret');
+    // The toggles: deploy, runs, tokens. A secret shown once can't be folded away.
+    const tokensToggle = wrapper.findAll('.fold-toggle')[2]!;
+    expect(tokensToggle.attributes('disabled')).toBeDefined();
     expect(wrapper.find('.snippet').text()).toContain('/api/v1/deployments/shop/deploys?stream=1');
     expect(wrapper.find('.snippet').text()).toContain('"API_IMAGE":"<api_image>"');
     await wrapper.findAll('[role=tab]')[1]?.trigger('click');
@@ -129,6 +168,7 @@ describe('DeploymentView', () => {
     await button(wrapper, 'Done')?.trigger('click');
     expect(wrapper.find('.secret').exists()).toBe(false);
     expect(wrapper.text()).toContain('nudge_dt_ABCD…');
+    expect(tokensToggle.attributes('disabled')).toBeUndefined();
   });
 
   it('shows the step of a running run and the warnings of a finished one', async () => {

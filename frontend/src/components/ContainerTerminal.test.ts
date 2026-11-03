@@ -131,7 +131,10 @@ describe('ContainerTerminal', () => {
   it('closes the session on disconnect and unmount', async () => {
     const wrapper = mountTerminal();
     const first = await connect(wrapper);
-    await wrapper.get('button[type="button"]').trigger('click');
+    await wrapper
+      .findAll('button')
+      .find((b) => b.text() === 'Disconnect')!
+      .trigger('click');
     expect(first.ws.closed).toBe(true);
     expect(wrapper.text()).toContain('Disconnected');
 

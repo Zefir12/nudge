@@ -16,6 +16,7 @@ import {
   type Role,
 } from '../api/client';
 import AllowanceForm from '../components/AllowanceForm.vue';
+import FoldCard from '../components/FoldCard.vue';
 import { formatDate } from '../format';
 import { currentUser } from '../session';
 
@@ -207,8 +208,8 @@ onMounted(load);
     their containers in an environment may take together.
   </p>
 
-  <section class="card">
-    <h2>Add a user</h2>
+  <FoldCard fold-id="users.add-a-user">
+    <template #title>Add a user</template>
     <form class="user" @submit.prevent="onCreate">
       <label>
         Username
@@ -288,7 +289,7 @@ onMounted(load);
       @close="allowing = null"
     />
     <p v-if="error" class="error" role="alert">{{ error }}</p>
-  </section>
+  </FoldCard>
 
   <section class="card">
     <p v-if="users === null && !error" class="muted">Loading…</p>
