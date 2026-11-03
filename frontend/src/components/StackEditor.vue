@@ -10,7 +10,8 @@ import CodeEditor from './CodeEditor.vue';
 // saving.
 const compose = defineModel<string>('compose', { required: true });
 const env = defineModel<string>('env', { required: true });
-defineProps<{ disabled?: boolean }>();
+// composeFromGit makes compose.yaml read-only: it comes from a repository.
+defineProps<{ disabled?: boolean; composeFromGit?: boolean }>();
 
 const syntax = computed(() => readCompose(compose.value));
 const checking = ref(false);
@@ -55,12 +56,14 @@ defineExpose({ validate });
 <template>
   <div class="editor">
     <label class="field">
-      <span>compose.yaml</span>
+      <span
+        >compose.yaml <span v-if="composeFromGit" class="muted">(read-only: it comes from git)</span></span
+      >
       <CodeEditor
         v-model="compose"
         language="yaml"
         size="tall"
-        :disabled="disabled"
+        :disabled="disabled || composeFromGit"
         :aria-invalid="syntax.errors.length > 0"
       />
     </label>

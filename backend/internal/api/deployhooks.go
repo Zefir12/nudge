@@ -17,6 +17,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/deployhooks"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/gitstacks"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/stacks"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/tunnel"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/updates"
@@ -402,12 +403,13 @@ func (s *server) deployHook(ctx context.Context, h deployhooks.Hook) deployhooks
 	}
 	ctx, cancel := context.WithTimeout(ctx, stackTimeout)
 	defer cancel()
-	runner, unlock, err := s.startStack(ctx, env, h.Target)
+	runner, pull, unlock, err := s.startStackPull(ctx, env, h.Target, nil)
 	if err != nil {
 		return failed(err)
 	}
 	defer unlock()
 	code, changes, err := s.pullAndDeploy(ctx, stackRun{env: env, c: c, runner: runner, name: h.Target, out: func(stacks.Line) {}}, h.Owner)
+	s.finishGitPull(ctx, env, h.Target, pull, err == nil && code == 0)
 	before, after := stackImages(changes)
 	switch {
 	case err != nil:
@@ -416,7 +418,7 @@ func (s *server) deployHook(ctx context.Context, h deployhooks.Hook) deployhooks
 		return out
 	case code != 0:
 		return deployhooks.Outcome{Status: deployhooks.StatusFailed, ImageBefore: before, ImageAfter: after, Error: fmt.Sprintf("compose exited with code %d", code)}
-	case len(changes) == 0:
+	case len(changes) == 0 && (pull == nil || !pull.changed):
 		return deployhooks.Outcome{Status: deployhooks.StatusUnchanged}
 	default:
 		return deployhooks.Outcome{Status: deployhooks.StatusUpdated, ImageBefore: before, ImageAfter: after}
@@ -439,7 +441,11 @@ func stackImages(changes []updates.Change) (string, string) {
 func deployError(err error) string {
 	var pf *pullFailure
 	var se *statusError
+	var ge *gitstacks.Error
 	switch {
+	case errors.As(err, &ge):
+		// nudge's own words, never the remote's.
+		return ge.Msg
 	case errors.Is(err, context.Canceled):
 		return "the run was cancelled"
 	case errors.Is(err, context.DeadlineExceeded):

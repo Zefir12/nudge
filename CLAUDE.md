@@ -27,8 +27,9 @@ with its own image. Read PLAN.md for the roadmap and docs/ for decisions.
   `modernc.org/sqlite` (pure-Go SQLite), `github.com/coder/websocket`,
   `github.com/hashicorp/yamux`, `golang.org/x/crypto` (argon2id), `vue-router`,
   `yaml` (compose syntax in the stack editor), `github.com/coreos/go-oidc/v3` with its
-  `github.com/go-jose/go-jose/v4` and `golang.org/x/oauth2` (OIDC login). Any
-  other dependency only after asking zefir.
+  `github.com/go-jose/go-jose/v4` and `golang.org/x/oauth2` (OIDC login),
+  `github.com/go-git/go-git/v5` (stacks from git; server only). Any other dependency only
+  after asking zefir.
 - Lint: golangci-lint (backend/.golangci.yml), `vp check` and `vue-tsc`. Formatting:
   gofmt + goimports, `vp check --fix`.
 - Everything runs in Docker by default; `make ... LOCAL=1` uses a host toolchain.

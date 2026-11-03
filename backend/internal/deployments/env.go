@@ -63,3 +63,45 @@ func envLine(line string) (name, value string, ok bool) {
 	}
 	return name, value, name != ""
 }
+
+// MergeEnv sets the variables of repo, a .env text, in env: a variable's line is replaced
+// by repo's line as written, keeping its quoting, and the ones env lacks are added at the
+// end. env's other lines stay, so secrets and a deploy's variables survive unless repo
+// names them too, when repo wins.
+func MergeEnv(env, repo string) string {
+	theirs := map[string]string{}
+	var order []string
+	for line := range strings.SplitSeq(repo, "\n") {
+		name, _, ok := envLine(line)
+		if !ok {
+			continue
+		}
+		if _, dup := theirs[name]; !dup {
+			order = append(order, name)
+		}
+		theirs[name] = strings.TrimSpace(line)
+	}
+	seen := map[string]bool{}
+	lines := strings.Split(env, "\n")
+	for i, line := range lines {
+		name, _, ok := envLine(line)
+		if !ok {
+			continue
+		}
+		if t, set := theirs[name]; set {
+			lines[i] = t
+			seen[name] = true
+		}
+	}
+	out := strings.Join(lines, "\n")
+	for _, name := range order {
+		if seen[name] {
+			continue
+		}
+		if out != "" && !strings.HasSuffix(out, "\n") {
+			out += "\n"
+		}
+		out += theirs[name] + "\n"
+	}
+	return out
+}
