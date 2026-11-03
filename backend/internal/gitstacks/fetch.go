@@ -30,6 +30,9 @@ import (
 const (
 	// DefaultMaxCloneBytes bounds what one clone may write to disk.
 	DefaultMaxCloneBytes = 256 << 20
+	// DefaultMaxObjectBytes bounds one object once inflated, which is what go-git holds
+	// in memory to index it. Forges refuse files over 100 MiB; this leaves room above that.
+	DefaultMaxObjectBytes = 128 << 20
 	// DefaultFetchTimeout bounds one look at a repository, clone included.
 	DefaultFetchTimeout = 2 * time.Minute
 	// maxFileBytes bounds a compose or env file; an agent takes 2 MB of files per stack.
@@ -58,7 +61,10 @@ func (e *Error) Error() string {
 // Unwrap returns the cause.
 func (e *Error) Unwrap() error { return e.Err }
 
-var errCloneTooLarge = errors.New("clone too large")
+var (
+	errCloneTooLarge  = errors.New("clone too large")
+	errObjectTooLarge = errors.New("object too large")
+)
 
 // fetchError names what went wrong in a look at a repository.
 func fetchError(err error) *Error {
@@ -67,6 +73,8 @@ func fetchError(err error) *Error {
 	switch {
 	case errors.Is(err, errCloneTooLarge):
 		msg = "the repository is too large to clone"
+	case errors.Is(err, errObjectTooLarge):
+		msg = "the repository has a file too large to unpack"
 	case errors.Is(err, context.DeadlineExceeded):
 		msg = "the repository did not answer in time"
 	case errors.Is(err, context.Canceled):
@@ -132,7 +140,7 @@ func (s *Service) Fetch(ctx context.Context, src Source) (Result, error) {
 	}()
 	limit := &limitFS{Filesystem: osfs.New(dir), left: new(atomic.Int64)}
 	limit.left.Store(s.maxClone)
-	storage := filesystem.NewStorage(limit, cache.NewObjectLRU(objectCache))
+	storage := &checkedStorage{Storage: filesystem.NewStorage(limit, cache.NewObjectLRU(objectCache)), maxObject: s.maxObject}
 	repo, err := git.CloneContext(ctx, storage, nil, &git.CloneOptions{
 		URL: src.RepoURL, Auth: auth, ReferenceName: ref, SingleBranch: true, Depth: 1, Tags: git.NoTags, NoCheckout: true,
 	})
