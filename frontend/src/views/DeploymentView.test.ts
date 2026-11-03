@@ -155,6 +155,9 @@ describe('DeploymentView', () => {
     await flushPromises();
     expect(posts(fetch, '/deployments/shop/tokens')).toHaveLength(1);
     expect(wrapper.find('.secret').text()).toBe('nudge_dt_ABCDsecret');
+    // The toggles: deploy, runs, tokens. A secret shown once can't be folded away.
+    const tokensToggle = wrapper.findAll('.fold-toggle')[2]!;
+    expect(tokensToggle.attributes('disabled')).toBeDefined();
     expect(wrapper.find('.snippet').text()).toContain('/api/v1/deployments/shop/deploys?stream=1');
     expect(wrapper.find('.snippet').text()).toContain('"API_IMAGE":"<api_image>"');
     await wrapper.findAll('[role=tab]')[1]?.trigger('click');
@@ -165,6 +168,7 @@ describe('DeploymentView', () => {
     await button(wrapper, 'Done')?.trigger('click');
     expect(wrapper.find('.secret').exists()).toBe(false);
     expect(wrapper.text()).toContain('nudge_dt_ABCD…');
+    expect(tokensToggle.attributes('disabled')).toBeUndefined();
   });
 
   it('shows the step of a running run and the warnings of a finished one', async () => {

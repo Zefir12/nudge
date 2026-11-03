@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import FoldCard from '../components/FoldCard.vue';
 import { computed, onUnmounted, ref, watch } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
 
@@ -28,6 +27,7 @@ import {
 import CopyToken from '../components/CopyToken.vue';
 import DeploymentHealthForm from '../components/DeploymentHealthForm.vue';
 import DeploySnippets from '../components/DeploySnippets.vue';
+import FoldCard from '../components/FoldCard.vue';
 import { formatDate, shortId } from '../format';
 
 const route = useRoute();
@@ -261,7 +261,7 @@ function imagesLabel(images: string) {
       </div>
     </FoldCard>
 
-    <FoldCard v-if="can('manage_tokens')" fold-id="deployment.deploy-tokens">
+    <FoldCard v-if="can('manage_tokens')" fold-id="deployment.deploy-tokens" :force-open="!!created">
       <template #title>Deploy tokens</template>
       <p class="muted">
         A deploy token works only on this deployment's deploys and runs, nowhere else in the API.

@@ -1,7 +1,6 @@
 <!-- What on an environment wants a look: containers with an update available (from the
      last check), stopped containers and untagged images. -->
 <script setup lang="ts">
-import FoldCard from './FoldCard.vue';
 import { computed, toRef } from 'vue';
 import { RouterLink } from 'vue-router';
 
@@ -9,6 +8,7 @@ import { listContainers, listImages, listUpdates, type ContainerSummary } from '
 import { useLiveReload } from '../composables/useEvents';
 import { useLoad } from '../composables/useLoad';
 import { formatBytes } from '../format';
+import FoldCard from './FoldCard.vue';
 
 const props = defineProps<{ env: string }>();
 

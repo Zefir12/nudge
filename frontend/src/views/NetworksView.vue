@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import FoldCard from '../components/FoldCard.vue';
 import { computed, ref } from 'vue';
 import { RouterLink } from 'vue-router';
 
 import { listNetworks, pruneNetworks } from '../api/client';
+import FoldCard from '../components/FoldCard.vue';
 import LoadState from '../components/LoadState.vue';
 import NetworkCreate from '../components/NetworkCreate.vue';
 import { useLiveReload } from '../composables/useEvents';

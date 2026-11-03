@@ -5,7 +5,8 @@ import { isFolded, setFolded } from '../folds';
 
 // FoldCard is a card with a title that folds away to just that title. foldId names the kind
 // of card, and the choice is remembered in this browser for every card with that ID.
-// forceOpen shows the body regardless, for when an action elsewhere fills it in.
+// forceOpen shows the body regardless and locks the toggle, for when an action fills it in
+// or it holds something the user can't get back.
 const props = defineProps<{ foldId: string; forceOpen?: boolean }>();
 
 const folded = computed(() => isFolded(props.foldId) && !props.forceOpen);
@@ -20,6 +21,7 @@ const folded = computed(() => isFolded(props.foldId) && !props.forceOpen);
         :aria-expanded="!folded"
         :aria-label="folded ? 'Unfold' : 'Fold'"
         :title="folded ? 'Unfold' : 'Fold'"
+        :disabled="forceOpen"
         @click="setFolded(foldId, !folded)"
       >
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6l6-6" /></svg>

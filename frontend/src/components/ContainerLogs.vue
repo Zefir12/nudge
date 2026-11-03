@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import FoldCard from './FoldCard.vue';
 import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
 
 import { streamLogs, type LogLine } from '../api/client';
 import { matches } from '../format';
+import FoldCard from './FoldCard.vue';
 
 const props = defineProps<{ env: string; id: string; name: string }>();
 

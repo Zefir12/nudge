@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import FoldCard from '../components/FoldCard.vue';
 import { computed, onMounted, ref } from 'vue';
 import { RouterLink } from 'vue-router';
 
@@ -13,6 +12,7 @@ import {
   type RegistryKind,
 } from '../api/client';
 import { formatDate } from '../format';
+import FoldCard from '../components/FoldCard.vue';
 
 const registries = ref<Registry[] | null>(null);
 const error = ref('');

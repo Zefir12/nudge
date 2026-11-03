@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import FoldCard from '../components/FoldCard.vue';
 import { computed, ref } from 'vue';
 import { RouterLink } from 'vue-router';
 
@@ -7,6 +6,7 @@ import { getAllowance, getEnvironment, listNetworks, listVolumes } from '../api/
 import AllowanceUsage from '../components/AllowanceUsage.vue';
 import ConnPlug from '../components/ConnPlug.vue';
 import EnvironmentUsage from '../components/EnvironmentUsage.vue';
+import FoldCard from '../components/FoldCard.vue';
 import GearButton from '../components/GearButton.vue';
 import KeyValues from '../components/KeyValues.vue';
 import LoadState from '../components/LoadState.vue';

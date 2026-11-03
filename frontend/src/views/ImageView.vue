@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import FoldCard from '../components/FoldCard.vue';
 import { computed, ref } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
 
 import { getImage, removeImage } from '../api/client';
+import FoldCard from '../components/FoldCard.vue';
 import KeyValues from '../components/KeyValues.vue';
 import LoadState from '../components/LoadState.vue';
 import { useLoad } from '../composables/useLoad';

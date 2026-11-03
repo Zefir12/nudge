@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import FoldCard from '../components/FoldCard.vue';
 import { computed, ref } from 'vue';
 
 import { createBackup } from '../api/client';
+import FoldCard from '../components/FoldCard.vue';
 
 // Matches the server's backup.MinPassphrase.
 const minLength = 12;

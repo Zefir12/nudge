@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import FoldCard from '../components/FoldCard.vue';
 import { computed, onMounted, ref, watch } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
 
@@ -10,6 +9,7 @@ import {
   type Deployment,
   type StackSummary,
 } from '../api/client';
+import FoldCard from '../components/FoldCard.vue';
 import MyAllowances from '../components/MyAllowances.vue';
 import { environments, loadEnvironments } from '../environments';
 import { currentUser } from '../session';

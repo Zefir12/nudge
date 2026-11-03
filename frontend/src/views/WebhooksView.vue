@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import FoldCard from '../components/FoldCard.vue';
 import { onMounted, ref } from 'vue';
 
 import {
@@ -14,6 +13,7 @@ import {
   type WebhookInput,
 } from '../api/client';
 import { formatDate } from '../format';
+import FoldCard from '../components/FoldCard.vue';
 
 const webhooks = ref<Webhook[] | null>(null);
 const error = ref('');

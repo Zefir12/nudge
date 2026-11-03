@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import FoldCard from '../components/FoldCard.vue';
 import { onMounted, ref } from 'vue';
 
 import {
@@ -17,6 +16,7 @@ import {
   type Role,
 } from '../api/client';
 import AllowanceForm from '../components/AllowanceForm.vue';
+import FoldCard from '../components/FoldCard.vue';
 import { formatDate } from '../format';
 import { currentUser } from '../session';
 

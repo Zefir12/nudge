@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import FoldCard from './FoldCard.vue';
 import '@xterm/xterm/css/xterm.css';
 
 import { FitAddon } from '@xterm/addon-fit';
@@ -7,6 +6,7 @@ import { Terminal } from '@xterm/xterm';
 import { computed, nextTick, onBeforeUnmount, ref, useTemplateRef, watch } from 'vue';
 
 import { openExec, type ExecSession } from '../api/client';
+import FoldCard from './FoldCard.vue';
 
 const props = defineProps<{ env: string; id: string }>();
 
@@ -60,7 +60,10 @@ async function connect() {
   t.onData((d) => s.send(d));
   t.onResize(({ cols, rows }) => s.resize(cols, rows));
   if (typeof ResizeObserver !== 'undefined') {
-    observer = new ResizeObserver(() => fit?.fit());
+    // A folded card has no size to fit to; it fits again when unfolded.
+    observer = new ResizeObserver(() => {
+      if (box.value?.clientWidth) fit?.fit();
+    });
     observer.observe(box.value);
   }
   t.focus();

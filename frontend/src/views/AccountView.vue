@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import FoldCard from '../components/FoldCard.vue';
 import { computed, ref } from 'vue';
 
 import { changePassword } from '../api/client';
 import { currentUser } from '../session';
+import FoldCard from '../components/FoldCard.vue';
 
 // Matches the server's minimum.
 const minLength = 8;

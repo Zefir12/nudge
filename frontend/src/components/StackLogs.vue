@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import FoldCard from './FoldCard.vue';
 import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
 
 import { streamLogs, type LogLine } from '../api/client';
 import { matches, timeKey } from '../format';
+import FoldCard from './FoldCard.vue';
 
 // StackLogs follows the logs of a stack's containers in one view: one log stream per
 // container, lines merged by the daemon's timestamp and tagged with the service.

@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import FoldCard from './FoldCard.vue';
 import { computed, onBeforeUnmount, ref, shallowRef, toRef, watch } from 'vue';
 import { RouterLink } from 'vue-router';
 
 import { getEnvironmentStats, type EnvironmentStats } from '../api/client';
 import { useLiveUsage } from '../composables/useLiveUsage';
 import { formatBytes } from '../format';
+import FoldCard from './FoldCard.vue';
 
 const props = defineProps<{ env: string }>();
 

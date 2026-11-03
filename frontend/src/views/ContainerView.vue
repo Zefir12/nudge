@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import FoldCard from '../components/FoldCard.vue';
 import { computed, defineAsyncComponent, ref } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
 
@@ -7,6 +6,7 @@ import { getContainer, recreateContainer, updateContainer } from '../api/client'
 import ContainerActions from '../components/ContainerActions.vue';
 import ContainerLogs from '../components/ContainerLogs.vue';
 import ContainerStats from '../components/ContainerStats.vue';
+import FoldCard from '../components/FoldCard.vue';
 import KeyValues from '../components/KeyValues.vue';
 import LoadState from '../components/LoadState.vue';
 import StateBadge from '../components/StateBadge.vue';

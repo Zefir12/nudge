@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import FoldCard from './FoldCard.vue';
 import { listUpdateHistory, type UpdateRecord } from '../api/client';
 import { useLoad } from '../composables/useLoad';
 import { formatDate, shortId } from '../format';
+import FoldCard from './FoldCard.vue';
 
 // UpdateHistory lists the updates made to a container or stack through nudge, with the
 // image each ran before: what a rollback by hand needs. It shows nothing until there is one.

@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import FoldCard from './FoldCard.vue';
 import { onMounted, ref } from 'vue';
 
 import { getAllowance, type Allowance, type Environment } from '../api/client';
 import { loadEnvironments } from '../environments';
 import AllowanceUsage from './AllowanceUsage.vue';
+import FoldCard from './FoldCard.vue';
 
 // items are the user's environments with their allowance there, or why it couldn't load
 // (an offline environment can't count its containers).

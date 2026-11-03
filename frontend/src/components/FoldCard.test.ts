@@ -55,8 +55,10 @@ describe('FoldCard', () => {
     setFolded('test.runs', true);
     const wrapper = mountCard('test.runs', true);
     expect(bodyShown(wrapper)).toBe(true);
+    expect(wrapper.get('button.fold-toggle').attributes('disabled')).toBeDefined();
 
     await wrapper.setProps({ forceOpen: false });
+    expect(wrapper.get('button.fold-toggle').attributes('disabled')).toBeUndefined();
     expect(bodyShown(wrapper)).toBe(false);
     expect(isFolded('test.runs')).toBe(true);
   });

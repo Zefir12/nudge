@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import FoldCard from '../components/FoldCard.vue';
 import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
 import { onBeforeRouteLeave, RouterLink, useRouter } from 'vue-router';
 
@@ -18,6 +17,7 @@ import {
   type StackGitInput,
   type StackLine,
 } from '../api/client';
+import FoldCard from '../components/FoldCard.vue';
 import LoadState from '../components/LoadState.vue';
 import StackEditor from '../components/StackEditor.vue';
 import StackGitForm from '../components/StackGitForm.vue';
@@ -272,13 +272,13 @@ function onRevert() {
         </button>
       </div>
       <p v-if="actionError" class="error" role="alert">{{ actionError }}</p>
-      <FoldCard v-if="outcome || output.length" fold-id="stack.compose-output">
-        <template #title>Compose output</template>
+      <section v-if="outcome || output.length" class="card">
+        <h2>Compose output</h2>
         <p class="muted" role="status">{{ outcome }}</p>
         <div ref="outputBox" class="output" tabindex="0" aria-label="Compose output">
           <div v-for="(l, i) in output" :key="i">{{ l.line }}</div>
         </div>
-      </FoldCard>
+      </section>
 
       <FoldCard fold-id="stack.services">
         <template #title>Services</template>

@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import FoldCard from './FoldCard.vue';
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
 
 import { streamStats, type StatsSample } from '../api/client';
 import { formatBytes } from '../format';
+import FoldCard from './FoldCard.vue';
 import Sparkline from './Sparkline.vue';
 
 const props = defineProps<{ env: string; id: string }>();

@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import FoldCard from './FoldCard.vue';
 import { computed, ref } from 'vue';
 
 import {
@@ -15,6 +14,7 @@ import {
 } from '../api/client';
 import { useLoad } from '../composables/useLoad';
 import { formatDate, shortId } from '../format';
+import FoldCard from './FoldCard.vue';
 import LoadState from './LoadState.vue';
 
 // WebhooksCard manages a container's or stack's deploy webhooks: URLs a CI job or a
@@ -153,7 +153,7 @@ function onDone() {
 </script>
 
 <template>
-  <FoldCard fold-id="webhooks.deploy-webhooks">
+  <FoldCard fold-id="webhooks.deploy-webhooks" :force-open="!!shown">
     <template #title>Deploy webhooks</template>
     <p class="muted">
       A URL a CI job or a Forgejo webhook calls to pull this {{ kind }}'s image and redeploy it. Its secret

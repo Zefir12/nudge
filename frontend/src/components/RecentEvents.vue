@@ -1,12 +1,12 @@
 <!-- The environment's latest Docker events since the page opened; the Events page has all. -->
 <script setup lang="ts">
-import FoldCard from './FoldCard.vue';
 import { ref, toRef, watch } from 'vue';
 import { RouterLink } from 'vue-router';
 
 import type { DockerEvent } from '../api/client';
 import { useEvents } from '../composables/useEvents';
 import { eventLabel, eventPage } from '../eventLinks';
+import FoldCard from './FoldCard.vue';
 
 const props = defineProps<{ env: string }>();
 
