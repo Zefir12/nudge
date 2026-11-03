@@ -2,11 +2,16 @@
 import { computed } from 'vue';
 
 // ActivityHeatmap shows event counts per hour for the last 7 days: counts holds 7×24
-// numbers, oldest day first, and days their labels. A cell's shade is its count against
-// the busiest hour; hovering one names its count.
+// numbers, oldest day first ending today, and days their labels. Today's row stops at the
+// current hour. A cell's shade is its count against the busiest hour; hovering one names
+// its count.
 const props = defineProps<{ counts: number[]; days: string[] }>();
 
-const max = computed(() => Math.max(1, ...props.counts));
+// cells leaves out today's hours yet to come. The hour is read when the counts change, so
+// the row only grows along with fresh data.
+const cells = computed(() => props.counts.slice(0, props.counts.length - 23 + new Date().getHours()));
+
+const max = computed(() => Math.max(1, ...cells.value));
 
 function tip(i: number): string {
   const n = props.counts[i];
@@ -25,7 +30,7 @@ function tip(i: number): string {
       <!-- The viewBox's own aspect keeps every cell square at any width. -->
       <svg viewBox="0 0 24 7">
         <rect
-          v-for="(n, i) in counts"
+          v-for="(n, i) in cells"
           :key="i"
           :x="(i % 24) + 0.08"
           :y="Math.floor(i / 24) + 0.08"

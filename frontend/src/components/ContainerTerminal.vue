@@ -6,6 +6,7 @@ import { Terminal } from '@xterm/xterm';
 import { computed, nextTick, onBeforeUnmount, ref, useTemplateRef, watch } from 'vue';
 
 import { openExec, type ExecSession } from '../api/client';
+import FoldCard from './FoldCard.vue';
 
 const props = defineProps<{ env: string; id: string }>();
 
@@ -59,7 +60,10 @@ async function connect() {
   t.onData((d) => s.send(d));
   t.onResize(({ cols, rows }) => s.resize(cols, rows));
   if (typeof ResizeObserver !== 'undefined') {
-    observer = new ResizeObserver(() => fit?.fit());
+    // A folded card has no size to fit to; it fits again when unfolded.
+    observer = new ResizeObserver(() => {
+      if (box.value?.clientWidth) fit?.fit();
+    });
     observer.observe(box.value);
   }
   t.focus();
@@ -98,8 +102,8 @@ const statusText = computed(() => (status.value === 'live' ? 'Connected' : messa
 </script>
 
 <template>
-  <section class="card">
-    <h2>Terminal</h2>
+  <FoldCard fold-id="containerterminal.terminal">
+    <template #title>Terminal</template>
     <form class="controls" @submit.prevent="connect">
       <input
         v-model="cmd"
@@ -118,7 +122,7 @@ const statusText = computed(() => (status.value === 'live' ? 'Connected' : messa
       Runs the command in the container with a terminal, like <code>docker exec -it</code>.
     </p>
     <div v-else ref="box" class="terminal" aria-label="Terminal"></div>
-  </section>
+  </FoldCard>
 </template>
 
 <style scoped>

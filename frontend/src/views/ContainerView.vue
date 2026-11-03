@@ -6,6 +6,7 @@ import { getContainer, recreateContainer, updateContainer } from '../api/client'
 import ContainerActions from '../components/ContainerActions.vue';
 import ContainerLogs from '../components/ContainerLogs.vue';
 import ContainerStats from '../components/ContainerStats.vue';
+import FoldCard from '../components/FoldCard.vue';
 import KeyValues from '../components/KeyValues.vue';
 import LoadState from '../components/LoadState.vue';
 import StateBadge from '../components/StateBadge.vue';
@@ -126,8 +127,8 @@ const labels = computed(() =>
       </div>
       <p v-if="recreateError" class="error" role="alert">{{ recreateError }}</p>
       <p v-if="updateNote" class="muted" role="status">{{ updateNote }}</p>
-      <section class="card">
-        <h2>Overview</h2>
+      <FoldCard fold-id="container.overview">
+        <template #title>Overview</template>
         <KeyValues
           :rows="[
             ['ID', shortId(c.id)],
@@ -152,7 +153,7 @@ const labels = computed(() =>
         <p v-if="isAdmin">
           <RouterLink :to="{ name: 'image', params: { env, id: c.image_id } }">Open the image</RouterLink>
         </p>
-      </section>
+      </FoldCard>
 
       <template v-if="isAdmin">
         <UpdateHistory :env="env" kind="container" :target="c.name" />
@@ -166,18 +167,18 @@ const labels = computed(() =>
 
       <ContainerTerminal v-if="c.state.running" :env="env" :id="c.id" />
 
-      <section class="card">
-        <h2>Ports</h2>
+      <FoldCard fold-id="container.ports">
+        <template #title>Ports</template>
         <p v-if="c.ports.length === 0" class="muted">No ports.</p>
         <ul v-else>
           <li v-for="p in c.ports" :key="formatPort(p)">
             <code>{{ formatPort(p) }}</code>
           </li>
         </ul>
-      </section>
+      </FoldCard>
 
-      <section class="card">
-        <h2>Mounts</h2>
+      <FoldCard fold-id="container.mounts">
+        <template #title>Mounts</template>
         <p v-if="c.mounts.length === 0" class="muted">No mounts.</p>
         <div v-else class="table-wrap">
           <table>
@@ -209,10 +210,10 @@ const labels = computed(() =>
             </tbody>
           </table>
         </div>
-      </section>
+      </FoldCard>
 
-      <section class="card">
-        <h2>Networks</h2>
+      <FoldCard fold-id="container.networks">
+        <template #title>Networks</template>
         <p v-if="c.networks.length === 0" class="muted">No networks.</p>
         <div v-else class="table-wrap">
           <table>
@@ -238,23 +239,23 @@ const labels = computed(() =>
             </tbody>
           </table>
         </div>
-      </section>
+      </FoldCard>
 
-      <section class="card">
-        <h2>Environment</h2>
+      <FoldCard fold-id="container.environment">
+        <template #title>Environment</template>
         <p v-if="c.config.env.length === 0" class="muted">No variables.</p>
         <ul v-else class="mono-list">
           <li v-for="v in c.config.env" :key="v">
             <code class="break">{{ v }}</code>
           </li>
         </ul>
-      </section>
+      </FoldCard>
 
-      <section class="card">
-        <h2>Labels</h2>
+      <FoldCard fold-id="container.labels">
+        <template #title>Labels</template>
         <p v-if="labels.length === 0" class="muted">No labels.</p>
         <KeyValues v-else :rows="labels" mono />
-      </section>
+      </FoldCard>
     </template>
   </LoadState>
 </template>

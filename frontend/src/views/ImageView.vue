@@ -3,6 +3,7 @@ import { computed, ref } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
 
 import { getImage, removeImage } from '../api/client';
+import FoldCard from '../components/FoldCard.vue';
 import KeyValues from '../components/KeyValues.vue';
 import LoadState from '../components/LoadState.vue';
 import { useLoad } from '../composables/useLoad';
@@ -65,8 +66,8 @@ const platform = computed(() =>
         </label>
       </div>
       <p v-if="removeError" class="error" role="alert">{{ removeError }}</p>
-      <section class="card">
-        <h2>Overview</h2>
+      <FoldCard fold-id="image.overview">
+        <template #title>Overview</template>
         <KeyValues
           :rows="[
             ['ID', img.id],
@@ -79,9 +80,9 @@ const platform = computed(() =>
             ['Comment', img.comment],
           ]"
         />
-      </section>
-      <section class="card">
-        <h2>Config</h2>
+      </FoldCard>
+      <FoldCard fold-id="image.config">
+        <template #title>Config</template>
         <KeyValues
           :rows="[
             ['Entrypoint', img.config.entrypoint.join(' ')],
@@ -99,20 +100,20 @@ const platform = computed(() =>
             <code class="break">{{ v }}</code>
           </li>
         </ul>
-      </section>
-      <section class="card">
-        <h2>Labels</h2>
+      </FoldCard>
+      <FoldCard fold-id="image.labels">
+        <template #title>Labels</template>
         <p v-if="labels.length === 0" class="muted">No labels.</p>
         <KeyValues v-else :rows="labels" mono />
-      </section>
-      <section class="card">
-        <h2>Layers ({{ img.layers.length }})</h2>
+      </FoldCard>
+      <FoldCard fold-id="image.layers">
+        <template #title>Layers ({{ img.layers.length }})</template>
         <ol>
           <li v-for="l in img.layers" :key="l">
             <code class="break">{{ l }}</code>
           </li>
         </ol>
-      </section>
+      </FoldCard>
     </template>
   </LoadState>
 </template>

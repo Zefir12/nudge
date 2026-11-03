@@ -17,6 +17,7 @@ import {
   type StackGitInput,
   type StackLine,
 } from '../api/client';
+import FoldCard from '../components/FoldCard.vue';
 import LoadState from '../components/LoadState.vue';
 import StackEditor from '../components/StackEditor.vue';
 import StackGitForm from '../components/StackGitForm.vue';
@@ -279,8 +280,8 @@ function onRevert() {
         </div>
       </section>
 
-      <section class="card">
-        <h2>Services</h2>
+      <FoldCard fold-id="stack.services">
+        <template #title>Services</template>
         <p v-if="rows.length === 0" class="muted">No services.</p>
         <div v-else class="table-wrap">
           <table>
@@ -316,14 +317,14 @@ function onRevert() {
             </tbody>
           </table>
         </div>
-      </section>
+      </FoldCard>
 
       <UpdateHistory ref="history" :env="env" kind="stack" :target="stack.name" />
 
       <WebhooksCard :key="`${env}/${stack.name}`" :env="env" kind="stack" :target="stack.name" />
 
-      <section class="card git-card">
-        <h2>Git</h2>
+      <FoldCard fold-id="stack.git" class="git-card">
+        <template #title>Git</template>
         <template v-if="stack.git">
           <dl class="git-facts">
             <dt>Repository</dt>
@@ -378,10 +379,10 @@ function onRevert() {
             <span class="muted">The running stack changes at its next deploy.</span>
           </div>
         </form>
-      </section>
+      </FoldCard>
 
-      <section class="card">
-        <h2>Files</h2>
+      <FoldCard fold-id="stack.files">
+        <template #title>Files</template>
         <form class="files" @submit.prevent="save">
           <StackEditor
             ref="editor"
@@ -399,7 +400,7 @@ function onRevert() {
             <span v-else-if="saveResult" class="muted" role="status">{{ saveResult }}</span>
           </div>
         </form>
-      </section>
+      </FoldCard>
 
       <StackLogs :env="env" :containers="logSources" />
     </template>

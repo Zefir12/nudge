@@ -3,6 +3,7 @@ import { computed, ref } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
 
 import { getVolume, removeVolume } from '../api/client';
+import FoldCard from '../components/FoldCard.vue';
 import KeyValues from '../components/KeyValues.vue';
 import LoadState from '../components/LoadState.vue';
 import { useLoad } from '../composables/useLoad';
@@ -64,11 +65,11 @@ const labels = computed(() => Object.entries(v.value?.labels ?? {}).sort(([a], [
           ]"
         />
       </section>
-      <section class="card">
-        <h2>Labels</h2>
+      <FoldCard fold-id="volume.labels">
+        <template #title>Labels</template>
         <p v-if="labels.length === 0" class="muted">No labels.</p>
         <KeyValues v-else :rows="labels" mono />
-      </section>
+      </FoldCard>
     </template>
   </LoadState>
 </template>
