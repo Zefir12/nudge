@@ -55,6 +55,8 @@ git branch main
 expect_error "$dir/repo" "no version.txt"
 bump x
 expect_error "$dir/repo" "version.txt without a number"
+bump 04
+expect_error "$dir/repo" "version.txt with a leading zero"
 bump 4
 expect v4.0.0 "bump starts at MAJOR.0.0"
 

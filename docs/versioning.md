@@ -9,8 +9,10 @@ Builds are versioned `vMAJOR.MINOR.PATCH` by `scripts/version.sh`. MAJOR is the 
 | MINOR | PRs merged into `main` (releases) since the commit that last changed `version.txt` | on a bump |
 | PATCH | PRs merged into `develop` since the last release or bump | on a release or a bump |
 
-To bump MAJOR, change `version.txt`, on `develop` or in a PR. The commit gets
-`vMAJOR.0.0`, the next PR into `develop` `vMAJOR.0.1`, and the next release `vMAJOR.1.0`.
+To bump MAJOR, change `version.txt`, directly on `develop` or in a PR into it. The commit
+gets `vMAJOR.0.0`, the next PR into `develop` `vMAJOR.0.1`, and the next release
+`vMAJOR.1.0`. A PR into `main` that changes the file counts as a release, so it gets
+`vMAJOR.1.0` straight away.
 
 Only PR merges move the numbers:
 - The counts follow the first-parent line, so a PR's own commits don't count, and neither
@@ -36,6 +38,6 @@ Where it's used:
   UI shows it at the bottom of the sidebar.
 
 The script reads `version.txt` from the commit, not the working tree, and fails if it is
-missing or doesn't hold a single number. It also fails on a shallow clone (the counts would
+missing or doesn't hold a single number without leading zeros. It also fails on a shallow clone (the counts would
 be wrong) and prints `dev` outside a git repository. `scripts/version_test.sh` (part of
 `make test` and CI) checks it against a throwaway repository.

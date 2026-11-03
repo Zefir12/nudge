@@ -26,8 +26,8 @@ if ! major=$(git show HEAD:version.txt 2>/dev/null); then
 fi
 major=$(printf '%s' "$major" | tr -d '[:space:]')
 case $major in
-'' | *[!0-9]*)
-	echo "version.sh: version.txt must hold a single number" >&2
+'' | *[!0-9]* | 0?*)
+	echo "version.sh: version.txt must hold a single number, no leading zeros" >&2
 	exit 1
 	;;
 esac
