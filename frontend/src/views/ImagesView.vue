@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FoldCard from '../components/FoldCard.vue';
 import { computed, ref } from 'vue';
 import { RouterLink } from 'vue-router';
 
@@ -51,10 +52,10 @@ const shown = computed(() =>
 
 <template>
   <h1>Images</h1>
-  <section class="card">
-    <h2>Pull</h2>
+  <FoldCard fold-id="images.pull">
+    <template #title>Pull</template>
     <ImagePull :env="env" @pulled="reload" />
-  </section>
+  </FoldCard>
   <section class="card">
     <div class="prune">
       <button type="button" :disabled="pruning" @click="onPrune(false)">Prune untagged</button>

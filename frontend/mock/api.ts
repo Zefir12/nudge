@@ -463,18 +463,20 @@ const deployments = [
   },
 ];
 
-const runs = Array.from({ length: 6 }, (_, i) => ({
+const runs = Array.from({ length: 14 }, (_, i) => ({
   id: 60 - i,
   actor: i % 2 ? 'zefir' : 'ci-deploy',
   actor_kind: i % 2 ? 'user' : 'token',
-  status: ['succeeded', 'succeeded', 'rolled_back', 'succeeded', 'failed', 'superseded'][i],
-  variables: { WEB_TAG: `1.4.${2 - i}`, API_TAG: `1.4.${2 - i}` },
-  previous: { WEB_TAG: `1.4.${1 - i}`, API_TAG: `1.4.${1 - i}` },
+  status: ['succeeded', 'succeeded', 'rolled_back', 'succeeded', 'failed', 'superseded'][i % 6],
+  variables: { WEB_TAG: `1.4.${20 - i}`, API_TAG: `1.4.${20 - i}` },
+  previous: { WEB_TAG: `1.4.${19 - i}`, API_TAG: `1.4.${19 - i}` },
   queued_at: ago(i * 300 + 3),
   started_at: ago(i * 300 + 3),
   finished_at: ago(i * 300 + 1),
-  image_before: `ghcr.io/zefir/szaszki:1.4.${1 - i}`,
-  image_after: `ghcr.io/zefir/szaszki:1.4.${2 - i}`,
+  image_before: `web=sha256:${String(i + 1)
+    .repeat(64)
+    .slice(0, 64)},api=sha256:${'b'.repeat(64)}`,
+  image_after: `web=sha256:${String(i).repeat(64).slice(0, 64)},api=sha256:${'c'.repeat(64)}`,
   error:
     i === 2
       ? 'health check failed: GET /healthz answered 502'

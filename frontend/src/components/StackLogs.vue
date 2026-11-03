@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FoldCard from './FoldCard.vue';
 import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
 
 import { streamLogs, type LogLine } from '../api/client';
@@ -135,8 +136,8 @@ const statusText = computed(() => {
 </script>
 
 <template>
-  <section class="card">
-    <h2>Logs</h2>
+  <FoldCard fold-id="stacklogs.logs">
+    <template #title>Logs</template>
     <p v-if="containers.length === 0" class="muted">The stack has no containers.</p>
     <template v-else>
       <div class="controls">
@@ -167,7 +168,7 @@ const statusText = computed(() => {
         </div>
       </div>
     </template>
-  </section>
+  </FoldCard>
 </template>
 
 <style scoped>

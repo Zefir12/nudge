@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FoldCard from './FoldCard.vue';
 import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
 
 import { streamLogs, type LogLine } from '../api/client';
@@ -119,8 +120,8 @@ const statusText = computed(() => {
 </script>
 
 <template>
-  <section class="card">
-    <h2>Logs</h2>
+  <FoldCard fold-id="containerlogs.logs">
+    <template #title>Logs</template>
     <div class="controls">
       <label>
         Tail
@@ -146,7 +147,7 @@ const statusText = computed(() => {
         >{{ l.line }}
       </div>
     </div>
-  </section>
+  </FoldCard>
 </template>
 
 <style scoped>

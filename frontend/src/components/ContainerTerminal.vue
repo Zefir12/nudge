@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FoldCard from './FoldCard.vue';
 import '@xterm/xterm/css/xterm.css';
 
 import { FitAddon } from '@xterm/addon-fit';
@@ -98,8 +99,8 @@ const statusText = computed(() => (status.value === 'live' ? 'Connected' : messa
 </script>
 
 <template>
-  <section class="card">
-    <h2>Terminal</h2>
+  <FoldCard fold-id="containerterminal.terminal">
+    <template #title>Terminal</template>
     <form class="controls" @submit.prevent="connect">
       <input
         v-model="cmd"
@@ -118,7 +119,7 @@ const statusText = computed(() => (status.value === 'live' ? 'Connected' : messa
       Runs the command in the container with a terminal, like <code>docker exec -it</code>.
     </p>
     <div v-else ref="box" class="terminal" aria-label="Terminal"></div>
-  </section>
+  </FoldCard>
 </template>
 
 <style scoped>

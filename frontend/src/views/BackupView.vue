@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FoldCard from '../components/FoldCard.vue';
 import { computed, ref } from 'vue';
 
 import { createBackup } from '../api/client';
@@ -48,8 +49,8 @@ async function onBackup() {
     <code>.env</code>. It doesn't hold your containers' volumes or data that stacks bind-mount.
   </p>
 
-  <section class="card">
-    <h2>Download a backup</h2>
+  <FoldCard fold-id="backup.download-a-backup">
+    <template #title>Download a backup</template>
     <p>
       The file is encrypted with this passphrase. Keep it somewhere safe: without it the backup can't be
       restored, and with it anyone can read the stored credentials.
@@ -78,10 +79,10 @@ async function onBackup() {
     <p v-if="mismatch" class="error">The passphrases differ.</p>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
     <p v-if="saved" aria-live="polite">Saved {{ saved }}.</p>
-  </section>
+  </FoldCard>
 
-  <section class="card">
-    <h2>Restore</h2>
+  <FoldCard fold-id="backup.restore">
+    <template #title>Restore</template>
     <p>
       Restoring runs with the server stopped, on the data volume. Put the passphrase in a file and run the
       server image's <code>restore</code> command:
@@ -93,7 +94,7 @@ async function onBackup() {
       <code>/data/pre-restore-&lt;time&gt;</code> first. Agents keep working: their credentials are in the
       backup.
     </p>
-  </section>
+  </FoldCard>
 </template>
 
 <style scoped>

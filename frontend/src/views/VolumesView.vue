@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FoldCard from '../components/FoldCard.vue';
 import { computed, ref } from 'vue';
 import { RouterLink } from 'vue-router';
 
@@ -79,10 +80,10 @@ function sizeTitle(v: Volume): string {
 
 <template>
   <h1>Volumes</h1>
-  <section class="card">
-    <h2>Create</h2>
+  <FoldCard fold-id="volumes.create">
+    <template #title>Create</template>
     <VolumeCreate :env="env" @created="reload" />
-  </section>
+  </FoldCard>
   <section class="card">
     <div v-if="isAdmin" class="prune">
       <button type="button" :disabled="pruning" @click="onPrune(false)">Prune anonymous</button>

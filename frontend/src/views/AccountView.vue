@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FoldCard from '../components/FoldCard.vue';
 import { computed, ref } from 'vue';
 
 import { changePassword } from '../api/client';
@@ -43,8 +44,8 @@ async function onChange() {
     Signed in as <strong>{{ currentUser.username }}</strong> ({{ currentUser.admin ? 'admin' : 'user' }}).
   </p>
 
-  <section class="card">
-    <h2>Password</h2>
+  <FoldCard fold-id="account.password">
+    <template #title>Password</template>
     <p v-if="currentUser?.sso" class="muted">
       You sign in through single sign-on: your password is managed by your identity provider.
     </p>
@@ -77,7 +78,7 @@ async function onChange() {
       <p v-if="error" class="error" role="alert">{{ error }}</p>
       <p v-if="done" aria-live="polite">Password changed. Your other sessions have ended.</p>
     </template>
-  </section>
+  </FoldCard>
 </template>
 
 <style scoped>

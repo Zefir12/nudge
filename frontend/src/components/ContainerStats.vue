@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FoldCard from './FoldCard.vue';
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
 
 import { streamStats, type StatsSample } from '../api/client';
@@ -55,8 +56,8 @@ const rate = (v: number[]) => (v.length ? `${formatBytes(v.at(-1)!)}/s` : '—')
 </script>
 
 <template>
-  <section class="card">
-    <h2>Usage</h2>
+  <FoldCard fold-id="containerstats.usage">
+    <template #title>Usage</template>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
     <p v-else-if="ended" class="muted">The container stopped.</p>
     <p v-if="!last && !ended" class="muted">Waiting for the first sample…</p>
@@ -95,7 +96,7 @@ const rate = (v: number[]) => (v.length ? `${formatBytes(v.at(-1)!)}/s` : '—')
       Block I/O {{ formatBytes(last.block_read) }} read · {{ formatBytes(last.block_write) }} written ·
       {{ last.pids }} processes
     </p>
-  </section>
+  </FoldCard>
 </template>
 
 <style scoped>

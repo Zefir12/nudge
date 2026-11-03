@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FoldCard from '../components/FoldCard.vue';
 import { computed, onMounted, ref } from 'vue';
 import { RouterLink } from 'vue-router';
 
@@ -122,8 +123,8 @@ onMounted(load);
     images without one). Passwords are stored encrypted and never shown again.
   </p>
 
-  <section class="card">
-    <h2>{{ editing ? `Edit ${editing.name}` : 'Add a registry' }}</h2>
+  <FoldCard fold-id="registries.form" :force-open="!!editing">
+    <template #title>{{ editing ? `Edit ${editing.name}` : 'Add a registry' }}</template>
     <form class="registry" @submit.prevent="onSubmit">
       <label>
         Name
@@ -176,7 +177,7 @@ onMounted(load);
       For Forgejo, the password is an access token with read:package (and write:package to delete tags).
     </p>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
-  </section>
+  </FoldCard>
 
   <section class="card">
     <p v-if="registries === null && !error" class="muted">Loading…</p>

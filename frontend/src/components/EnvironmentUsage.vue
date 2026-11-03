@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FoldCard from './FoldCard.vue';
 import { computed, onBeforeUnmount, ref, shallowRef, toRef, watch } from 'vue';
 import { RouterLink } from 'vue-router';
 
@@ -70,8 +71,8 @@ onBeforeUnmount(stop);
 </script>
 
 <template>
-  <section class="card">
-    <h2>Usage</h2>
+  <FoldCard fold-id="environmentusage.usage">
+    <template #title>Usage</template>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
     <p v-if="!stats && !error" class="muted">Sampling running containers…</p>
     <template v-if="stats">
@@ -124,7 +125,7 @@ onBeforeUnmount(stop);
         </button>
       </template>
     </template>
-  </section>
+  </FoldCard>
 </template>
 
 <style scoped>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FoldCard from '../components/FoldCard.vue';
 import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
 import { onBeforeRouteLeave, RouterLink, useRouter } from 'vue-router';
 
@@ -271,16 +272,16 @@ function onRevert() {
         </button>
       </div>
       <p v-if="actionError" class="error" role="alert">{{ actionError }}</p>
-      <section v-if="outcome || output.length" class="card">
-        <h2>Compose output</h2>
+      <FoldCard v-if="outcome || output.length" fold-id="stack.compose-output">
+        <template #title>Compose output</template>
         <p class="muted" role="status">{{ outcome }}</p>
         <div ref="outputBox" class="output" tabindex="0" aria-label="Compose output">
           <div v-for="(l, i) in output" :key="i">{{ l.line }}</div>
         </div>
-      </section>
+      </FoldCard>
 
-      <section class="card">
-        <h2>Services</h2>
+      <FoldCard fold-id="stack.services">
+        <template #title>Services</template>
         <p v-if="rows.length === 0" class="muted">No services.</p>
         <div v-else class="table-wrap">
           <table>
@@ -316,14 +317,14 @@ function onRevert() {
             </tbody>
           </table>
         </div>
-      </section>
+      </FoldCard>
 
       <UpdateHistory ref="history" :env="env" kind="stack" :target="stack.name" />
 
       <WebhooksCard :key="`${env}/${stack.name}`" :env="env" kind="stack" :target="stack.name" />
 
-      <section class="card git-card">
-        <h2>Git</h2>
+      <FoldCard fold-id="stack.git" class="git-card">
+        <template #title>Git</template>
         <template v-if="stack.git">
           <dl class="git-facts">
             <dt>Repository</dt>
@@ -378,10 +379,10 @@ function onRevert() {
             <span class="muted">The running stack changes at its next deploy.</span>
           </div>
         </form>
-      </section>
+      </FoldCard>
 
-      <section class="card">
-        <h2>Files</h2>
+      <FoldCard fold-id="stack.files">
+        <template #title>Files</template>
         <form class="files" @submit.prevent="save">
           <StackEditor
             ref="editor"
@@ -399,7 +400,7 @@ function onRevert() {
             <span v-else-if="saveResult" class="muted" role="status">{{ saveResult }}</span>
           </div>
         </form>
-      </section>
+      </FoldCard>
 
       <StackLogs :env="env" :containers="logSources" />
     </template>

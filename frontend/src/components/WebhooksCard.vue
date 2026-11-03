@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FoldCard from './FoldCard.vue';
 import { computed, ref } from 'vue';
 
 import {
@@ -152,8 +153,8 @@ function onDone() {
 </script>
 
 <template>
-  <section class="card">
-    <h2>Deploy webhooks</h2>
+  <FoldCard fold-id="webhooks.deploy-webhooks">
+    <template #title>Deploy webhooks</template>
     <p class="muted">
       A URL a CI job or a Forgejo webhook calls to pull this {{ kind }}'s image and redeploy it. Its secret
       can do nothing else.
@@ -308,7 +309,7 @@ function onDone() {
         </table>
       </div>
     </LoadState>
-  </section>
+  </FoldCard>
 </template>
 
 <style scoped>

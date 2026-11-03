@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FoldCard from './FoldCard.vue';
 import { listUpdateHistory, type UpdateRecord } from '../api/client';
 import { useLoad } from '../composables/useLoad';
 import { formatDate, shortId } from '../format';
@@ -18,8 +19,8 @@ const title = (u: UpdateRecord) => `Before: ${u.old_image_id}\nAfter: ${u.new_im
 </script>
 
 <template>
-  <section v-if="data && data.length" class="card">
-    <h2>Updates</h2>
+  <FoldCard v-if="data && data.length" fold-id="updatehistory.updates">
+    <template #title>Updates</template>
     <div class="table-wrap">
       <table>
         <thead>
@@ -44,7 +45,7 @@ const title = (u: UpdateRecord) => `Before: ${u.old_image_id}\nAfter: ${u.new_im
         </tbody>
       </table>
     </div>
-  </section>
+  </FoldCard>
 </template>
 
 <style scoped>

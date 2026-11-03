@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FoldCard from './FoldCard.vue';
 import { onMounted, ref } from 'vue';
 
 import { getAllowance, type Allowance, type Environment } from '../api/client';
@@ -31,8 +32,8 @@ onMounted(async () => {
 </script>
 
 <template>
-  <section class="card">
-    <h2>Your allowance</h2>
+  <FoldCard fold-id="myallowances.your-allowance">
+    <template #title>Your allowance</template>
     <p class="muted">What your containers may take in total, running or not, in each environment.</p>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
     <p v-else-if="items === null" class="muted">Loading…</p>
@@ -42,7 +43,7 @@ onMounted(async () => {
       <p v-if="item.error" class="error">{{ item.error }}</p>
       <AllowanceUsage v-else-if="item.allowance" :allowance="item.allowance" />
     </div>
-  </section>
+  </FoldCard>
 </template>
 
 <style scoped>

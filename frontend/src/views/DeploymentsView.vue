@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FoldCard from '../components/FoldCard.vue';
 import { computed, onMounted, ref, watch } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
 
@@ -93,8 +94,8 @@ onMounted(() => {
     the image a service runs (<code>image: ${API_IMAGE}</code> in the compose file).
   </p>
 
-  <section v-if="isAdmin" class="card">
-    <h2>New deployment</h2>
+  <FoldCard v-if="isAdmin" fold-id="deployments.new-deployment">
+    <template #title>New deployment</template>
     <form class="create" @submit.prevent="onCreate">
       <label>
         Name
@@ -125,7 +126,7 @@ onMounted(() => {
       <button type="submit" class="primary" :disabled="busy || !canCreate">Create deployment</button>
     </form>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
-  </section>
+  </FoldCard>
 
   <section class="card">
     <p v-if="error && !isAdmin" class="error" role="alert">{{ error }}</p>

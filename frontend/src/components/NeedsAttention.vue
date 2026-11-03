@@ -1,6 +1,7 @@
 <!-- What on an environment wants a look: containers with an update available (from the
      last check), stopped containers and untagged images. -->
 <script setup lang="ts">
+import FoldCard from './FoldCard.vue';
 import { computed, toRef } from 'vue';
 import { RouterLink } from 'vue-router';
 
@@ -52,8 +53,8 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
 </script>
 
 <template>
-  <section class="card attention">
-    <h2>Needs attention</h2>
+  <FoldCard fold-id="needsattention.needs-attention" class="attention">
+    <template #title>Needs attention</template>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
     <p v-else-if="!groups" class="muted">Loading…</p>
     <p v-else-if="empty" class="muted">Nothing needs attention.</p>
@@ -100,7 +101,7 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
         </div>
       </li>
     </ul>
-  </section>
+  </FoldCard>
 </template>
 
 <style scoped>

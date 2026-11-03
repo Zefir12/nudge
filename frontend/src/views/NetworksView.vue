@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FoldCard from '../components/FoldCard.vue';
 import { computed, ref } from 'vue';
 import { RouterLink } from 'vue-router';
 
@@ -45,10 +46,10 @@ const shown = computed(() => (data.value ?? []).filter((n) => matches(query.valu
 
 <template>
   <h1>Networks</h1>
-  <section class="card">
-    <h2>Create</h2>
+  <FoldCard fold-id="networks.create">
+    <template #title>Create</template>
     <NetworkCreate :env="env" @created="reload" />
-  </section>
+  </FoldCard>
   <section class="card">
     <div v-if="isAdmin" class="prune">
       <button type="button" class="danger" :disabled="pruning" @click="onPrune">Prune unused</button>

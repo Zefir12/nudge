@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FoldCard from '../components/FoldCard.vue';
 import { computed, ref } from 'vue';
 import { RouterLink } from 'vue-router';
 
@@ -63,18 +64,18 @@ const { data, error, reload } = useLoad(env, async (id) => {
   </p>
   <LoadState :loading="!data" :error="error" :ready="data !== null" @retry="reload">
     <template v-if="data">
-      <section v-if="data.allowance" class="card">
-        <div class="allowance-head">
-          <h2>Your allowance</h2>
+      <FoldCard v-if="data.allowance" fold-id="dashboard.allowance">
+        <template #title>Your allowance</template>
+        <template #actions>
           <RouterLink
             v-if="data.allowance.limits"
             class="button primary"
             :to="{ name: 'tenant-deploy', params: { env } }"
             >Deploy</RouterLink
           >
-        </div>
+        </template>
         <AllowanceUsage :allowance="data.allowance" />
-      </section>
+      </FoldCard>
       <section class="counts">
         <RouterLink class="count" :to="{ name: 'containers', params: { env } }">
           <span class="label">Containers</span>
@@ -105,8 +106,8 @@ const { data, error, reload } = useLoad(env, async (id) => {
         <RecentEvents :env="env" />
       </div>
       <EnvironmentUsage :env="env" />
-      <section v-if="isAdmin" class="card">
-        <h2>Host</h2>
+      <FoldCard v-if="isAdmin" fold-id="dashboard.host">
+        <template #title>Host</template>
         <KeyValues
           :rows="[
             ['Host name', data.detail.docker.name],
@@ -122,25 +123,12 @@ const { data, error, reload } = useLoad(env, async (id) => {
             ['Kind', data.detail.kind],
           ]"
         />
-      </section>
+      </FoldCard>
     </template>
   </LoadState>
 </template>
 
 <style scoped>
-.allowance-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  margin-bottom: 0.75rem;
-}
-
-.allowance-head h2 {
-  margin: 0;
-}
-
 .head {
   display: flex;
   flex-wrap: wrap;
@@ -211,6 +199,11 @@ h1 {
   grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
   gap: 1rem;
   margin-bottom: 1rem;
+}
+
+/* A folded card doesn't stretch to the height of the one beside it. */
+.panels > .folded {
+  align-self: start;
 }
 
 /* Side by side the grid gap spaces the cards; a stacking margin would push one down. */

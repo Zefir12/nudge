@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FoldCard from '../components/FoldCard.vue';
 import { computed, onUnmounted, ref, watch } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
 
@@ -24,9 +25,10 @@ import {
   type DeployToken,
   type DeploymentHealth,
 } from '../api/client';
+import CopyToken from '../components/CopyToken.vue';
 import DeploymentHealthForm from '../components/DeploymentHealthForm.vue';
 import DeploySnippets from '../components/DeploySnippets.vue';
-import { formatDate } from '../format';
+import { formatDate, shortId } from '../format';
 
 const route = useRoute();
 const router = useRouter();
@@ -166,10 +168,19 @@ function onRemoveMember(m: DeploymentMember) {
   });
 }
 
-const varsText = (vars: Record<string, string>) =>
-  Object.entries(vars)
-    .map(([k, v]) => `${k}=${v}`)
-    .join(' ');
+const varValues = (vars: Record<string, string>) => Object.entries(vars).map(([k, v]) => `${k}=${v}`);
+// imageValues splits a run's "service=ID,service=ID".
+const imageValues = (images: string) => images.split(',').filter((v) => v !== '');
+
+// A token's label names the first value and counts the others.
+const more = (first: string, values: string[]) =>
+  values.length > 1 ? `${first} +${values.length - 1}` : first;
+const varsLabel = (vars: Record<string, string>) => more(Object.keys(vars)[0] ?? '', varValues(vars));
+function imagesLabel(images: string) {
+  const values = imageValues(images);
+  const [service, id] = (values[0] ?? '').split('=');
+  return more(`${service} ${shortId(id ?? '').slice(0, 7)}`, values);
+}
 </script>
 
 <template>
@@ -188,8 +199,8 @@ const varsText = (vars: Record<string, string>) =>
       · your role: {{ deployment.role || 'admin' }}
     </p>
 
-    <section v-if="can('deploy')" class="card">
-      <h2>Deploy</h2>
+    <FoldCard v-if="can('deploy')" fold-id="deployment.deploy">
+      <template #title>Deploy</template>
       <form class="row" @submit.prevent="onDeploy">
         <label v-for="v in deployment.variables" :key="v">
           {{ v }}
@@ -200,12 +211,12 @@ const varsText = (vars: Record<string, string>) =>
       <p class="muted">
         Pulls the stack's images and brings it up; set values replace the stack's .env lines.
       </p>
-    </section>
+    </FoldCard>
 
-    <section class="card">
-      <h2>Runs</h2>
+    <FoldCard fold-id="deployment.runs">
+      <template #title>Runs</template>
       <p v-if="runs.length === 0" class="muted">No runs yet.</p>
-      <div v-else class="table-wrap">
+      <div v-else class="table-wrap runs">
         <table>
           <thead>
             <tr>
@@ -229,21 +240,29 @@ const varsText = (vars: Record<string, string>) =>
                 <div v-for="(w, i) in r.warnings ?? []" :key="i" class="warning">{{ w }}</div>
               </td>
               <td>{{ r.actor_kind === 'token' ? `token ${r.actor}` : r.actor }}</td>
-              <td class="break">
-                <code v-if="Object.keys(r.variables).length">{{ varsText(r.variables) }}</code>
+              <td>
+                <CopyToken
+                  v-if="Object.keys(r.variables).length"
+                  :label="varsLabel(r.variables)"
+                  :values="varValues(r.variables)"
+                />
               </td>
-              <td class="wide-only break">
-                <code v-if="r.image_after">{{ r.image_after }}</code>
+              <td class="wide-only">
+                <CopyToken
+                  v-if="r.image_after"
+                  :label="imagesLabel(r.image_after)"
+                  :values="imageValues(r.image_after)"
+                />
               </td>
               <td>{{ formatDate(r.queued_at) }}</td>
             </tr>
           </tbody>
         </table>
       </div>
-    </section>
+    </FoldCard>
 
-    <section v-if="can('manage_tokens')" class="card">
-      <h2>Deploy tokens</h2>
+    <FoldCard v-if="can('manage_tokens')" fold-id="deployment.deploy-tokens">
+      <template #title>Deploy tokens</template>
       <p class="muted">
         A deploy token works only on this deployment's deploys and runs, nowhere else in the API.
       </p>
@@ -299,10 +318,10 @@ const varsText = (vars: Record<string, string>) =>
           </tbody>
         </table>
       </div>
-    </section>
+    </FoldCard>
 
-    <section class="card">
-      <h2>Members</h2>
+    <FoldCard fold-id="deployment.members">
+      <template #title>Members</template>
       <div class="table-wrap">
         <table>
           <tbody>
@@ -348,10 +367,10 @@ const varsText = (vars: Record<string, string>) =>
         </label>
         <button type="submit" :disabled="busy">Add member</button>
       </form>
-    </section>
+    </FoldCard>
 
-    <section v-if="can('edit') || can('delete')" class="card">
-      <h2>Settings</h2>
+    <FoldCard v-if="can('edit') || can('delete')" fold-id="deployment.settings">
+      <template #title>Settings</template>
       <form v-if="can('edit')" class="row" @submit.prevent="onSave">
         <label class="wide">
           Variables deploys may set
@@ -372,7 +391,7 @@ const varsText = (vars: Record<string, string>) =>
       <button v-if="can('delete')" type="button" class="danger" :disabled="busy" @click="onDelete">
         Delete deployment
       </button>
-    </section>
+    </FoldCard>
   </template>
 </template>
 
@@ -415,6 +434,20 @@ const varsText = (vars: Record<string, string>) =>
   overflow-x: auto;
   margin: 0.5rem 0;
   white-space: pre;
+}
+
+/* About six rows, the next one cut off to show there are more. */
+.runs {
+  max-height: 19rem;
+  overflow-y: auto;
+}
+
+.runs th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface-solid);
+  box-shadow: inset 0 -1px 0 var(--border);
 }
 
 .status.succeeded {
