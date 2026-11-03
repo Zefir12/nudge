@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -108,11 +109,11 @@ func TestSSOLogin(t *testing.T) {
 	if _, err := s.Login(ctx, "zefir-2", ""); !errors.Is(err, ErrInvalidCredentials) {
 		t.Errorf("password login of an SSO user err = %v", err)
 	}
-	if sso, err := s.Logout(ctx, sess.Token); err != nil || !sso {
-		t.Errorf("Logout = %v, %v; want an SSO session", sso, err)
+	if issuer, err := s.Logout(ctx, sess.Token); err != nil || issuer == "" {
+		t.Errorf("Logout = %q, %v; want an SSO session", issuer, err)
 	}
-	if sso, err := s.Logout(ctx, "unknown"); err != nil || sso {
-		t.Errorf("Logout(unknown) = %v, %v", sso, err)
+	if issuer, err := s.Logout(ctx, "unknown"); err != nil || issuer != "" {
+		t.Errorf("Logout(unknown) = %q, %v", issuer, err)
 	}
 }
 
@@ -371,4 +372,117 @@ func TestRelinkSSO(t *testing.T) {
 func isInput(err error) bool {
 	var in *InputError
 	return errors.As(err, &in)
+}
+
+func TestSSOSessionTTLPerProvider(t *testing.T) {
+	t.Parallel()
+	s, clock := newTestService(t)
+	ctx := context.Background()
+	sess, err := s.SSOLogin(ctx, Identity{Issuer: "https://a.example.net", Subject: "u", Role: RoleUser, SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := clock.Now().Add(time.Hour).Unix(); sess.ExpiresAt.Unix() != want {
+		t.Errorf("expires at %d, want %d", sess.ExpiresAt.Unix(), want)
+	}
+}
+
+func TestRevokeIssuer(t *testing.T) {
+	t.Parallel()
+	s, _ := newTestService(t)
+	ctx := context.Background()
+	const issuer = "https://a.example.net"
+	a, err := s.SSOLogin(ctx, Identity{Issuer: issuer, Subject: "u", Username: "a", Role: RoleUser})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.SSOLogin(ctx, Identity{Issuer: "https://b.example.net", Subject: "u", Username: "b", Role: RoleUser})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []int64{a.User.ID, b.User.ID} {
+		if _, err := s.db.Exec(`INSERT INTO api_tokens (user_id, name, prefix, token_hash, created_at) VALUES (?, 't', 'p', ?, 0)`, id, fmt.Sprint(id)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	got, err := RevokeIssuer(ctx, tx, issuer)
+	if err != nil || got != (IssuerRevoked{Sessions: 1, Tokens: 1}) {
+		t.Fatalf("revoked = %+v, %v", got, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SessionUser(ctx, a.Token); !errors.Is(err, ErrNoSession) {
+		t.Errorf("revoked session err = %v", err)
+	}
+	if _, err := s.SessionUser(ctx, b.Token); err != nil {
+		t.Errorf("other issuer's session err = %v", err)
+	}
+	var tokens, users int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM api_tokens`).Scan(&tokens); err != nil || tokens != 1 {
+		t.Errorf("tokens left = %d, %v", tokens, err)
+	}
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&users); err != nil || users != 2 {
+		t.Errorf("users left = %d, %v", users, err)
+	}
+}
+
+func TestAdminCanSignIn(t *testing.T) {
+	t.Parallel()
+	const issuer = "https://a.example.net"
+	tests := []struct {
+		name      string
+		adminOnly bool
+		setup     func(t *testing.T, s *Service)
+		issuers   []string
+		want      bool
+	}{
+		{name: "nobody", want: false},
+		{name: "sso admin of an enabled issuer", setup: ssoAdmin(issuer), issuers: []string{issuer}, want: true},
+		{name: "sso admin of another issuer", setup: ssoAdmin(issuer), issuers: []string{"https://b.example.net"}, want: false},
+		{name: "local admin", setup: localAdmin("root"), want: true},
+		{name: "local admin who isn't the break-glass one", adminOnly: true, setup: localAdmin("root"), want: false},
+		{name: "break-glass admin", adminOnly: true, setup: localAdmin(AdminUsername), want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s, _ := newTestService(t)
+			s.adminOnly = tt.adminOnly
+			if tt.setup != nil {
+				tt.setup(t, s)
+			}
+			tx, err := s.db.BeginTx(context.Background(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = tx.Rollback() }()
+			if got, err := s.AdminCanSignIn(context.Background(), tx, tt.issuers); err != nil || got != tt.want {
+				t.Errorf("got %v, %v; want %v", got, err, tt.want)
+			}
+		})
+	}
+}
+
+func ssoAdmin(issuer string) func(*testing.T, *Service) {
+	return func(t *testing.T, s *Service) {
+		t.Helper()
+		if _, err := s.SSOLogin(context.Background(), Identity{Issuer: issuer, Subject: "u", Username: "zefir", Role: RoleAdmin}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func localAdmin(name string) func(*testing.T, *Service) {
+	return func(t *testing.T, s *Service) {
+		t.Helper()
+		if _, err := s.CreateFirstUser(context.Background(), name, "longenoughpassword"); err != nil {
+			t.Fatal(err)
+		}
+	}
 }

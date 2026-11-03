@@ -163,7 +163,6 @@ func TestLoadServer(t *testing.T) {
 		{name: "oidc empty admin role", args: []string{"-oidc-admin-role", ""}, env: map[string]string{"NUDGE_OIDC_ISSUER": "https://auth.example.net", "NUDGE_OIDC_CLIENT_ID": "nudge", "NUDGE_OIDC_CLIENT_SECRET": "s3cret", "NUDGE_PUBLIC_URL": "https://nudge.example.net"}, wantErr: true},
 		{name: "oidc user role same as admin role", args: []string{"-oidc-user-role", "admin"}, env: map[string]string{"NUDGE_OIDC_ISSUER": "https://auth.example.net", "NUDGE_OIDC_CLIENT_ID": "nudge", "NUDGE_OIDC_CLIENT_SECRET": "s3cret", "NUDGE_PUBLIC_URL": "https://nudge.example.net"}, wantErr: true},
 		{name: "oidc require mfa not a bool", env: map[string]string{"NUDGE_OIDC_ISSUER": "https://auth.example.net", "NUDGE_OIDC_CLIENT_ID": "nudge", "NUDGE_OIDC_CLIENT_SECRET": "s3cret", "NUDGE_PUBLIC_URL": "https://nudge.example.net", "NUDGE_OIDC_REQUIRE_MFA": "maybe"}, wantErr: true},
-		{name: "password login off without oidc", env: map[string]string{"NUDGE_PASSWORD_LOGIN": "false"}, wantErr: true},
 		{name: "trusted proxies not an address", env: map[string]string{"NUDGE_TRUSTED_PROXIES": "proxy.local"}, wantErr: true},
 		{name: "trusted proxies bad prefix length", args: []string{"-trusted-proxies", "10.0.0.0/33"}, wantErr: true},
 		{name: "trusted proxies empty entry", args: []string{"-trusted-proxies", "10.0.0.1,,10.0.0.2"}, wantErr: true},
@@ -420,5 +419,20 @@ func TestDockerRoot(t *testing.T) {
 				t.Errorf("DockerRoot = server %q, agent %q; want %q", srv.DockerRoot, ag.DockerRoot, tt.want)
 			}
 		})
+	}
+}
+
+// TestPasswordLoginOffWithoutEnvOIDC: the providers may be in the database, so serve checks
+// that there is one; the configuration alone is not an error.
+func TestPasswordLoginOffWithoutEnvOIDC(t *testing.T) {
+	t.Parallel()
+	got, err := LoadServer(nil, func(k string) string {
+		if k == "NUDGE_PASSWORD_LOGIN" {
+			return "false"
+		}
+		return ""
+	}, io.Discard)
+	if err != nil || !got.NoPasswordLogin || got.OIDC.Enabled() {
+		t.Errorf("got %+v, %v", got.OIDC, err)
 	}
 }

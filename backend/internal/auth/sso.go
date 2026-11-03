@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -26,6 +27,8 @@ type Identity struct {
 	Email       string
 	// Role comes from the provider's roles claim on every login.
 	Role Role
+	// SessionTTL is how long the session lasts; zero means SSOSessionTTL.
+	SessionTTL time.Duration
 }
 
 // ErrDisabled means an admin disabled the SSO user signing in.
@@ -35,7 +38,7 @@ var ErrDisabled = errors.New("user is disabled")
 // on the first login. A local user with the same name or email is never linked: a new
 // user gets a name no one has (and never AdminUsername, the break-glass user). The
 // display name, email and role are refreshed on every login: the role is the provider's,
-// not nudge's. A disabled user gets ErrDisabled. The session lasts SSOSessionTTL.
+// not nudge's. A disabled user gets ErrDisabled. The session lasts id.SessionTTL.
 func (s *Service) SSOLogin(ctx context.Context, id Identity) (Session, error) {
 	if id.Issuer == "" || id.Subject == "" {
 		return Session{}, errors.New("sso login: missing issuer or subject")
@@ -82,7 +85,11 @@ func (s *Service) SSOLogin(ctx context.Context, id Identity) (Session, error) {
 		return Session{}, ErrDisabled
 	}
 	u.SSO = true
-	return s.newSession(ctx, u, s.ssoTTL)
+	ttl := id.SessionTTL
+	if ttl == 0 {
+		ttl = s.ssoTTL
+	}
+	return s.newSession(ctx, u, ttl)
 }
 
 // refreshSSOUser updates the profile and role of id's user and returns it, if it exists,
@@ -201,6 +208,65 @@ func (s *Service) RevokeSSO(ctx context.Context, issuer, subject string) (Revoke
 		return Revoked{}, fmt.Errorf("revoke sso user: %w", err)
 	}
 	return r, nil
+}
+
+// IssuerRevoked is what RevokeIssuer took from an issuer's users.
+type IssuerRevoked struct {
+	Sessions int64
+	Tokens   int64
+}
+
+// RevokeIssuer ends every session and deletes every API token of the SSO users of issuer,
+// in tx, when their provider is taken away. The users themselves stay, so bringing the
+// issuer back signs them in again.
+func RevokeIssuer(ctx context.Context, tx *sql.Tx, issuer string) (IssuerRevoked, error) {
+	if issuer == "" {
+		return IssuerRevoked{}, errors.New("revoke issuer: missing issuer")
+	}
+	var r IssuerRevoked
+	res, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE oidc_issuer = ?)`, issuer)
+	if err != nil {
+		return IssuerRevoked{}, fmt.Errorf("revoke issuer sessions: %w", err)
+	}
+	if r.Sessions, err = res.RowsAffected(); err != nil {
+		return IssuerRevoked{}, fmt.Errorf("revoke issuer sessions: %w", err)
+	}
+	if res, err = tx.ExecContext(ctx, `DELETE FROM api_tokens WHERE user_id IN (SELECT id FROM users WHERE oidc_issuer = ?)`, issuer); err != nil {
+		return IssuerRevoked{}, fmt.Errorf("revoke issuer tokens: %w", err)
+	}
+	if r.Tokens, err = res.RowsAffected(); err != nil {
+		return IssuerRevoked{}, fmt.Errorf("revoke issuer tokens: %w", err)
+	}
+	return r, nil
+}
+
+// AdminCanSignIn reports whether an enabled admin can still sign in, in tx, with only
+// these issuers' providers enabled: a local admin who can use a password, or an SSO admin
+// of one of them.
+func (s *Service) AdminCanSignIn(ctx context.Context, tx *sql.Tx, issuers []string) (bool, error) {
+	res, err := tx.QueryContext(ctx, `SELECT username, password_hash <> '', oidc_issuer FROM users WHERE role = 'admin' AND NOT disabled`)
+	if err != nil {
+		return false, fmt.Errorf("look up admins: %w", err)
+	}
+	defer func() { _ = res.Close() }()
+	can := false
+	for res.Next() {
+		var name, issuer string
+		var hasPassword bool
+		if err := res.Scan(&name, &hasPassword, &issuer); err != nil {
+			return false, fmt.Errorf("look up admins: %w", err)
+		}
+		switch {
+		case issuer != "":
+			can = can || slices.Contains(issuers, issuer)
+		case hasPassword:
+			can = can || !s.adminOnly || strings.EqualFold(name, AdminUsername)
+		}
+	}
+	if err := res.Err(); err != nil {
+		return false, fmt.Errorf("look up admins: %w", err)
+	}
+	return can, nil
 }
 
 // RelinkRefusedError means the duplicate of a RelinkSSO still owns something; Owns names

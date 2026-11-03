@@ -377,22 +377,22 @@ func (s *Service) SessionUser(ctx context.Context, token string) (User, error) {
 	return u, nil
 }
 
-// Logout ends the session of token, if there is one, and reports whether it was an SSO
-// user's (whose provider session the caller may end too).
-func (s *Service) Logout(ctx context.Context, token string) (sso bool, err error) {
+// Logout ends the session of token, if there is one, and returns the issuer of an SSO
+// user's (whose provider session the caller may end too), "" for anyone else.
+func (s *Service) Logout(ctx context.Context, token string) (issuer string, err error) {
 	if token == "" {
-		return false, nil
+		return "", nil
 	}
 	err = s.db.QueryRowContext(ctx, `
-		SELECT u.oidc_issuer <> '' FROM sessions s JOIN users u ON u.id = s.user_id
-		WHERE s.id_hash = ?`, tokenHash(token)).Scan(&sso)
+		SELECT u.oidc_issuer FROM sessions s JOIN users u ON u.id = s.user_id
+		WHERE s.id_hash = ?`, tokenHash(token)).Scan(&issuer)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return false, fmt.Errorf("look up session: %w", err)
+		return "", fmt.Errorf("look up session: %w", err)
 	}
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE id_hash = ?`, tokenHash(token)); err != nil {
-		return false, fmt.Errorf("delete session: %w", err)
+		return "", fmt.Errorf("delete session: %w", err)
 	}
-	return sso, nil
+	return issuer, nil
 }
 
 // Cleanup deletes expired sessions and forgets finished rate-limit windows.

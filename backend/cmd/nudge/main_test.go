@@ -290,3 +290,20 @@ func TestStackCredentials(t *testing.T) {
 		})
 	}
 }
+
+// TestServeRefusesPasswordLoginOffWithoutProvider: with password login off there must be a
+// provider, from the environment or the database.
+func TestServeRefusesPasswordLoginOffWithoutProvider(t *testing.T) {
+	t.Parallel()
+	getenv := func(k string) string {
+		if k == "NUDGE_PASSWORD_LOGIN" {
+			return "false"
+		}
+		return ""
+	}
+	var stdout, stderr bytes.Buffer
+	code := realMain(context.Background(), []string{"serve", "-addr", "127.0.0.1:0", "-docker-host", noDocker(t), "-data", t.TempDir()}, getenv, &stdout, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "single sign-on") {
+		t.Errorf("code = %d, stderr %q", code, stderr.String())
+	}
+}
