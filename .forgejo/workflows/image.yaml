@@ -51,7 +51,7 @@ jobs:
       PUSH: ${{ forgejo.event_name != 'pull_request' }}
 
     steps:
-      # Full history: scripts/version.sh counts commits and merges (main included).
+      # Full history: scripts/version.sh counts merges (main included).
       - name: Checkout
         uses: https://data.forgejo.org/actions/checkout@v6
         with:

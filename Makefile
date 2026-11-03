@@ -11,8 +11,8 @@ LINT_IMAGE ?= golangci/golangci-lint:v2.15.0
 # The frontend's toolchain (Vite+, from frontend/package.json).
 NODE_IMAGE ?= node:24.22.1
 
-# vMAJOR.MINOR.PATCH counted from git history (scripts/version.sh: releases into main, PRs
-# into develop, commits since the last PR).
+# vMAJOR.MINOR.PATCH (scripts/version.sh: version.txt, PRs into main since it changed, PRs
+# into develop since the last release).
 VERSION ?= $(shell scripts/version.sh 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X git.zefirlabs.net/zefir/nudge/backend/internal/version.Version=$(VERSION)
 
