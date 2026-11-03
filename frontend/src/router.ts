@@ -26,6 +26,7 @@ import LoginView from './views/LoginView.vue';
 import NetworksView from './views/NetworksView.vue';
 import NetworkView from './views/NetworkView.vue';
 import NotFoundView from './views/NotFoundView.vue';
+import OidcProvidersView from './views/OidcProvidersView.vue';
 import RegistriesView from './views/RegistriesView.vue';
 import RegistryRepositoryView from './views/RegistryRepositoryView.vue';
 import RegistryView from './views/RegistryView.vue';
@@ -90,6 +91,7 @@ export function createAppRouter(history: RouterHistory) {
       { path: '/environments', redirect: '/' },
       { path: '/deployments', name: 'deployments', component: DeploymentsView, meta: { users: true } },
       { path: '/deployments/:name', name: 'deployment', component: DeploymentView, meta: { users: true } },
+      { path: '/sso', name: 'sso', component: OidcProvidersView },
       { path: '/registries', name: 'registries', component: RegistriesView },
       { path: '/registries/:id', name: 'registry', component: RegistryView },
       // Repository names contain "/", so the name goes in the query (?name=team/app).

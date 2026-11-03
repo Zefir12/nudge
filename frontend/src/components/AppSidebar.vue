@@ -51,6 +51,11 @@ const globalItems = [
     label: 'Users',
     icon: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8',
   },
+  {
+    to: '/sso',
+    label: 'Single sign-on',
+    icon: 'M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M15 12H3',
+  },
   { to: '/audit', label: 'Audit log', icon: 'M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01' },
   { to: '/backup', label: 'Backup', icon: 'M21 8v13H3V8M1 3h22v5H1zM10 12h4' },
 ];

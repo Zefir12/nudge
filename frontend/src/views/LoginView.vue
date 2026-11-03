@@ -12,7 +12,7 @@ const router = useRouter();
 const busy = ref(false);
 const error = ref('');
 // Until the methods load (or if they can't), the password form shows as before.
-const methods = ref<AuthMethods>({ password: true, oidc: null });
+const methods = ref<AuthMethods>({ password: true, providers: [] });
 
 const redirect = computed(() => safeRedirect(route.query.redirect));
 // ?password shows the form when password login is off: the break-glass admin's way in.
@@ -49,10 +49,15 @@ async function onSubmit(c: Credentials) {
     <section class="card auth-card">
       <h1>Log in to nudge</h1>
       <p v-if="ssoError" class="error" role="alert">{{ ssoError }}</p>
-      <a v-if="methods.oidc" class="button primary sso" :href="ssoLoginUrl(redirect)">
-        Log in with {{ methods.oidc.name }}
+      <a
+        v-for="p in methods.providers"
+        :key="p.id"
+        class="button primary sso"
+        :href="ssoLoginUrl(p.id, redirect)"
+      >
+        Log in with {{ p.name }}
       </a>
-      <p v-if="methods.oidc && showPassword" class="muted divider">or</p>
+      <p v-if="methods.providers.length && showPassword" class="muted divider">or</p>
       <CredentialsForm
         v-if="showPassword"
         submit-label="Log in"
@@ -68,6 +73,10 @@ async function onSubmit(c: Credentials) {
 .sso {
   display: block;
   text-align: center;
+}
+
+.sso + .sso {
+  margin-top: 0.5rem;
 }
 
 .divider {
