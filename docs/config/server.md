@@ -201,6 +201,9 @@ location / {
 
 Set `NUDGE_PUBLIC_URL=https://nudge.example.net` as well.
 
+nudge sets its own `Content-Security-Policy`, `X-Frame-Options`, `X-Content-Type-Options`
+and `Referrer-Policy`, so a proxy needn't add them. HSTS is left to whoever terminates TLS.
+
 ### Trusted proxies
 `X-Forwarded-For` and `X-Forwarded-Proto` are only believed when the TCP peer is in
 `NUDGE_TRUSTED_PROXIES`, a comma-separated list of CIDRs or single IPs (IPv4 or IPv6),
@@ -208,12 +211,13 @@ e.g. `NUDGE_TRUSTED_PROXIES=172.16.0.0/12` for a proxy on a Docker network, or t
 proxy container's fixed IP. From any other peer both headers are ignored, as anyone can
 send them. Unset (the default), nudge trusts no proxy:
 
-- the client IP (login rate limit, logs) is the TCP peer, so behind a proxy all clients
-  share the proxy's IP and its failed-login budget (see docs/api.md). Failed deploy
-  webhook checks (`POST /api/v1/hooks/{id}` with a wrong or missing secret) count
-  against the same budget, so a CI job with a stale secret can use it up: after 20
-  failures in 15 minutes, logins and webhook triggers through the proxy get `429` until
-  the window ends. Fix or rotate the secret in CI promptly, or trust the proxy;
+- the client IP (logs, the limit on webhook, deploy token and SSO checks) is the TCP peer,
+  so behind a proxy all clients share the proxy's IP and that limit. Failed deploy webhook
+  checks (`POST /api/v1/hooks/{id}` with a wrong or missing secret) count against it, so
+  a CI job with a stale secret can use it up: after 20 failures in 15 minutes, webhook
+  triggers, deploy tokens and SSO callbacks through the proxy get `429` or a failed
+  login until the window ends. Fix or rotate the secret in CI promptly, or trust the
+  proxy. Password logins aren't limited;
 - `X-Forwarded-Proto` is ignored, so set `NUDGE_PUBLIC_URL=https://…` for `Secure`
   cookies and `https://` agent commands.
 
@@ -231,8 +235,8 @@ every forged header count; nudge logs a warning at start for `0.0.0.0/0` and `::
 Logins last 7 days (a cookie `nudge_session`; the database keeps only its SHA-256).
 Expired sessions are deleted on use and every 10 minutes. The cookie is `Secure` when nudge
 serves TLS or `NUDGE_PUBLIC_URL` is `https://`, else only when the browser uses HTTPS
-through a trusted proxy that sets `X-Forwarded-Proto: https`. Writes from other origins are refused. Failed logins are
-rate-limited per client IP and per username (see docs/api.md).
+through a trusted proxy that sets `X-Forwarded-Proto: https`. Writes from other origins are refused. Failed logins
+block nobody: rate limit and ban in front of nudge, using the `login failed` log line (see docs/api.md).
 
 ## Single sign-on
 nudge signs users in through one OpenID Connect provider (authorization code flow with
@@ -265,7 +269,7 @@ redirect URI to register is `<public URL>/api/v1/auth/oidc/callback`; the scopes
   browser to the provider's `end_session_endpoint`.
 - **MFA.** `NUDGE_OIDC_REQUIRE_MFA=true` refuses ID tokens whose `amr` lacks `mfa`.
 - Failed SSO logins land on the login page with a generic error, are logged with the
-  detail and count against the per-IP login limit (shared with password login).
+  detail and count against the per-IP credential limit.
 - **Revoking access.** Roles and MFA are checked at login only: a user whose admin role is
   taken away keeps their session (as an admin) until `NUDGE_OIDC_SESSION_TTL` ends it or
   they log in again, and API tokens they created keep working until then. The next SSO
@@ -423,7 +427,9 @@ default, so repeat the default's prefixes you want to keep and add your own, for
 
 A user's create or edit with such a label is refused with a field error on `labels`, and
 so is a container whose image sets one (Docker copies an image's labels onto its
-containers). A container made before a prefix was added keeps running, but its next
+containers). A user's labels also can't start with `com.docker.`, nor an image's with
+`com.docker.compose.`, whatever this setting says: such a container would count as part
+of an admin's stack. A container made before a prefix was added keeps running, but its next
 recreate or update is refused until the label is gone (edit it out in the user's form).
 nudge's own `net.zefirlabs.nudge.` and Docker's `com.docker.` labels are always refused.
 Admins' containers are not affected.

@@ -21,6 +21,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/deployments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/events"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/gitstacks"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/hostdisk"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/metrics"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/notify"
@@ -55,6 +56,9 @@ type Options struct {
 	// StackChecker returns compose's complaints about stack files, none if they're valid;
 	// nil means stacks can't be checked.
 	StackChecker func(ctx context.Context, f stacks.Files) ([]string, error)
+	// GitStacks has the stacks whose compose file comes from a repository; New starts its
+	// polling. nil means stacks can't come from git.
+	GitStacks *gitstacks.Service
 	// Updates checks images for newer versions; nil means update checks aren't available.
 	Updates *updates.Service
 	// Webhooks are the notification targets; nil means notifications aren't available.
@@ -119,7 +123,7 @@ type Options struct {
 	// (hostdisk.Stat locally, hostdisk.Remote for an agent); nil means unknown.
 	DiskSpace func(ctx context.Context, env environments.Environment) (hostdisk.Space, error)
 	// TrustedProxies are the reverse proxies whose X-Forwarded-For (client IP for the
-	// login limiter and logs) and X-Forwarded-Proto are believed; empty means none.
+	// credential limiter and logs) and X-Forwarded-Proto are believed; empty means none.
 	TrustedProxies []netip.Prefix
 }
 
@@ -345,6 +349,9 @@ var routes = []route{
 	{"POST /api/v1/environments/{env}/stacks/{id}/up", (*server).upStack},
 	{"POST /api/v1/environments/{env}/stacks/{id}/down", (*server).downStack},
 	{"POST /api/v1/environments/{env}/stacks/{id}/update", (*server).updateStackImages},
+	{"PUT /api/v1/environments/{env}/stacks/{id}/git", (*server).setStackGit},
+	{"DELETE /api/v1/environments/{env}/stacks/{id}/git", (*server).removeStackGit},
+	{"POST /api/v1/environments/{env}/stacks/{id}/git/pull", (*server).pullStackGit},
 	{"GET /api/v1/system/update", (*server).getSystemUpdate},
 	{"POST /api/v1/system/update/check", (*server).checkSystemUpdate},
 	{"POST /api/v1/system/update", (*server).startSystemUpdate},
@@ -383,7 +390,7 @@ func New(opts Options) http.Handler {
 		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries, audit: opts.Audit, updates: opts.Updates,
 		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, deployments: opts.Deployments, usage: opts.Usage, metrics: opts.Metrics, activity: opts.Activity, backups: opts.Backups, allowances: opts.Allowances, tenant: opts.Tenant, deniedLabels: opts.DeniedLabels, registryClient: opts.RegistryClient,
 		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, oidc: opts.OIDC, oidcName: opts.OIDCName, noPasswordLogin: opts.NoPasswordLogin, recreating: map[string]bool{},
-		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{},
+		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{}, gitStacks: opts.GitStacks,
 		self: opts.Self, dockerHost: opts.DockerHost, agentSelf: opts.AgentSelf, diskSpace: opts.DiskSpace,
 		checks:         make(chan struct{}, maxStackChecks),
 		done:           context.Background(),
@@ -408,6 +415,9 @@ func New(opts Options) http.Handler {
 	}
 	if s.stackRunner == nil {
 		s.stackRunner = func(environments.Environment) stacks.Runner { return nil }
+	}
+	if s.gitStacks != nil {
+		s.gitStacks.StartPolling(s.pollDeploy)
 	}
 	api := http.NewServeMux()
 	for _, rt := range routes {
@@ -434,7 +444,7 @@ func New(opts Options) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/api/", s.protect(api))
 	mux.Handle("/", opts.Web)
-	return proxies(opts.TrustedProxies).handler(mux)
+	return proxies(opts.TrustedProxies).handler(securityHeaders(mux))
 }
 
 type server struct {
@@ -486,6 +496,7 @@ type server struct {
 	stacksDir    string
 	stackRunner  func(env environments.Environment) stacks.Runner
 	stackChecker func(ctx context.Context, f stacks.Files) ([]string, error)
+	gitStacks    *gitstacks.Service
 	// checks holds a slot per running stack check.
 	checks chan struct{}
 	// tokenRefused serves sessionOnlyRoutes to API tokens.

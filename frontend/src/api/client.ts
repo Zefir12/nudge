@@ -1232,7 +1232,56 @@ export interface Stack extends StackSummary {
   // services are the project's containers by compose service; a service shows up once it
   // has a container.
   services: StackService[];
+  // git is where the compose file comes from; left out for a stack edited here.
+  git?: StackGit;
 }
+
+export type StackGitAuth = 'none' | 'token' | 'ssh';
+
+// StackGit is a stack's repository. Its token or key never comes back.
+export interface StackGit {
+  repo_url: string;
+  ref: string;
+  compose_path: string;
+  env_path: string;
+  auth: StackGitAuth;
+  username: string;
+  known_hosts: string;
+  poll_seconds: number;
+  // commit is the commit of the stack's files, what its last deploy from git brought.
+  commit: string;
+  last_error: string;
+  checked_at?: string;
+  pulled_at?: string;
+}
+
+// StackGitInput sets a stack's repository; a left-out secret keeps the stored one.
+export interface StackGitInput {
+  repo_url: string;
+  ref: string;
+  compose_path: string;
+  env_path: string;
+  auth: StackGitAuth;
+  username: string;
+  secret?: string;
+  known_hosts: string;
+  poll_seconds: number;
+}
+
+export const emptyStackGit = (): StackGitInput => ({
+  repo_url: '',
+  ref: '',
+  compose_path: 'compose.yaml',
+  env_path: '',
+  auth: 'none',
+  username: '',
+  secret: '',
+  known_hosts: '',
+  poll_seconds: 0,
+});
+
+// stackGitBody drops an empty secret, which means "keep the stored one".
+const stackGitBody = ({ secret, ...rest }: StackGitInput) => (secret ? { ...rest, secret } : rest);
 
 export interface StackService {
   name: string;
@@ -1256,6 +1305,19 @@ export const createStack = (env: string, name: string, files: StackFiles) =>
   apiFetch<Stack>(envPath(env, '/stacks'), post({ name, ...files }));
 export const updateStack = (env: string, name: string, files: StackFiles) =>
   apiFetch<void>(envPath(env, `/stacks/${enc(name)}`), { method: 'PUT', body: JSON.stringify(files) });
+// createStackFromGit creates a stack whose compose file comes from a repository.
+export const createStackFromGit = (env: string, name: string, git: StackGitInput, envFile: string) =>
+  apiFetch<Stack>(envPath(env, '/stacks'), post({ name, env: envFile, git: stackGitBody(git) }));
+// setStackGit makes a stack follow a repository, or another one, and reads its files now;
+// the running stack changes at its next deploy.
+export const setStackGit = (env: string, name: string, git: StackGitInput) =>
+  apiFetch<StackGit>(envPath(env, `/stacks/${enc(name)}/git`), {
+    method: 'PUT',
+    body: JSON.stringify(stackGitBody(git)),
+  });
+// removeStackGit detaches a stack from its repository; it keeps its files.
+export const removeStackGit = (env: string, name: string) =>
+  apiFetch<void>(envPath(env, `/stacks/${enc(name)}/git`), { method: 'DELETE' });
 // checkStack asks compose about stack files without saving them: errors is empty if
 // compose accepts them.
 export const checkStack = (files: StackFiles) => apiFetch<{ errors: string[] }>('/stacks/check', post(files));
@@ -1281,6 +1343,14 @@ export const updateStackImages = (
   onLine: (l: StackLine) => void,
   signal?: AbortSignal,
 ) => runStack(env, name, 'update', {}, onLine, signal);
+// pullStackGit gets the stack's files from its repository and deploys them; it streams
+// like upStack.
+export const pullStackGit = (
+  env: string,
+  name: string,
+  onLine: (l: StackLine) => void,
+  signal?: AbortSignal,
+) => runStack(env, name, 'git/pull', {}, onLine, signal);
 // downStack stops and removes a stack's containers (volumes also its volumes).
 export const downStack = (
   env: string,
@@ -1293,7 +1363,7 @@ export const downStack = (
 async function runStack(
   env: string,
   name: string,
-  op: 'up' | 'down' | 'update',
+  op: 'up' | 'down' | 'update' | 'git/pull',
   body: unknown,
   onLine: (l: StackLine) => void,
   signal?: AbortSignal,

@@ -21,7 +21,7 @@ func TestCreateUser(t *testing.T) {
 	if err != nil || a.Role != RoleUser || a.Disabled || a.SSO || a.Username != "bob" {
 		t.Fatalf("CreateUser = %+v, %v", a, err)
 	}
-	sess, err := s.Login(ctx, "10.0.0.1", "bob", "longenough")
+	sess, err := s.Login(ctx, "bob", "longenough")
 	if err != nil || sess.User.Role != RoleUser {
 		t.Fatalf("Login = %+v, %v", sess.User, err)
 	}
@@ -73,7 +73,7 @@ func TestUpdateUser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := s.Login(ctx, "10.0.0.1", "bob", "longenough")
+	sess, err := s.Login(ctx, "bob", "longenough")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestUpdateUser(t *testing.T) {
 	if _, err := s.TokenUser(ctx, token); !errors.Is(err, ErrNoSession) {
 		t.Errorf("token of a disabled user err = %v", err)
 	}
-	if _, err := s.Login(ctx, "10.0.0.2", "bob", "longenough"); !errors.Is(err, ErrInvalidCredentials) {
+	if _, err := s.Login(ctx, "bob", "longenough"); !errors.Is(err, ErrInvalidCredentials) {
 		t.Errorf("login of a disabled user err = %v", err)
 	}
 	if a, err = s.UpdateUser(ctx, bob.ID, Change{Role: ptr(RoleAdmin)}); err != nil || !a.Disabled || a.Role != RoleAdmin {
@@ -128,7 +128,7 @@ func TestUpdateUser(t *testing.T) {
 	}
 
 	// A password reset ends the sessions; the new password works.
-	sess, err = s.Login(ctx, "10.0.0.3", "bob", "longenough")
+	sess, err = s.Login(ctx, "bob", "longenough")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestUpdateUser(t *testing.T) {
 	if _, err := s.SessionUser(ctx, sess.Token); !errors.Is(err, ErrNoSession) {
 		t.Errorf("session after a reset err = %v", err)
 	}
-	if _, err := s.Login(ctx, "10.0.0.3", "bob", "evenlonger"); err != nil {
+	if _, err := s.Login(ctx, "bob", "evenlonger"); err != nil {
 		t.Errorf("login with the new password err = %v", err)
 	}
 }
@@ -178,7 +178,7 @@ func TestDeleteUser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := s.Login(ctx, "10.0.0.1", "bob", "longenough")
+	sess, err := s.Login(ctx, "bob", "longenough")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,16 +4,22 @@ import { onBeforeRouteLeave, RouterLink, useRouter } from 'vue-router';
 
 import {
   downStack,
+  emptyStackGit,
   getStack,
+  pullStackGit,
   removeStack,
+  removeStackGit,
+  setStackGit,
   updateStack,
   updateStackImages,
   upStack,
   type Stack,
+  type StackGitInput,
   type StackLine,
 } from '../api/client';
 import LoadState from '../components/LoadState.vue';
 import StackEditor from '../components/StackEditor.vue';
+import StackGitForm from '../components/StackGitForm.vue';
 import StackLogs from '../components/StackLogs.vue';
 import StateBadge from '../components/StateBadge.vue';
 import UpdateHistory from '../components/UpdateHistory.vue';
@@ -142,6 +148,68 @@ async function onRemove() {
   }
 }
 
+const shortCommit = (c: string) => c.slice(0, 12);
+const onPull = () =>
+  run('Pull and deploy', (onLine, signal) => pullStackGit(env.value, id.value, onLine, signal));
+
+// gitForm is the source being edited, null when the form is closed.
+const gitForm = ref<StackGitInput | null>(null);
+const gitError = ref('');
+function editGit() {
+  gitError.value = '';
+  const g = stack.value?.git;
+  gitForm.value = g
+    ? {
+        repo_url: g.repo_url,
+        ref: g.ref,
+        compose_path: g.compose_path,
+        env_path: g.env_path,
+        auth: g.auth,
+        username: g.username,
+        secret: '',
+        known_hosts: g.known_hosts,
+        poll_seconds: g.poll_seconds,
+      }
+    : emptyStackGit();
+}
+async function onSaveGit() {
+  if (!gitForm.value) return;
+  if (dirty.value && !window.confirm('This replaces the compose file and drops your unsaved changes. Go on?'))
+    return;
+  gitError.value = '';
+  busy.value = true;
+  try {
+    await setStackGit(env.value, id.value, gitForm.value);
+    gitForm.value = null;
+    saved.value = null; // The files changed on the server: follow them.
+    compose.value = '';
+    envFile.value = '';
+    await reload();
+  } catch (e) {
+    gitError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    busy.value = false;
+  }
+}
+async function onDetachGit() {
+  if (
+    !window.confirm(
+      `Stop taking "${id.value}" from git? It keeps its current files, which you can then edit here.`,
+    )
+  )
+    return;
+  actionError.value = '';
+  busy.value = true;
+  try {
+    await removeStackGit(env.value, id.value);
+    await reload();
+  } catch (e) {
+    actionError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    busy.value = false;
+  }
+}
+
 const editor = ref<InstanceType<typeof StackEditor> | null>(null);
 const saveError = ref('');
 const saveResult = ref('');
@@ -254,10 +322,74 @@ function onRevert() {
 
       <WebhooksCard :key="`${env}/${stack.name}`" :env="env" kind="stack" :target="stack.name" />
 
+      <section class="card git-card">
+        <h2>Git</h2>
+        <template v-if="stack.git">
+          <dl class="git-facts">
+            <dt>Repository</dt>
+            <dd class="break">
+              <code>{{ stack.git.repo_url }}</code>
+            </dd>
+            <dt>Branch or tag</dt>
+            <dd>{{ stack.git.ref || 'default branch' }}</dd>
+            <dt>Compose file</dt>
+            <dd class="break">
+              <code>{{ stack.git.compose_path }}</code>
+            </dd>
+            <template v-if="stack.git.env_path">
+              <dt>Env file</dt>
+              <dd class="break">
+                <code>{{ stack.git.env_path }}</code>
+              </dd>
+            </template>
+            <dt>Commit</dt>
+            <dd>
+              <code :title="stack.git.commit">{{ shortCommit(stack.git.commit) }}</code>
+            </dd>
+            <dt>Checked</dt>
+            <dd>
+              {{ stack.git.poll_seconds ? `every ${stack.git.poll_seconds / 60} min` : 'on pull only' }}
+            </dd>
+          </dl>
+          <p v-if="stack.git.last_error" class="error" role="alert">Last pull: {{ stack.git.last_error }}</p>
+        </template>
+        <p v-else class="muted">
+          This stack's files are edited here. Take its compose file from a repository instead:
+        </p>
+        <div v-if="!gitForm" class="actions">
+          <button v-if="stack.git" type="button" class="primary" :disabled="busy" @click="onPull">
+            Pull and deploy
+          </button>
+          <button type="button" :disabled="busy" @click="editGit">
+            {{ stack.git ? 'Change source' : 'Connect a repository' }}
+          </button>
+          <button v-if="stack.git" type="button" :disabled="busy" @click="onDetachGit">Detach</button>
+        </div>
+        <form v-else class="files" @submit.prevent="onSaveGit">
+          <StackGitForm
+            v-model="gitForm"
+            :disabled="busy"
+            :has-secret="stack.git && stack.git.auth !== 'none'"
+          />
+          <p v-if="gitError" class="error" role="alert">{{ gitError }}</p>
+          <div class="actions">
+            <button type="submit" class="primary" :disabled="busy">Save and read the files</button>
+            <button type="button" :disabled="busy" @click="gitForm = null">Cancel</button>
+            <span class="muted">The running stack changes at its next deploy.</span>
+          </div>
+        </form>
+      </section>
+
       <section class="card">
         <h2>Files</h2>
         <form class="files" @submit.prevent="save">
-          <StackEditor ref="editor" v-model:compose="compose" v-model:env="envFile" :disabled="busy" />
+          <StackEditor
+            ref="editor"
+            v-model:compose="compose"
+            v-model:env="envFile"
+            :disabled="busy"
+            :compose-from-git="!!stack.git"
+          />
           <p v-if="saveError" class="error" role="alert">{{ saveError }}</p>
           <div class="actions">
             <button type="submit" class="primary" :disabled="busy || !dirty">Save</button>
@@ -296,6 +428,25 @@ h1 {
 
 .files .actions {
   margin: 0.75rem 0 0;
+}
+
+.git-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+  margin: 0 0 0.75rem;
+}
+
+.git-facts dt {
+  color: var(--muted);
+}
+
+.git-facts dd {
+  margin: 0;
+}
+
+.git-card .actions {
+  margin-bottom: 0;
 }
 
 .card + .card,

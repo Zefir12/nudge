@@ -11,7 +11,8 @@ remote Docker hosts join through an agent (its own image, `nudge-agent`) that di
 to the server.
 
 It also checks images for updates and updates containers and stacks in one click, sends
-webhook notifications, deploys stacks from CI with health checks and rollback, and hosts
+webhook notifications, deploys stacks from CI with health checks and rollback, takes
+stacks' compose files from git repositories, and hosts
 other users in their own allowances (admin and user roles, OIDC login).
 
 Status: pre-release. The roadmap's phases are done; [PLAN.md](PLAN.md) lists what's next.

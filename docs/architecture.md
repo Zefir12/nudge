@@ -85,6 +85,9 @@ refuses `ws://` unless `NUDGE_INSECURE=1`.
   `NUDGE_ADMIN_PASSWORD` creates it at startup.
 - Browser: session cookie (`HttpOnly`, `Secure` behind TLS, `SameSite=Strict`), sessions
   in SQLite with expiry; writes additionally require a matching `Origin`.
+- Every response carries a CSP (scripts only from nudge's own files, no framing),
+  `X-Content-Type-Options`, `X-Frame-Options` and `Referrer-Policy` (`api/headers.go`).
+  Inline styles stay allowed because xterm creates them at runtime; nudge's own code uses none.
 - Scripts: API tokens (`Authorization: Bearer nudge_...`), stored hashed, shown once.
 - Decision (#33): routes that mint a credential which outlives the token's revocation
   (creating API tokens, deploy tokens, users and passwords; #77 added agent environments,
@@ -92,7 +95,9 @@ refuses `ws://` unless `NUDGE_INSECURE=1`.
   audited under the token's name. They are listed in `sessionOnlyRoutes` in
   `internal/api` and enforced in the auth middleware; a new route of that kind goes on
   the list. Scopes stay a later option.
-- Login attempts are rate-limited per IP and username, with bounded memory.
+- Password logins have no lockout or rate limit: limits and bans belong to the services in
+  front of nudge, which read the `login failed` log line. Guesses at other credentials
+  (webhook secrets, deploy tokens, SSO callbacks) are limited per IP, with bounded memory.
 - Roles, ownership, allowances and users' containers: see [Permission model](#permission-model-multi-user-118).
 - Single sign-on (#110, internal/oidc): one OpenID Connect provider, nudge a confidential
   client (authorization code + PKCE S256, `client_secret_basic`). Discovery, JWKS and ID
@@ -112,7 +117,7 @@ refuses `ws://` unless `NUDGE_INSECURE=1`.
   HMAC-SHA256 body signature (Forgejo, Gitea, GitHub headers), compared in constant time.
   The secret is sealed with the secretbox key (not hashed: a signature check needs its
   value). A webhook can do one thing, update its one target, and runs as its creator;
-  failed checks count against the login limit per IP, and each webhook takes 10 triggers
+  failed checks count against the credential limit per IP, and each webhook takes 10 triggers
   a minute. This is the credential to put in CI instead of an API token, which is its user
   on every route.
 - Deployments (internal/deployments) have their own access model, so it can grow (teams,
@@ -364,6 +369,29 @@ to the UI as they are.
 - Status (services, containers, health) is read through the Docker API by the
   `com.docker.compose.project` label, the same for both kinds; logs use the existing
   container log stream. No control endpoint is needed for reads.
+
+### Stacks from git
+A stack can take its compose file from a repository (`internal/gitstacks`, table
+`stack_sources`, API in docs/api.md "Stacks from git"). It only changes where the server's
+copy of the files comes from: agents get them through `Sync` as always, so every kind of
+environment works alike and agents have no git code or credentials.
+
+- **go-git, not the git binary** (zefir, #148), in a package only the server imports.
+- **Nothing is checked out.** A pull is a shallow, single-ref clone with no work tree in a
+  temporary directory under the stacks directory, removed afterwards; the files are read
+  from the commit's tree. So a symlink or odd path in a repository can't touch the disk, only
+  regular files are accepted, and no clone stays around to manage. The price: extra files
+  in the repository aren't available to the stack.
+- **Bounds:** the clone's writes go through a counting filesystem (`limitFS`, 256 MiB),
+  everything is under a 2 minute context, and go-git's object cache is capped.
+- **Credentials** are sealed with the secretbox like registry passwords, and only carry
+  over on a change if they'd go to the same place. SSH host keys come only from the source's
+  `known_hosts`: a wrong compose file is root on the host, so there is no trust on first use,
+  and go-git's fallback to `~/.ssh` is never reached.
+- **Pull at deploy.** `startStackPull` runs under the stack's claim, before a deployment's
+  variables apply. `commit_hash` always names the files on disk: a failed deploy puts them
+  back (`finishGitPull`), and `seen_commit` keeps the failed commit so polling doesn't retry
+  it. A deployment with rollback on redeploys the restored files.
 
 ### Agent control protocol
 - Tunnel protocol 2: every stream the server opens starts with one byte, `0x00` Docker

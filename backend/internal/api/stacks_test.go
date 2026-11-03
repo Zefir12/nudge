@@ -619,9 +619,9 @@ func TestStartStackEditSyncFails(t *testing.T) {
 	if err := s.stackDir(env.ID).Create("web", original); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := s.startStackEdit(t.Context(), env, "web", func(f stacks.Files) stacks.Files {
+	_, _, err := s.startStackEdit(t.Context(), env, "web", func(f stacks.Files) (stacks.Files, error) {
 		f.Env = "A=2\n"
-		return f
+		return f, nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "agent gone") {
 		t.Fatalf("startStackEdit = %v, want the sync's error", err)

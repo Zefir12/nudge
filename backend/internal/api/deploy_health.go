@@ -68,7 +68,9 @@ func (s *server) deployDeployment(ctx context.Context, d deployments.Deployment,
 	var previous map[string]string
 	var original string
 	// A failed write or sync puts the .env back itself, before releasing the stack.
-	runner, unlock, err := s.startStackEdit(ctx, env, d.Stack, func(f stacks.Files) stacks.Files {
+	// A stack from git gets its files from the repository first, so the deploy's
+	// variables apply on top of what it holds.
+	runner, pull, unlock, err := s.startStackPull(ctx, env, d.Stack, func(f stacks.Files) stacks.Files {
 		original = f.Env
 		f.Env, previous = deployments.SetVariables(f.Env, run.Variables)
 		return f
@@ -77,6 +79,12 @@ func (s *server) deployDeployment(ctx context.Context, d deployments.Deployment,
 		return failed(err)
 	}
 	defer unlock()
+	if pull != nil {
+		// The .env to go back to is the one from before the pull, and what the run
+		// replaced is what that held.
+		original = pull.original.Env
+		_, previous = deployments.SetVariables(original, run.Variables)
+	}
 
 	step := deployments.StepPulling
 	setStep := func(st deployments.Step) {
@@ -113,12 +121,15 @@ func (s *server) deployDeployment(ctx context.Context, d deployments.Deployment,
 		if h.RemoveOneOffs {
 			s.removeOneOffs(ctx, c, d, run, report)
 		}
+		s.finishGitPull(ctx, env, d.Stack, pull, true)
 		report(deployments.Progress{Message: "deployed"})
 		return out
 	}
 	out.Status, out.Error = deployments.StatusFailed, fmt.Sprintf("%s: %s", step, problem)
 	report(deployments.Progress{Message: out.Error})
-	if len(run.Variables) == 0 {
+	// Puts back the files of a pull; what is left to undo is below.
+	s.finishGitPull(ctx, env, d.Stack, pull, false)
+	if len(run.Variables) == 0 && (pull == nil || !pull.changed) {
 		return out
 	}
 	if !h.Rollback || ctx.Err() != nil {

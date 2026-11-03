@@ -17,13 +17,19 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
-    // The server's CSP will allow no inline scripts or styles.
+    // The server's CSP allows no inline scripts; inline styles only for the terminal.
     assetsInlineLimit: 0,
   },
   test: {
     environment: 'jsdom',
     // One jsdom per worker instead of per file (it was ~60% of the run); files stay isolated.
     pool: 'vmThreads',
+    // Vitest starts a worker per core it sees (availableParallelism - 1), but on CI the
+    // runner shares its host with the Go -race, lint and image jobs and may have a CPU
+    // quota node doesn't read. The tests only wait on fake timers and mocked fetches, so
+    // they're CPU-bound: 15 workers on one core take twice as long overall and stretch
+    // each test 10x, past the 5s timeout. Two workers keep every test near its local time.
+    maxWorkers: process.env.CI ? 2 : undefined,
     include: ['src/**/*.test.ts'],
   },
   lint: {

@@ -3,12 +3,12 @@ package api
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"testing"
 
+	"git.zefirlabs.net/zefir/nudge/backend/internal/deployments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker/dockertest"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
@@ -114,22 +114,27 @@ func newProxiedHandler(t *testing.T) http.Handler {
 	return h
 }
 
-// failLogins fails logins (unknown users, so the per-user limit stays out of it) as the
-// client that remote and xff make up until it is rate limited.
-func failLogins(t *testing.T, h http.Handler, remote, xff string) {
+// tokenAttempt tries a made-up deploy token as the client that remote and xff make up;
+// failed credential checks are what the per-IP limit counts.
+func tokenAttempt(t *testing.T, h http.Handler, remote, xff string) int {
 	t.Helper()
-	for i := range 30 {
-		rec := do(t, h, request{method: "POST", path: "/api/v1/auth/login", remote: remote,
-			body:    fmt.Sprintf(`{"username":"nobody%d","password":"wrong-password"}`, i),
-			headers: map[string]string{"X-Forwarded-For": xff}})
-		if rec.Code == http.StatusTooManyRequests {
+	return do(t, h, request{method: "GET", path: "/api/v1/deployments/app/deploys", remote: remote, headers: map[string]string{
+		"X-Forwarded-For": xff, "Authorization": "Bearer " + deployments.TokenPrefix + "wrong",
+	}}).Code
+}
+
+// failTokens fails token checks as that client until it is rate limited.
+func failTokens(t *testing.T, h http.Handler, remote, xff string) {
+	t.Helper()
+	for range 30 {
+		if tokenAttempt(t, h, remote, xff) == http.StatusTooManyRequests {
 			return
 		}
 	}
 	t.Fatal("never rate limited")
 }
 
-func TestLoginRateLimitBehindProxy(t *testing.T) {
+func TestRateLimitBehindProxy(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
@@ -140,7 +145,7 @@ func TestLoginRateLimitBehindProxy(t *testing.T) {
 	}{
 		{name: "clients behind a trusted proxy are limited apart",
 			attackerRemote: "10.0.0.5:1234", attackerXFF: "203.0.113.9",
-			victimRemote: "10.0.0.5:1234", victimXFF: "198.51.100.4", wantVictim: http.StatusOK},
+			victimRemote: "10.0.0.5:1234", victimXFF: "198.51.100.4", wantVictim: http.StatusUnauthorized},
 		{name: "a spoofed left entry doesn't escape the limit",
 			attackerRemote: "10.0.0.5:1234", attackerXFF: "203.0.113.9",
 			victimRemote: "10.0.0.5:1234", victimXFF: "198.51.100.4, 203.0.113.9", wantVictim: http.StatusTooManyRequests},
@@ -152,17 +157,15 @@ func TestLoginRateLimitBehindProxy(t *testing.T) {
 			victimRemote: "198.51.100.1:1234", victimXFF: "198.51.100.4", wantVictim: http.StatusTooManyRequests},
 		{name: "untrusted peer can't pin failures on a forwarded client",
 			attackerRemote: "198.51.100.1:1234", attackerXFF: "203.0.113.9",
-			victimRemote: "10.0.0.5:1234", victimXFF: "203.0.113.9", wantVictim: http.StatusOK},
+			victimRemote: "10.0.0.5:1234", victimXFF: "203.0.113.9", wantVictim: http.StatusUnauthorized},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			h := newProxiedHandler(t)
-			failLogins(t, h, tt.attackerRemote, tt.attackerXFF)
-			rec := do(t, h, request{method: "POST", path: "/api/v1/auth/login", body: adminCreds, remote: tt.victimRemote,
-				headers: map[string]string{"X-Forwarded-For": tt.victimXFF}})
-			if rec.Code != tt.wantVictim {
-				t.Errorf("victim login: %d, want %d (%s)", rec.Code, tt.wantVictim, rec.Body)
+			failTokens(t, h, tt.attackerRemote, tt.attackerXFF)
+			if got := tokenAttempt(t, h, tt.victimRemote, tt.victimXFF); got != tt.wantVictim {
+				t.Errorf("victim's attempt: %d, want %d", got, tt.wantVictim)
 			}
 		})
 	}

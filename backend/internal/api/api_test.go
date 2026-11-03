@@ -20,6 +20,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker/dockertest"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/gitstacks"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/notify"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/registries"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/secretbox"
@@ -82,6 +83,7 @@ func newTestHandlerOpts(t *testing.T, connect environments.ConnectFunc, mod func
 		Webhooks: hooks, DeployHooks: deploys, Deployments: deps, Web: web,
 		Usage:      usage.New(usage.Options{DB: st.DB(), Envs: envs, Clock: fixedClock{now}}),
 		Allowances: allowances.New(allowances.Options{DB: st.DB(), Now: func() time.Time { return now }}),
+		GitStacks:  gitstacks.New(gitstacks.Options{DB: st.DB(), Box: box, TempDir: t.TempDir(), AllowFile: true, Now: func() time.Time { return now }}),
 	}
 	if mod != nil {
 		mod(&opts)

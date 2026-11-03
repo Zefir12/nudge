@@ -170,24 +170,25 @@ func TestSecureCookieConfigured(t *testing.T) {
 	}
 }
 
-func TestLoginRateLimited(t *testing.T) {
+// Rate limiting and bans belong to the services in front of nudge: failed logins block
+// nobody, and an existing username answers like an unknown one however often it is tried.
+func TestLoginNeverLocksOut(t *testing.T) {
 	t.Parallel()
 	h, svc := newTestHandler(t)
 	if _, err := svc.CreateFirstUser(context.Background(), "admin", "longenough"); err != nil {
 		t.Fatal(err)
 	}
-	var rec *httptest.ResponseRecorder
-	for range 30 {
-		rec = do(t, h, request{method: "POST", path: "/api/v1/auth/login", body: `{"username":"admin","password":"wrong-password"}`})
-		if rec.Code == http.StatusTooManyRequests {
-			break
+	for i := range 30 {
+		for _, name := range []string{"admin", "ghost"} {
+			rec := do(t, h, request{method: "POST", path: "/api/v1/auth/login", body: `{"username":"` + name + `","password":"wrong-password"}`})
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("failure %d for %s = %d %s, want 401", i, name, rec.Code, rec.Body)
+			}
 		}
 	}
-	if rec.Code != http.StatusTooManyRequests {
-		t.Fatalf("never rate limited: %d", rec.Code)
-	}
-	if ra := rec.Header().Get("Retry-After"); ra == "" || ra == "0" {
-		t.Errorf("Retry-After = %q", ra)
+	rec := do(t, h, request{method: "POST", path: "/api/v1/auth/login", body: `{"username":"admin","password":"longenough"}`})
+	if rec.Code != http.StatusOK {
+		t.Errorf("right password after the failures = %d %s, want 200", rec.Code, rec.Body)
 	}
 }
 

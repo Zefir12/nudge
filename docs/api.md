@@ -102,6 +102,9 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | POST | `/api/v1/environments/{env}/stacks/{name}/up` | session | deploy `{"pull": bool}`, compose output as JSON lines |
 | POST | `/api/v1/environments/{env}/stacks/{name}/down` | session | stop and remove the containers `{"volumes": bool}`, output as JSON lines |
 | POST | `/api/v1/environments/{env}/stacks/{name}/update` | session | pull the images and deploy, output as JSON lines; recorded in the update history |
+| PUT | `/api/v1/environments/{env}/stacks/{name}/git` | session | take the compose file from a repository and read it now; see Stacks from git |
+| DELETE | `/api/v1/environments/{env}/stacks/{name}/git` | session | detach from the repository, keeping the files; `204` |
+| POST | `/api/v1/environments/{env}/stacks/{name}/git/pull` | session | get the files from the repository and deploy them, output as JSON lines |
 | GET | `/api/v1/environments/{env}/updates` | session | the last image update check; see Image updates |
 | POST | `/api/v1/environments/{env}/updates/check` | session | check the environment's images now |
 | GET | `/api/v1/environments/{env}/updates/history` | session | updates made through nudge, with the image each replaced |
@@ -153,7 +156,7 @@ With an OpenID Connect provider configured (docs/config/server.md, Single sign-o
   `GET /api/v1/auth/oidc/callback` with the subject as target. A sign-in refused for having
   no role also ends every session and deletes every API token of that SSO user (if they
   signed in before); its audit entry names the nudge user and says how many were revoked.
-  Every attempt counts against the per-IP login limit until it succeeds.
+  Every attempt counts against the per-IP credential limit until it succeeds.
 - The session cookie stays `SameSite=Strict`: the callback's redirect follows the
   provider's cross-site navigation, so the cookie isn't sent with that one request, but it
   loads only the web UI, whose own API calls are same-site.
@@ -179,13 +182,12 @@ single sign-on and has no password in nudge. Setup creates an admin.
   (at most 1024 bytes). Invalid input is `400` with the reason.
 - Usernames are case-insensitive. A wrong password and an unknown user both get
   `401 {"error":"invalid username or password"}`.
-- Failed logins are limited to 20 per client IP (per /64 for IPv6) and 10 per existing
-  username in 15 minutes; then login answers `429` with `Retry-After` (seconds), even
-  with the right password. So ten wrong guesses lock that user out for up to 15 minutes;
-  sessions already open keep working. The client IP is the TCP peer, or behind a
-  proxy listed in `NUDGE_TRUSTED_PROXIES` the client it names in `X-Forwarded-For`
-  (docs/config/server.md, Trusted proxies); behind an unlisted proxy all clients share
-  the proxy's IP.
+- Failed logins block nobody: nudge has no lockout and no login rate limit, so an attacker
+  can't lock an account or learn from the answer that a username exists. Limits and bans
+  belong in front of nudge (a reverse proxy, fail2ban): a failure is logged as `login
+  failed` with the client IP. That IP is the TCP peer, or behind a proxy listed in
+  `NUDGE_TRUSTED_PROXIES` the client it names in `X-Forwarded-For` (docs/config/server.md,
+  Trusted proxies); behind an unlisted proxy all clients share the proxy's IP.
 - When too many logins wait for a password check, login answers `503` with
   `Retry-After: 1`.
 
@@ -193,8 +195,7 @@ single sign-on and has no password in nudge. Setup creates an admin.
 signed-in user's own password and answers `204`. It ends the user's other sessions; the one
 that asked stays, and API tokens keep working. Session only: an API token gets `403`, so a
 leaked token can't take over the account. A wrong current password is
-`403 {"error":"the current password is wrong"}` and counts toward the failed-login limits
-above (`429` once they are reached); a new password that breaks the rules above, or an
+`403 {"error":"the current password is wrong"}` and, like a failed login, blocks nobody; a new password that breaks the rules above, or an
 SSO user (no password in nudge), is `400`; `409` if an admin reset the password while it
 was checked. Audited without the passwords.
 
@@ -416,6 +417,8 @@ refuses with `409 over your allowance: ...` if the new total is over:
   whole allowance. A recreate leaves the old container out, so a bigger limit counts as
   the difference.
 - The container count includes it.
+- A user's container can't run an image that sets a `com.docker.compose.` label (`400`), which
+  would count it as part of an admin's stack.
 - A user's container can't run an image that sets a `net.zefirlabs.nudge.` label (`400`):
   it would make the container the admins' and escape every later check.
 - Host ports must be in the range; a binding without a host port gets the lowest one in
@@ -901,6 +904,49 @@ is in the audit log with the stack's name as its target.
   (take it down first). On an agent environment the agent's copy is deleted too, so the
   agent must be online (`503` otherwise); an agent too old for stacks never had one.
 
+### Stacks from git
+A stack's compose file (and optionally some of its variables) can come from a git
+repository. Admins only, like every stack route. Nothing is checked out: the files are read
+from the commit in a shallow clone that is removed again, so only those files reach the
+stack, as on any stack (`./config` next to the compose file is not there).
+
+- `POST .../stacks` with `{"name", "env", "git": {...}}` instead of `compose` creates one.
+  `PUT .../stacks/{name}/git` `{...}` makes an existing stack follow a repository, or
+  another one. Both read the files before answering; the running stack changes at its next
+  deploy. `git` is:
+  - `repo_url`: `https://`, `http://` (only without credentials), `ssh://` or
+    `git@host:path`. Credentials in the URL are refused.
+  - `ref`: a branch or tag, empty for the default branch.
+  - `compose_path`, `env_path`: relative paths in the repository, regular files of at most
+    1 MiB. `env_path` is optional: at each pull its variables are set in `.env`, whose other
+    lines stay, so secrets survive. A variable dropped from the file stays in `.env`. The
+    repository wins for names it sets, even over a deployment's last run, so don't list a
+    deployment's variables in this file.
+  - `auth`: `none` (default), `token` (HTTPS; `username` defaults to `git`) or `ssh`.
+  - `secret`: the token, or an unencrypted PEM private key. Stored sealed and never
+    answered. Left out on `PUT`, the stored one stays as long as `repo_url`, `auth`,
+    `username` and `known_hosts` don't change; otherwise `400`.
+  - `known_hosts`: required for `ssh`, the output of `ssh-keyscan`. Nothing else is trusted.
+  - `poll_seconds`: 0 (off, default), or 60 to 86400. See below.
+
+  `400` for a refused source; `502` with nudge's own words if the repository can't be read
+  or lacks the file (a clone may take 256 MiB and 2 minutes). The remote's words are only logged.
+- `GET .../stacks/{name}` adds `git`: the fields above without `secret`, plus `commit`,
+  `last_error`, `checked_at` and `pulled_at`. `commit` is the commit of the stack's files.
+- `PUT .../stacks/{name}` on such a stack answers `409` if `compose` differs; `env` can
+  still be edited.
+- **Deploying.** `POST .../git/pull`, a stack webhook (`POST /api/v1/hooks/{id}`) and a
+  deployment's deploy each get the files first, then deploy with `--pull always`. A
+  repository that can't be read fails them before anything changes (a deployment run reports
+  the reason). A deploy that fails puts the stack's files back, so `commit` stays
+  what worked, and the reason goes in `last_error`. Plain `up` and `update` deploy the
+  files the stack has, without looking at the repository.
+- **Polling.** With `poll_seconds`, the server asks for the ref's commit that often and
+  deploys when it moved past the commit last seen. A commit whose deploy failed isn't retried;
+  a newer one is, and so is a pull by hand. Polling skips health checks: use a deployment
+  for those. Its audit entries and updates are under `git-poll`.
+- `DELETE .../stacks/{name}/git` detaches; the stack keeps its files and can be edited again.
+
 ### Registries
 `POST /api/v1/registries` with `{"name": "GitHub", "address": "ghcr.io", "username":
 "bot", "password": "ghp_..."}` answers `201` with `{"id": 1, "name": "GitHub", "address":
@@ -1179,8 +1225,8 @@ as either
   `Bearer nudge_hook_…` header decides alone; any other `Authorization` header (a
   proxy's Basic auth, say) is ignored and the signature counts.
 
-Both are compared in constant time. The client IP's failed-login limit is checked first
-(20 in 15 minutes, shared with logins; then `429` with `Retry-After`, before the body is
+Both are compared in constant time. The client IP's credential limit is checked first
+(20 in 15 minutes; then `429` with `Retry-After`, before the body is
 read). The body is then read, at most 1 MiB (`413`, refused up front when
 `Content-Length` says more) within 30 seconds (`400` if it can't be read), and never
 echoed. An unknown webhook, a missing and a wrong credential all answer
@@ -1251,7 +1297,7 @@ even when you can't see that deployment); at most 1000 deployments.
 - **Deploy tokens** (`nudge_dt_…`, stored hashed, shown once) work only on their
   deployment's three `deploys` routes, for their scopes: `deploy` (start runs) and
   `runs:read`. Any other route answers `403`, another deployment `401`; failed checks
-  count against the login limit per IP. A token acts for its creator and stops working
+  count against the credential limit per IP. A token acts for its creator and stops working
   (`403`) when the creator may no longer deploy (or view, for `runs:read`). Creating one
   needs a session, not an API token. `expires_at` (RFC 3339, in the future) is optional.
 - **Runs.** `POST .../deploys` with `{"variables": {"API_IMAGE": "registry/app@sha256:…"}}`

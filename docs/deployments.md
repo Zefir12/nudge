@@ -5,6 +5,12 @@ the image it just built, and nudge pulls and brings the stack up. With health ch
 nudge also waits until the new version is actually up before calling the run a success.
 The API reference is the Deployments section of [api.md](api.md).
 
+To keep the compose file in the application's repository instead of pasting it into nudge,
+create the stack from git (New stack → From a git repository, or Connect a repository on its
+page). Every deploy then reads the file at the branch's newest commit first, with CI's
+variables and the stack's `.env` applied on top, and a failed deploy goes back to the commit
+that worked. [api.md](api.md) "Stacks from git" has the details.
+
 ## 1. Make the stack take the image from a variable
 
 ```yaml
