@@ -19,6 +19,7 @@ import (
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/gitstacks"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/stacks"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/tunnel"
 )
@@ -39,6 +40,8 @@ type stackResponse struct {
 	Env     string `json:"env"`
 	// Services are the project's containers by compose service, sorted by name.
 	Services []stackServiceResponse `json:"services"`
+	// Git is where the compose file comes from; left out for a stack edited here.
+	Git *stackGitResponse `json:"git,omitempty"`
 }
 
 type stackServiceResponse struct {
@@ -50,6 +53,8 @@ type stackFilesRequest struct {
 	Name    string `json:"name"`
 	Compose string `json:"compose"`
 	Env     string `json:"env"`
+	// Git, on create, takes the compose file from a repository instead of Compose.
+	Git *stackGitRequest `json:"git,omitempty"`
 }
 
 // stackEvent is one line of a compose run's output stream. The last line has exit_code
@@ -222,7 +227,15 @@ func (s *server) getStack(w http.ResponseWriter, r *http.Request) {
 		}
 		n := countContainers(items)[name]
 		n.Name = name
-		return stackResponse{stackSummaryResponse: n, Compose: f.Compose, Env: f.Env, Services: stackServices(items)}, nil
+		src, err := s.stackSource(ctx, envID(r), name)
+		if err != nil {
+			return nil, err
+		}
+		resp := stackResponse{stackSummaryResponse: n, Compose: f.Compose, Env: f.Env, Services: stackServices(items)}
+		if src != nil {
+			resp.Git = toStackGit(*src)
+		}
+		return resp, nil
 	})
 }
 
@@ -287,7 +300,11 @@ func (s *server) createStack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	auditTarget(r, req.Name)
-	if !s.validStackFiles(w, req) {
+	if req.Git == nil && !s.validStackFiles(w, req) {
+		return
+	}
+	if req.Git != nil && s.gitStacks == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "git stacks are not available")
 		return
 	}
 	env, _, ok := s.environment(w, r)
@@ -301,7 +318,29 @@ func (s *server) createStack(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.unlockStack(key)
 	f := stacks.Files{Compose: req.Compose, Env: req.Env}
-	err := s.stackDir(env.ID).Create(req.Name, f)
+	dir := s.stackDir(env.ID)
+	var src gitstacks.Source
+	var commit string
+	if req.Git != nil {
+		if _, err := dir.Read(req.Name); err == nil {
+			s.writeError(w, http.StatusConflict, "a stack of that name exists")
+			return
+		}
+		var err error
+		src, err = s.gitStacks.Prepare(r.Context(), env.ID, req.Name, req.Git.input())
+		if err != nil {
+			s.gitInputError(w, "create stack", err)
+			return
+		}
+		res, err := s.gitStacks.Fetch(r.Context(), src)
+		if err != nil {
+			s.gitInputError(w, "create stack", err)
+			return
+		}
+		f = filesFromRepo(f, src, res)
+		commit = res.Commit
+	}
+	err := dir.Create(req.Name, f)
 	if errors.Is(err, stacks.ErrExists) {
 		s.writeError(w, http.StatusConflict, "a stack of that name exists")
 		return
@@ -310,10 +349,26 @@ func (s *server) createStack(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, "create stack", err)
 		return
 	}
-	s.writeJSON(w, http.StatusCreated, stackResponse{
+	resp := stackResponse{
 		stackSummaryResponse: stackSummaryResponse{Name: req.Name}, Compose: f.Compose, Env: f.Env,
 		Services: []stackServiceResponse{},
-	})
+	}
+	if req.Git != nil {
+		if err := s.gitStacks.Save(r.Context(), src, commit); err != nil {
+			if err := dir.Remove(req.Name); err != nil {
+				s.log.Error("remove stack after a failed save", "env", env.ID, "stack", req.Name, "err", err)
+			}
+			s.internalError(w, "save stack source", err)
+			return
+		}
+		saved, err := s.gitStacks.Get(r.Context(), env.ID, req.Name)
+		if err != nil {
+			s.internalError(w, "get stack source", err)
+			return
+		}
+		resp.Git = toStackGit(saved)
+	}
+	s.writeJSON(w, http.StatusCreated, resp)
 }
 
 // updateStack replaces a stack's files {"compose", "env"}; the running stack changes
@@ -337,7 +392,20 @@ func (s *server) updateStack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.unlockStack(key)
-	err := s.stackDir(env.ID).Update(name, stacks.Files{Compose: req.Compose, Env: req.Env})
+	src, err := s.stackSource(r.Context(), env.ID, name)
+	if err != nil {
+		s.internalError(w, "get stack source", err)
+		return
+	}
+	if src != nil {
+		// Only .env is edited here; the compose file is the repository's.
+		f, err := s.stackDir(env.ID).Read(name)
+		if err == nil && f.Compose != req.Compose {
+			s.writeError(w, http.StatusConflict, "the compose file comes from git: change it in the repository, or detach the stack")
+			return
+		}
+	}
+	err = s.stackDir(env.ID).Update(name, stacks.Files{Compose: req.Compose, Env: req.Env})
 	if errors.Is(err, stacks.ErrNotFound) {
 		s.writeError(w, http.StatusNotFound, "stack not found")
 		return
@@ -380,6 +448,13 @@ func (s *server) removeStack(w http.ResponseWriter, r *http.Request) {
 		if runner := s.stackRunner(env); runner != nil {
 			// An agent on tunnel protocol 1 never got the files.
 			if err := runner.Remove(ctx, name); err != nil && !errors.Is(err, stacks.ErrNotFound) && !errors.Is(err, tunnel.ErrNoControl) {
+				return err
+			}
+		}
+		// The source goes first: left behind, it would make a new stack of this name
+		// read-only.
+		if s.gitStacks != nil {
+			if err := s.gitStacks.Forget(ctx, env.ID, name); err != nil {
 				return err
 			}
 		}
@@ -471,7 +546,7 @@ func (s *server) startStack(ctx context.Context, env environments.Environment, n
 // startStackEdit is startStack with edit, if not nil, changing the stack's files once it
 // is claimed and before they sync; the change is written to the stacks directory. If the
 // write or the sync fails, the files are put back before the stack is released.
-func (s *server) startStackEdit(ctx context.Context, env environments.Environment, name string, edit func(stacks.Files) stacks.Files) (stacks.Runner, func(), error) {
+func (s *server) startStackEdit(ctx context.Context, env environments.Environment, name string, edit func(stacks.Files) (stacks.Files, error)) (stacks.Runner, func(), error) {
 	runner := s.stackRunner(env)
 	if runner == nil {
 		return nil, nil, errNoStackRunner
@@ -493,11 +568,14 @@ func (s *server) startStackEdit(ctx context.Context, env environments.Environmen
 		unlock()
 		return nil, nil, &internalFailure{msg: "read stack", err: err}
 	}
-	edited := edit != nil
 	original := f
-	if edited {
-		f = edit(f)
+	if edit != nil {
+		if f, err = edit(f); err != nil {
+			unlock()
+			return nil, nil, err
+		}
 	}
+	edited := f != original
 	// fail puts back the files an edit changed, then releases the stack.
 	fail := func(err error) (stacks.Runner, func(), error) {
 		if edited {
@@ -523,11 +601,14 @@ func (s *server) startStackEdit(ctx context.Context, env environments.Environmen
 func (s *server) stackStartError(w http.ResponseWriter, r *http.Request, env environments.Environment, err error) {
 	var se *statusError
 	var inf *internalFailure
+	var ge *gitstacks.Error
 	switch {
 	case errors.As(err, &se):
 		s.writeError(w, se.code, se.msg)
 	case errors.As(err, &inf):
 		s.internalError(w, inf.msg, inf.err)
+	case errors.As(err, &ge):
+		s.gitInputError(w, "pull stack", err)
 	default:
 		s.runnerError(w, r, env, "sync stack", err)
 	}
@@ -550,6 +631,11 @@ type stackRun struct {
 // JSON errors; the stream ends with the exit code or an error line. The run stops if the
 // client goes away, like Ctrl-C on docker compose.
 func (s *server) runStack(w http.ResponseWriter, r *http.Request, op string, run func(ctx context.Context, run stackRun) (int, error)) {
+	s.runStackFrom(w, r, op, s.startStack, run)
+}
+
+// runStackFrom is runStack claiming the stack with start.
+func (s *server) runStackFrom(w http.ResponseWriter, r *http.Request, op string, start func(ctx context.Context, env environments.Environment, name string) (stacks.Runner, func(), error), run func(ctx context.Context, run stackRun) (int, error)) {
 	name, ok := s.stackName(w, r)
 	if !ok {
 		return
@@ -560,7 +646,7 @@ func (s *server) runStack(w http.ResponseWriter, r *http.Request, op string, run
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), stackTimeout)
 	defer cancel()
-	runner, unlock, err := s.startStack(ctx, env, name)
+	runner, unlock, err := start(ctx, env, name)
 	if err != nil {
 		s.stackStartError(w, r, env, err)
 		return

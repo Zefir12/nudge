@@ -61,6 +61,100 @@ const button = (wrapper: ReturnType<typeof mount>, text: string) =>
   wrapper.findAll('button').find((b) => b.text() === text)!;
 
 describe('StackView', () => {
+  const gitWeb = () => ({
+    ...web(),
+    git: {
+      repo_url: 'https://git.example.com/me/app.git',
+      ref: 'main',
+      compose_path: 'compose.yaml',
+      env_path: '',
+      auth: 'token',
+      username: '',
+      known_hosts: '',
+      poll_seconds: 300,
+      commit: '9fceb02d0ae598e95dc970b74767f19372d61af8',
+      last_error: 'the repository refused the credentials',
+    },
+  });
+
+  it('shows a git stack: its commit and last error, with compose read-only', async () => {
+    stubApi({ 'GET /environments/1/stacks/web': { body: gitWeb() } });
+    const { wrapper } = await mountView();
+    expect(wrapper.text()).toContain('9fceb02d0ae5');
+    expect(wrapper.text()).not.toContain('9fceb02d0ae598');
+    expect(wrapper.text()).toContain('the repository refused the credentials');
+    expect(wrapper.text()).toContain('every 5 min');
+    const [composeArea, envArea] = wrapper.findAll('textarea');
+    expect(composeArea!.attributes('disabled')).toBeDefined();
+    expect(envArea!.attributes('disabled')).toBeUndefined();
+  });
+
+  it('pulls and deploys, streaming compose output', async () => {
+    const lines = [{ stream: 'stdout', line: 'pulled commit 9fceb02d0ae5' }, { exit_code: 0 }];
+    let pulled = false;
+    stubApi({
+      'GET /environments/1/stacks/web': { body: gitWeb() },
+      'POST /environments/1/stacks/web/git/pull': () => {
+        pulled = true;
+        return { raw: lines.map((l) => JSON.stringify(l)).join('\n') + '\n' };
+      },
+    });
+    const { wrapper } = await mountView();
+    await button(wrapper, 'Pull and deploy').trigger('click');
+    await flushPromises();
+    expect(pulled).toBe(true);
+    expect(wrapper.text()).toContain('pulled commit 9fceb02d0ae5');
+    expect(wrapper.text()).toContain('Pull and deploy finished.');
+  });
+
+  it('connects a plain stack to a repository, sending no empty secret', async () => {
+    let sent: Record<string, unknown> = {};
+    stubApi({
+      'GET /environments/1/stacks/web': { body: web() },
+      'PUT /environments/1/stacks/web/git': (init) => {
+        sent = JSON.parse(init!.body as string);
+        return { body: {} };
+      },
+    });
+    const { wrapper } = await mountView();
+    await button(wrapper, 'Connect a repository').trigger('click');
+    await wrapper.find('input[placeholder^="https://"]').setValue('https://git.example.com/me/app.git');
+    await wrapper.find('form.files').trigger('submit');
+    await flushPromises();
+    expect(sent.repo_url).toBe('https://git.example.com/me/app.git');
+    expect('secret' in sent).toBe(false);
+    expect(wrapper.find('input[placeholder^="https://"]').exists()).toBe(false);
+  });
+
+  it('shows why a source was refused and keeps the form', async () => {
+    stubApi({
+      'GET /environments/1/stacks/web': { body: gitWeb() },
+      'PUT /environments/1/stacks/web/git': { status: 400, body: { error: 'enter the token or key again' } },
+    });
+    const { wrapper } = await mountView();
+    await button(wrapper, 'Change source').trigger('click');
+    await wrapper.find('form.files').trigger('submit');
+    await flushPromises();
+    expect(wrapper.text()).toContain('enter the token or key again');
+    expect(wrapper.find('input[placeholder^="https://"]').exists()).toBe(true);
+  });
+
+  it('detaches after a confirm', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    let detached = false;
+    stubApi({
+      'GET /environments/1/stacks/web': { body: gitWeb() },
+      'DELETE /environments/1/stacks/web/git': () => {
+        detached = true;
+        return { status: 204 };
+      },
+    });
+    const { wrapper } = await mountView();
+    await button(wrapper, 'Detach').trigger('click');
+    await flushPromises();
+    expect(detached).toBe(true);
+  });
+
   it('shows the services with their containers and follows their logs', async () => {
     stubApi({ 'GET /environments/1/stacks/web': { body: web() } });
     const { wrapper } = await mountView();

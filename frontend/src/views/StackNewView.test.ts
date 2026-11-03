@@ -26,6 +26,41 @@ async function mountView() {
 }
 
 describe('StackNewView', () => {
+  it('creates a stack from a git repository, without a compose check', async () => {
+    let created: unknown;
+    stubApi({
+      'POST /environments/1/stacks': (init) => {
+        created = JSON.parse(init!.body as string);
+        return { status: 201, body: {} };
+      },
+    });
+    const { wrapper, router } = await mountView();
+    await wrapper.find('input').setValue('web');
+    await wrapper.find('input[value="git"]').setValue(true);
+    await wrapper.find('input[placeholder^="https://"]').setValue('https://git.example.com/me/app.git');
+    await wrapper.find('input[placeholder="main"]').setValue('develop');
+    await wrapper.find('select').setValue('token');
+    await wrapper.find('input[type="password"]').setValue('tok');
+    await wrapper.find('form').trigger('submit');
+    await flushPromises();
+    expect(created).toEqual({
+      name: 'web',
+      env: '',
+      git: {
+        repo_url: 'https://git.example.com/me/app.git',
+        ref: 'develop',
+        compose_path: 'compose.yaml',
+        env_path: '',
+        auth: 'token',
+        username: '',
+        secret: 'tok',
+        known_hosts: '',
+        poll_seconds: 0,
+      },
+    });
+    expect(router.currentRoute.value.fullPath).toBe('/env/1/stacks/web');
+  });
+
   it('checks the files, creates the stack and opens it', async () => {
     let created: unknown;
     stubApi({

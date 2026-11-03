@@ -654,3 +654,26 @@ func TestFollowProgress(t *testing.T) {
 		}
 	}
 }
+
+func TestMergeEnv(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, env, repo, want string
+	}{
+		{"empty both", "", "", ""},
+		{"nothing local", "", "A=1\n", "A=1\n"},
+		{"keeps others", "SECRET=x\nIMAGE=a@sha256:1\n", "A=1\n", "SECRET=x\nIMAGE=a@sha256:1\nA=1\n"},
+		{"repo wins, in place", "# c\nA=old\nB=2\n", "A=new\n", "# c\nA=new\nB=2\n"},
+		{"keeps quoting", "A=old\n", `A="a #b"` + "\n", `A="a #b"` + "\n"},
+		{"repo comments dropped", "", "# about\n\nA=1\n", "A=1\n"},
+		{"adds a newline first", "A=1", "B=2", "A=1\nB=2\n"},
+		{"export", "export A=old\n", "A=new", "A=new\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := MergeEnv(tt.env, tt.repo); got != tt.want {
+				t.Fatalf("MergeEnv = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

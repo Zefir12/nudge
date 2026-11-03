@@ -297,6 +297,21 @@ function stacks(env: number) {
       )
       .join('')}`,
     env: 'TZ=Europe/Warsaw\n',
+    git:
+      name === 'portainer'
+        ? undefined
+        : {
+            repo_url: `https://git.example.com/me/${name}.git`,
+            ref: 'main',
+            compose_path: 'compose.yaml',
+            env_path: '',
+            auth: 'token',
+            username: '',
+            known_hosts: '',
+            poll_seconds: 300,
+            commit: '9fceb02d0ae598e95dc970b74767f19372d61af8',
+            last_error: '',
+          },
     services: cs.map((c) => ({ name: c.labels['com.docker.compose.service'], containers: [c] })),
   }));
 }
@@ -961,7 +976,7 @@ const routes: Route[] = [
 ];
 
 // stacks' up/down/update stream compose output as JSON lines.
-const streamRe = new RegExp(`^${envRe}/stacks/([^/]+)/(up|down|update)$`);
+const streamRe = new RegExp(`^${envRe}/stacks/([^/]+)/(up|down|update|git/pull)$`);
 
 function send(res: ServerResponse, status: number, body?: unknown) {
   res.statusCode = status;

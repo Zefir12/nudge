@@ -33,6 +33,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/deployments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/events"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/gitstacks"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/hostdisk"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/hostload"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/metrics"
@@ -321,6 +322,7 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 			StackRunner: stackRunner(cfg, envs, regs, log),
 			// Drafts are checked next to the stacks, on the data volume.
 			StackChecker: stacks.NewChecker(stacks.CheckerOptions{TempDir: cfg.StacksDir, Compose: cfg.Compose}).Check,
+			GitStacks:    gitstacks.New(gitstacks.Options{DB: st.DB(), Box: box, TempDir: cfg.StacksDir, Context: ctx, Log: log}),
 
 			PublicURL:      cfg.PublicURL,
 			SecureCookies:  cfg.TLS() || strings.HasPrefix(cfg.PublicURL, "https://"),

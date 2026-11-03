@@ -102,6 +102,9 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | POST | `/api/v1/environments/{env}/stacks/{name}/up` | session | deploy `{"pull": bool}`, compose output as JSON lines |
 | POST | `/api/v1/environments/{env}/stacks/{name}/down` | session | stop and remove the containers `{"volumes": bool}`, output as JSON lines |
 | POST | `/api/v1/environments/{env}/stacks/{name}/update` | session | pull the images and deploy, output as JSON lines; recorded in the update history |
+| PUT | `/api/v1/environments/{env}/stacks/{name}/git` | session | take the compose file from a repository and read it now; see Stacks from git |
+| DELETE | `/api/v1/environments/{env}/stacks/{name}/git` | session | detach from the repository, keeping the files; `204` |
+| POST | `/api/v1/environments/{env}/stacks/{name}/git/pull` | session | get the files from the repository and deploy them, output as JSON lines |
 | GET | `/api/v1/environments/{env}/updates` | session | the last image update check; see Image updates |
 | POST | `/api/v1/environments/{env}/updates/check` | session | check the environment's images now |
 | GET | `/api/v1/environments/{env}/updates/history` | session | updates made through nudge, with the image each replaced |
@@ -900,6 +903,49 @@ is in the audit log with the stack's name as its target.
 - `DELETE .../stacks/{name}` deletes the files; `409` while the project has containers
   (take it down first). On an agent environment the agent's copy is deleted too, so the
   agent must be online (`503` otherwise); an agent too old for stacks never had one.
+
+### Stacks from git
+A stack's compose file (and optionally some of its variables) can come from a git
+repository. Admins only, like every stack route. Nothing is checked out: the files are read
+from the commit in a shallow clone that is removed again, so only those files reach the
+stack, as on any stack (`./config` next to the compose file is not there).
+
+- `POST .../stacks` with `{"name", "env", "git": {...}}` instead of `compose` creates one.
+  `PUT .../stacks/{name}/git` `{...}` makes an existing stack follow a repository, or
+  another one. Both read the files before answering; the running stack changes at its next
+  deploy. `git` is:
+  - `repo_url`: `https://`, `http://` (only without credentials), `ssh://` or
+    `git@host:path`. Credentials in the URL are refused.
+  - `ref`: a branch or tag, empty for the default branch.
+  - `compose_path`, `env_path`: relative paths in the repository, regular files of at most
+    1 MiB. `env_path` is optional: at each pull its variables are set in `.env`, whose other
+    lines stay, so secrets survive. A variable dropped from the file stays in `.env`. The
+    repository wins for names it sets, even over a deployment's last run, so don't list a
+    deployment's variables in this file.
+  - `auth`: `none` (default), `token` (HTTPS; `username` defaults to `git`) or `ssh`.
+  - `secret`: the token, or an unencrypted PEM private key. Stored sealed and never
+    answered. Left out on `PUT`, the stored one stays as long as `repo_url`, `auth`,
+    `username` and `known_hosts` don't change; otherwise `400`.
+  - `known_hosts`: required for `ssh`, the output of `ssh-keyscan`. Nothing else is trusted.
+  - `poll_seconds`: 0 (off, default), or 60 to 86400. See below.
+
+  `400` for a refused source; `502` with nudge's own words if the repository can't be read
+  or lacks the file (a clone may take 256 MiB and 2 minutes). The remote's words are only logged.
+- `GET .../stacks/{name}` adds `git`: the fields above without `secret`, plus `commit`,
+  `last_error`, `checked_at` and `pulled_at`. `commit` is the commit of the stack's files.
+- `PUT .../stacks/{name}` on such a stack answers `409` if `compose` differs; `env` can
+  still be edited.
+- **Deploying.** `POST .../git/pull`, a stack webhook (`POST /api/v1/hooks/{id}`) and a
+  deployment's deploy each get the files first, then deploy with `--pull always`. A
+  repository that can't be read fails them before anything changes (a deployment run reports
+  the reason). A deploy that fails puts the stack's files back, so `commit` stays
+  what worked, and the reason goes in `last_error`. Plain `up` and `update` deploy the
+  files the stack has, without looking at the repository.
+- **Polling.** With `poll_seconds`, the server asks for the ref's commit that often and
+  deploys when it moved past the commit last seen. A commit whose deploy failed isn't retried;
+  a newer one is, and so is a pull by hand. Polling skips health checks: use a deployment
+  for those. Its audit entries and updates are under `git-poll`.
+- `DELETE .../stacks/{name}/git` detaches; the stack keeps its files and can be edited again.
 
 ### Registries
 `POST /api/v1/registries` with `{"name": "GitHub", "address": "ghcr.io", "username":

@@ -370,6 +370,29 @@ to the UI as they are.
   `com.docker.compose.project` label, the same for both kinds; logs use the existing
   container log stream. No control endpoint is needed for reads.
 
+### Stacks from git
+A stack can take its compose file from a repository (`internal/gitstacks`, table
+`stack_sources`, API in docs/api.md "Stacks from git"). It only changes where the server's
+copy of the files comes from: agents get them through `Sync` as always, so every kind of
+environment works alike and agents have no git code or credentials.
+
+- **go-git, not the git binary** (zefir, #148), in a package only the server imports.
+- **Nothing is checked out.** A pull is a shallow, single-ref clone with no work tree in a
+  temporary directory under the stacks directory, removed afterwards; the files are read
+  from the commit's tree. So a symlink or odd path in a repository can't touch the disk, only
+  regular files are accepted, and no clone stays around to manage. The price: extra files
+  in the repository aren't available to the stack.
+- **Bounds:** the clone's writes go through a counting filesystem (`limitFS`, 256 MiB),
+  everything is under a 2 minute context, and go-git's object cache is capped.
+- **Credentials** are sealed with the secretbox like registry passwords, and only carry
+  over on a change if they'd go to the same place. SSH host keys come only from the source's
+  `known_hosts`: a wrong compose file is root on the host, so there is no trust on first use,
+  and go-git's fallback to `~/.ssh` is never reached.
+- **Pull at deploy.** `startStackPull` runs under the stack's claim, before a deployment's
+  variables apply. `commit_hash` always names the files on disk: a failed deploy puts them
+  back (`finishGitPull`), and `seen_commit` keeps the failed commit so polling doesn't retry
+  it. A deployment with rollback on redeploys the restored files.
+
 ### Agent control protocol
 - Tunnel protocol 2: every stream the server opens starts with one byte, `0x00` Docker
   socket or `0x01` control. The hello carries the protocol; with an agent on protocol 1

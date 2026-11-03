@@ -212,6 +212,9 @@ func stackFiles(dir string) ([]string, error) {
 			continue
 		}
 		names, err := os.ReadDir(filepath.Join(dir, env.Name()))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue // a clone or a compose check's temporary directory, gone already
+		}
 		if err != nil {
 			return nil, fmt.Errorf("read stacks: %w", err)
 		}
