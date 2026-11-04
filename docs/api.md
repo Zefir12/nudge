@@ -970,7 +970,7 @@ stack, as on any stack (`./config` next to the compose file is not there).
   - `poll_seconds`: 0 (off, default), or 60 to 86400. See below.
 
   `400` for a refused source; `502` with nudge's own words if the repository can't be read
-  or lacks the file (a clone may take 256 MiB and 2 minutes). The remote's words are only logged.
+  or lacks the file (a clone may take 256 MiB and 2 minutes, and no object in it may inflate past 128 MiB). The remote's words are only logged.
 - `GET .../stacks/{name}` adds `git`: the fields above without `secret`, plus `commit`,
   `last_error`, `checked_at` and `pulled_at`. `commit` is the commit of the stack's files.
 - `PUT .../stacks/{name}` on such a stack answers `409` if `compose` differs; `env` can

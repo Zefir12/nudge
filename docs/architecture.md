@@ -391,7 +391,13 @@ environment works alike and agents have no git code or credentials.
   regular files are accepted, and no clone stays around to manage. The price: extra files
   in the repository aren't available to the stack.
 - **Bounds:** the clone's writes go through a counting filesystem (`limitFS`, 256 MiB),
-  everything is under a 2 minute context, and go-git's object cache is capped.
+  everything is under a 2 minute context, and go-git's object cache is capped. To index a
+  pack, go-git inflates each object into memory, so a blob of 1 GiB of zeros takes 1 MiB of
+  disk and 1 GiB of memory. `packChecker` reads the pack as it arrives, in streaming
+  fashion, and fails the pull if an object inflates past 128 MiB (a delta counts as its
+  target). It holds back the pack's tail until the check has passed, as go-git only
+  starts inflating into memory once it has every object. That leaves a clone's peak memory at a
+  few times the largest object it accepts.
 - **Credentials** are sealed with the secretbox like registry passwords, and only carry
   over on a change if they'd go to the same place. SSH host keys come only from the source's
   `known_hosts`: a wrong compose file is root on the host, so there is no trust on first use,
