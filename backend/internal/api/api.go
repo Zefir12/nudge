@@ -25,7 +25,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/hostdisk"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/metrics"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/notify"
-	"git.zefirlabs.net/zefir/nudge/backend/internal/oidc"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/oidcproviders"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/registries"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/registryclient"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/stacks"
@@ -104,10 +104,8 @@ type Options struct {
 	After func(time.Duration) <-chan time.Time
 	// Now is time.Now outside tests: audit entries' times.
 	Now func() time.Time
-	// OIDC signs users in through the SSO provider; nil means SSO is off.
-	OIDC *oidc.Client
-	// OIDCName labels the SSO button on the login page.
-	OIDCName string
+	// SSO holds the single sign-on providers; nil means none, and can't add any.
+	SSO *oidcproviders.Service
 	// NoPasswordLogin hides the password form; the auth service refuses everyone but the
 	// break-glass admin.
 	NoPasswordLogin bool
@@ -136,9 +134,11 @@ var publicRoutes = map[string]bool{
 	"POST /api/v1/auth/login": true,
 	// The login page asks which ways to sign in it offers; the SSO login starts and ends
 	// before there is a session (the callback checks its state and binding cookie).
-	"GET /api/v1/auth/methods":       true,
-	"GET /api/v1/auth/oidc/login":    true,
-	"GET /api/v1/auth/oidc/callback": true,
+	"GET /api/v1/auth/methods":                  true,
+	"GET /api/v1/auth/oidc/login":               true,
+	"GET /api/v1/auth/oidc/callback":            true,
+	"GET /api/v1/auth/oidc/{provider}/login":    true,
+	"GET /api/v1/auth/oidc/{provider}/callback": true,
 	// Logout clears the cookie even when the session has already expired.
 	"POST /api/v1/auth/logout": true,
 	// Agents enroll with a join token and connect with their ID and secret instead of a
@@ -163,6 +163,11 @@ var sessionOnlyRoutes = map[string]bool{
 	"PATCH /api/v1/users/{id}":   true,
 	// Re-linking decides whose login signs in as a user, admins included.
 	"POST /api/v1/users/{id}/relink": true,
+	// A provider decides who signs in, admins included: a token added one could outlive
+	// its own revocation, and these routes also revoke other users' access.
+	"POST /api/v1/oidc-providers":        true,
+	"PUT /api/v1/oidc-providers/{id}":    true,
+	"DELETE /api/v1/oidc-providers/{id}": true,
 	// A backup holds the key to the stored registry passwords and every credential hash.
 	"POST /api/v1/backup": true,
 	// A join token enrolls an agent, whose credentials stay valid until revoked.
@@ -260,6 +265,13 @@ var routes = []route{
 	{"GET /api/v1/auth/methods", (*server).authMethods},
 	{"GET /api/v1/auth/oidc/login", (*server).oidcLogin},
 	{"GET /api/v1/auth/oidc/callback", (*server).oidcCallback},
+	{"GET /api/v1/auth/oidc/{provider}/login", (*server).oidcLogin},
+	{"GET /api/v1/auth/oidc/{provider}/callback", (*server).oidcCallback},
+	{"GET /api/v1/oidc-providers", (*server).listOIDCProviders},
+	{"POST /api/v1/oidc-providers", (*server).createOIDCProvider},
+	{"GET /api/v1/oidc-providers/{id}", (*server).getOIDCProvider},
+	{"PUT /api/v1/oidc-providers/{id}", (*server).updateOIDCProvider},
+	{"DELETE /api/v1/oidc-providers/{id}", (*server).deleteOIDCProvider},
 	{"GET /api/v1/tokens", (*server).listTokens},
 	{"POST /api/v1/tokens", (*server).createToken},
 	{"DELETE /api/v1/tokens/{id}", (*server).deleteToken},
@@ -389,12 +401,15 @@ func New(opts Options) http.Handler {
 	s := &server{
 		log: opts.Log, version: opts.Version, auth: opts.Auth, envs: opts.Envs, registries: opts.Registries, audit: opts.Audit, updates: opts.Updates,
 		webhooks: opts.Webhooks, events: opts.Events, deployHooks: opts.DeployHooks, deployments: opts.Deployments, usage: opts.Usage, metrics: opts.Metrics, activity: opts.Activity, backups: opts.Backups, allowances: opts.Allowances, tenant: opts.Tenant, deniedLabels: opts.DeniedLabels, registryClient: opts.RegistryClient,
-		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, oidc: opts.OIDC, oidcName: opts.OIDCName, noPasswordLogin: opts.NoPasswordLogin, recreating: map[string]bool{},
+		publicURL: opts.PublicURL, secureCookies: opts.SecureCookies, sso: opts.SSO, noPasswordLogin: opts.NoPasswordLogin, recreating: map[string]bool{},
 		stacksDir: opts.StacksDir, stackRunner: opts.StackRunner, stackChecker: opts.StackChecker, stackBusy: map[string]bool{}, gitStacks: opts.GitStacks,
 		self: opts.Self, dockerHost: opts.DockerHost, agentSelf: opts.AgentSelf, diskSpace: opts.DiskSpace,
 		checks:         make(chan struct{}, maxStackChecks),
 		done:           context.Background(),
 		userRegistries: newRegistrySet(opts.UserRegistries),
+	}
+	if s.sso == nil {
+		s.sso = oidcproviders.New(oidcproviders.Options{})
 	}
 	if s.events == nil {
 		s.events = events.New(events.Options{Context: opts.Context, Log: opts.Log})
@@ -488,9 +503,8 @@ type server struct {
 
 	publicURL     string
 	secureCookies bool
-	// oidc is the SSO client, nil when SSO is off.
-	oidc            *oidc.Client
-	oidcName        string
+	// sso holds the single sign-on providers, never nil.
+	sso             *oidcproviders.Service
 	noPasswordLogin bool
 
 	stacksDir    string

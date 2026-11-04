@@ -34,6 +34,7 @@ const sectionOf: Record<string, { label: string; list: string }> = {
   tokens: { label: 'API tokens', list: 'tokens' },
   account: { label: 'Account', list: 'account' },
   users: { label: 'Users', list: 'users' },
+  sso: { label: 'Single sign-on', list: 'sso' },
   audit: { label: 'Audit log', list: 'audit' },
   backup: { label: 'Backup', list: 'backup' },
 };

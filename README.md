@@ -83,13 +83,13 @@ Flags with `NUDGE_*` environment variable fallbacks; the defaults work in the im
 | `NUDGE_BACKUP_INTERVAL` | `0` (off) | how often an encrypted backup is saved to `<data>/backups` |
 | `NUDGE_BACKUP_KEEP` | `7` | how many scheduled backups are kept |
 | `NUDGE_BACKUP_PASSPHRASE_FILE` | unset | file with the backups' passphrase (needed for scheduled backups and `nudge restore`) |
-| `NUDGE_OIDC_ISSUER`, `NUDGE_OIDC_CLIENT_ID`, `NUDGE_OIDC_CLIENT_SECRET` | unset | single sign-on through an OpenID Connect provider (secret env only; needs an `https://` public URL) |
+| `NUDGE_OIDC_ISSUER`, `NUDGE_OIDC_CLIENT_ID`, `NUDGE_OIDC_CLIENT_SECRET` | unset | single sign-on through an OpenID Connect provider (secret env only; needs an `https://` public URL); more can be added in the web UI |
 | `NUDGE_OIDC_NAME` | `SSO` | label of the single sign-on button |
 | `NUDGE_OIDC_ADMIN_ROLE` | `admin` | `roles` claim value that makes a user an admin |
 | `NUDGE_OIDC_USER_ROLE` | `user` | `roles` claim value that makes a user a (non-admin) user |
 | `NUDGE_OIDC_REQUIRE_MFA` | `false` | refuse single sign-on without a second factor |
 | `NUDGE_OIDC_SESSION_TTL` | `12h` | how long a single sign-on session lasts |
-| `NUDGE_PASSWORD_LOGIN` | `true` | `false` leaves password login only to the local `admin` (with SSO) |
+| `NUDGE_PASSWORD_LOGIN` | `true` | `false` leaves password login only to the local `admin` (needs an SSO provider) |
 | `NUDGE_TENANT_CGROUP_PARENT` | | cgroup parent of each user's containers, `{id}` for the user's ID (e.g. `nudge-u{id}.slice`) |
 | `NUDGE_TENANT_RUNTIME` | | OCI runtime of users' containers (e.g. `runsc`) |
 | `NUDGE_TENANT_STORAGE_SIZE` | | disk cap of a user's container's writable layer (e.g. `10G`) |

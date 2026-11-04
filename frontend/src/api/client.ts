@@ -98,14 +98,15 @@ export const logout = () =>
 
 export interface AuthMethods {
   password: boolean;
-  oidc: { name: string } | null;
+  // providers: one sign-in button each.
+  providers: { id: string; name: string }[];
 }
 
 export const getAuthMethods = () =>
   apiFetch<AuthMethods>('/auth/methods', undefined, { redirectOn401: false });
 // ssoLoginUrl is where the browser goes (a navigation, not a fetch) to sign in with SSO.
-export const ssoLoginUrl = (redirect: string) =>
-  `/api/v1/auth/oidc/login?redirect=${encodeURIComponent(redirect)}`;
+export const ssoLoginUrl = (provider: string, redirect: string) =>
+  `/api/v1/auth/oidc/${encodeURIComponent(provider)}/login?redirect=${encodeURIComponent(redirect)}`;
 // changePassword changes the signed-in user's password; their other sessions end.
 export const changePassword = (current: string, next: string) =>
   apiFetch<void>('/auth/password', post({ current, new: next }));
@@ -280,6 +281,52 @@ export const setAllowance = (env: string, user: number, limits: AllowanceLimits)
   apiFetch<AllowanceLimits>(allowancePath(env, user), { method: 'PUT', body: JSON.stringify(limits) });
 export const deleteAllowance = (env: string, user: number) =>
   apiFetch<void>(allowancePath(env, user), { method: 'DELETE' });
+
+// Single sign-on providers; the API never returns the client secret.
+export interface OidcProvider {
+  id: string;
+  name: string;
+  issuer: string;
+  client_id: string;
+  admin_role: string;
+  user_role: string;
+  require_mfa: boolean;
+  session_ttl_minutes: number;
+  enabled: boolean;
+  // read_only: set by NUDGE_OIDC_*, can't be changed here.
+  read_only: boolean;
+  // secret_unreadable: the stored secret can't be decrypted; enter it again.
+  secret_unreadable: boolean;
+  // callback_url is the redirect URI to register at the provider.
+  callback_url: string;
+}
+
+// OidcProviderInput creates or replaces a provider; on update a missing client_secret keeps
+// the stored one and a missing enabled the current state. id is read on create only.
+export interface OidcProviderInput {
+  id?: string;
+  name: string;
+  issuer: string;
+  client_id: string;
+  client_secret?: string;
+  admin_role: string;
+  user_role: string;
+  require_mfa: boolean;
+  session_ttl_minutes: number;
+  enabled?: boolean;
+}
+
+export const listOidcProviders = () =>
+  apiFetch<{ callback_prefix: string; providers: OidcProvider[] }>('/oidc-providers');
+export const createOidcProvider = (p: OidcProviderInput) =>
+  apiFetch<OidcProvider>('/oidc-providers', post(p));
+export const updateOidcProvider = (id: string, p: OidcProviderInput) =>
+  apiFetch<OidcProvider>(`/oidc-providers/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: JSON.stringify(p),
+  });
+export const deleteOidcProvider = (id: string) =>
+  apiFetch<void>(`/oidc-providers/${encodeURIComponent(id)}`, { method: 'DELETE' });
 
 export const listRegistries = () => apiFetch<Registry[]>('/registries');
 export const getRegistry = (id: number) => apiFetch<Registry>(`/registries/${id}`);

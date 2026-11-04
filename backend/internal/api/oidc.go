@@ -14,42 +14,55 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/audit"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/oidc"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/oidcproviders"
 )
 
 const (
 	// oidcCookie binds a started SSO login to the browser that started it.
 	oidcCookie     = "nudge_oidc"
-	oidcCookiePath = "/api/v1/auth/oidc"
+	oidcCookiePath = oidcproviders.CallbackBase
 	// ssoFailedPath is where a failed SSO login lands; the login page shows a generic error.
 	ssoFailedPath = "/login?error=sso"
 )
 
 type authMethodsResponse struct {
-	Password bool            `json:"password"`
-	OIDC     *oidcMethodBody `json:"oidc"`
+	Password  bool             `json:"password"`
+	Providers []oidcMethodBody `json:"providers"`
 }
 
 type oidcMethodBody struct {
+	ID   string `json:"id"`
 	Name string `json:"name"`
 }
 
 // authMethods tells the login page which ways to sign in it offers.
 func (s *server) authMethods(w http.ResponseWriter, _ *http.Request) {
-	resp := authMethodsResponse{Password: !s.noPasswordLogin}
-	if s.oidc != nil {
-		resp.OIDC = &oidcMethodBody{Name: s.oidcName}
+	resp := authMethodsResponse{Password: !s.noPasswordLogin, Providers: []oidcMethodBody{}}
+	for _, p := range s.sso.Enabled() {
+		resp.Providers = append(resp.Providers, oidcMethodBody{ID: p.ID, Name: p.Name})
 	}
 	s.writeJSON(w, http.StatusOK, resp)
+}
+
+// ssoProvider is the enabled provider of an SSO route: the path's, or without one (the
+// routes from before providers could be managed) the environment's.
+func (s *server) ssoProvider(r *http.Request) (*oidcproviders.Login, bool) {
+	id := r.PathValue("provider")
+	if id == "" {
+		id = oidcproviders.EnvID
+	}
+	return s.sso.Login(id)
 }
 
 // oidcLogin starts an SSO login: it binds the login to this browser with a cookie and
 // sends it to the provider.
 func (s *server) oidcLogin(w http.ResponseWriter, r *http.Request) {
-	if s.oidc == nil {
+	login, ok := s.ssoProvider(r)
+	if !ok {
 		s.notFound(w, r)
 		return
 	}
-	authURL, binding, err := s.oidc.Begin(r.Context(), clientIP(r), safeRedirect(r.URL.Query().Get("redirect")))
+	authURL, binding, err := login.Client.Begin(r.Context(), clientIP(r), safeRedirect(r.URL.Query().Get("redirect")))
 	if err != nil {
 		s.log.Warn("sso login start", "err", err, "ip", clientIP(r))
 		http.Redirect(w, r, ssoFailedPath, http.StatusFound)
@@ -69,7 +82,8 @@ func (s *server) oidcLogin(w http.ResponseWriter, r *http.Request) {
 // against the client's login limit until it succeeds; failures go to the login page with
 // a generic error and are logged with the detail.
 func (s *server) oidcCallback(w http.ResponseWriter, r *http.Request) {
-	if s.oidc == nil {
+	login, ok := s.ssoProvider(r)
+	if !ok {
 		s.notFound(w, r)
 		return
 	}
@@ -89,12 +103,12 @@ func (s *server) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if e := q.Get("error"); e != "" {
-		s.oidc.Cancel(q.Get("state"), binding)
+		login.Client.Cancel(q.Get("state"), binding)
 		s.log.Warn("sso login failed at the provider", "error", clipLog(e), "ip", ip)
 		http.Redirect(w, r, ssoFailedPath, http.StatusFound)
 		return
 	}
-	id, err := s.oidc.Finish(r.Context(), q.Get("state"), binding, q.Get("code"))
+	id, err := login.Client.Finish(r.Context(), q.Get("state"), binding, q.Get("code"))
 	var refused *oidc.RefusedError
 	switch {
 	case errors.As(err, &refused):
@@ -118,8 +132,14 @@ func (s *server) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	if id.Admin {
 		role = auth.RoleAdmin
 	}
-	sess, err := s.auth.SSOLogin(r.Context(), auth.Identity{
-		Issuer: id.Issuer, Subject: id.Subject, Username: id.Username, DisplayName: id.DisplayName, Email: id.Email, Role: role,
+	var sess auth.Session
+	err = s.sso.Complete(login, func() error {
+		var err error
+		sess, err = s.auth.SSOLogin(r.Context(), auth.Identity{
+			Issuer: id.Issuer, Subject: id.Subject, Username: id.Username, DisplayName: id.DisplayName, Email: id.Email, Role: role,
+			SessionTTL: login.Provider.SessionTTL,
+		})
+		return err
 	})
 	if errors.Is(err, auth.ErrDisabled) {
 		sub, name := clipLog(id.Subject), clipLog(id.Username)

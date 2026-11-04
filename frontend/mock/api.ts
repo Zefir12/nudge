@@ -602,7 +602,11 @@ const routes: Route[] = [
     withEnv(() => selfUpdate('v1.28.0', 'registrydedic.zefirlabs.net/nudge-agent:latest')),
   ],
   ['POST', new RegExp(`^${envRe}/agent/update$`), withEnv(() => ({ started: true }))],
-  ['GET', /^\/auth\/methods$/, () => ({ password: true, oidc: { name: 'Authentik' } })],
+  [
+    'GET',
+    /^\/auth\/methods$/,
+    () => ({ password: true, providers: [{ id: 'authentik', name: 'Authentik' }] }),
+  ],
   ['GET', /^\/auth\/me$/, () => me],
   ['POST', /^\/auth\/login$/, () => me],
   [
@@ -612,6 +616,29 @@ const routes: Route[] = [
       { id: 1, name: 'laptop', prefix: 'ndg_4f2a', created_at: ago(60 * 24 * 6), last_used_at: ago(42) },
       { id: 2, name: 'ci', prefix: 'ndg_91bc', created_at: ago(60 * 24 * 2), last_used_at: null },
     ],
+  ],
+  [
+    'GET',
+    /^\/oidc-providers$/,
+    () => ({
+      callback_prefix: 'https://nudge.example.net/api/v1/auth/oidc/',
+      providers: [
+        {
+          id: 'authentik',
+          name: 'Authentik',
+          issuer: 'https://auth.example.net/application/o/nudge/',
+          client_id: 'nudge',
+          admin_role: 'admin',
+          user_role: 'user',
+          require_mfa: true,
+          session_ttl_minutes: 720,
+          enabled: true,
+          read_only: false,
+          secret_unreadable: false,
+          callback_url: 'https://nudge.example.net/api/v1/auth/oidc/authentik/callback',
+        },
+      ],
+    }),
   ],
   ['GET', /^\/audit$/, () => ({ entries: audit, next: null })],
   ['GET', /^\/users$/, () => users],

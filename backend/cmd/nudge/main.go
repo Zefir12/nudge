@@ -38,7 +38,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/hostload"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/metrics"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/notify"
-	"git.zefirlabs.net/zefir/nudge/backend/internal/oidc"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/oidcproviders"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/probe"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/registries"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/secretbox"
@@ -170,14 +170,27 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 	authSvc := auth.New(auth.Options{
 		DB: st.DB(), Log: log, SSOSessionTTL: cfg.OIDC.SessionTTL, AdminPasswordOnly: cfg.NoPasswordLogin,
 	})
-	var sso *oidc.Client
-	if cfg.OIDC.Enabled() {
-		sso = oidc.New(oidc.Options{
-			Issuer: cfg.OIDC.Issuer, ClientID: cfg.OIDC.ClientID, ClientSecret: cfg.OIDC.ClientSecret,
-			RedirectURL: cfg.PublicURL + "/api/v1/auth/oidc/callback",
-			AdminRole:   cfg.OIDC.AdminRole, UserRole: cfg.OIDC.UserRole, RequireMFA: cfg.OIDC.RequireMFA, Log: log,
-		})
-		log.Info("single sign-on on", "issuer", cfg.OIDC.Issuer, "password_login", !cfg.NoPasswordLogin)
+	ssoOpts := oidcproviders.Options{
+		DB: st.DB(), Box: box, Auth: authSvc, PublicURL: cfg.PublicURL, PasswordLoginOff: cfg.NoPasswordLogin, Log: log,
+	}
+	if o := cfg.OIDC; o.Enabled() {
+		ssoOpts.Env = &oidcproviders.Env{
+			Name: o.Name, Issuer: o.Issuer, ClientID: o.ClientID, ClientSecret: o.ClientSecret,
+			AdminRole: o.AdminRole, UserRole: o.UserRole, RequireMFA: o.RequireMFA, SessionTTL: o.SessionTTL,
+		}
+	}
+	sso := oidcproviders.New(ssoOpts)
+	// Like the migrations: part of startup, not cancelled by a signal.
+	ssoCtx, cancelSSO := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancelSSO()
+	if err := sso.Load(ssoCtx); err != nil {
+		return fmt.Errorf("load sso providers: %w", err)
+	}
+	if cfg.NoPasswordLogin && !sso.AnyEnabled() {
+		return errors.New("password login can only be turned off with single sign-on (NUDGE_OIDC_ISSUER, or a provider added in the web UI)")
+	}
+	if sso.AnyEnabled() {
+		log.Info("single sign-on on", "providers", len(sso.Enabled()), "password_login", !cfg.NoPasswordLogin)
 	}
 	auditSvc := audit.New(audit.Options{DB: st.DB(), Log: log, Retention: time.Duration(cfg.AuditRetentionDays) * 24 * time.Hour})
 	if cfg.AdminPassword != "" {
@@ -339,8 +352,7 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 				return hostdisk.Remote(ctx, envs.ControlDialer(env.ID))
 			},
 
-			OIDC:            sso,
-			OIDCName:        cfg.OIDC.Name,
+			SSO:             sso,
 			NoPasswordLogin: cfg.NoPasswordLogin,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,

@@ -42,6 +42,7 @@ describe('AppSidebar', () => {
       'Notifications',
       'API tokens',
       'Users',
+      'Single sign-on',
       'Audit log',
       'Backup',
     ]);

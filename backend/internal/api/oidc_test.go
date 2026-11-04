@@ -14,24 +14,27 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker/dockertest"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
-	"git.zefirlabs.net/zefir/nudge/backend/internal/oidc"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/oidc/oidctest"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/oidcproviders"
 )
 
-// newSSOHandler is the API with SSO through a fake provider.
-func newSSOHandler(t *testing.T, mod func(*oidc.Options)) (http.Handler, *auth.Service, *sql.DB, *oidctest.Provider) {
+// newSSOHandler is the API with SSO through a fake provider from the environment, and
+// password login off.
+func newSSOHandler(t *testing.T, mod func(*oidcproviders.Env)) (http.Handler, *auth.Service, *sql.DB, *oidctest.Provider) {
 	t.Helper()
 	idp := oidctest.New(t, time.Now)
-	opts := oidc.Options{
-		Issuer: idp.URL, ClientID: oidctest.ClientID, ClientSecret: oidctest.ClientSecret, RedirectURL: oidctest.RedirectURL,
-		AdminRole: "admin", HTTPClient: idp.Client,
+	env := oidcproviders.Env{
+		Name: "Authestra", Issuer: idp.URL, ClientID: oidctest.ClientID, ClientSecret: oidctest.ClientSecret,
+		AdminRole: "admin", SessionTTL: 12 * time.Hour,
 	}
 	if mod != nil {
-		mod(&opts)
+		mod(&env)
 	}
-	h, svc, db := newTestHandlerOpts(t, func(environments.Environment) (docker.Client, error) { return &dockertest.Fake{}, nil }, func(o *Options) {
-		o.OIDC, o.OIDCName, o.NoPasswordLogin = oidc.New(opts), "Authestra", true
-	})
+	h, svc, db := newTestHandlerSSO(t, func(environments.Environment) (docker.Client, error) { return &dockertest.Fake{}, nil },
+		func(o *oidcproviders.Options) {
+			o.Env, o.HTTPClient, o.PasswordLoginOff = &env, idp.Client, true
+		},
+		func(o *Options) { o.NoPasswordLogin = true })
 	return h, svc, db, idp
 }
 
@@ -64,12 +67,12 @@ func TestAuthMethods(t *testing.T) {
 	t.Parallel()
 	h, _ := newTestHandler(t)
 	rec := do(t, h, request{method: http.MethodGet, path: "/api/v1/auth/methods"})
-	if got := strings.TrimSpace(rec.Body.String()); rec.Code != http.StatusOK || got != `{"password":true,"oidc":null}` {
+	if got := strings.TrimSpace(rec.Body.String()); rec.Code != http.StatusOK || got != `{"password":true,"providers":[]}` {
 		t.Errorf("without SSO: %d %s", rec.Code, got)
 	}
 	h, _, _, _ = newSSOHandler(t, nil)
 	rec = do(t, h, request{method: http.MethodGet, path: "/api/v1/auth/methods"})
-	if got := strings.TrimSpace(rec.Body.String()); rec.Code != http.StatusOK || got != `{"password":false,"oidc":{"name":"Authestra"}}` {
+	if got := strings.TrimSpace(rec.Body.String()); rec.Code != http.StatusOK || got != `{"password":false,"providers":[{"id":"env","name":"Authestra"}]}` {
 		t.Errorf("with SSO: %d %s", rec.Code, got)
 	}
 }
@@ -156,7 +159,7 @@ func TestSSOLoginFailures(t *testing.T) {
 // away revokes both, audited under the nudge user.
 func TestSSOLostRole(t *testing.T) {
 	t.Parallel()
-	h, svc, db, idp := newSSOHandler(t, func(o *oidc.Options) { o.RequireMFA = true })
+	h, svc, db, idp := newSSOHandler(t, func(o *oidcproviders.Env) { o.RequireMFA = true })
 	idp.Edit(func(_, c map[string]any) { c["amr"] = []string{"pwd", "mfa"} })
 	session := sessionCookieOf(t, ssoLogin(t, h, idp, "/", true))
 	users, err := svc.ListUsers(context.Background())
@@ -202,7 +205,7 @@ func TestSSOLostRole(t *testing.T) {
 // one is refused.
 func TestSSOUserRole(t *testing.T) {
 	t.Parallel()
-	h, svc, db, idp := newSSOHandler(t, func(o *oidc.Options) { o.UserRole = "user" })
+	h, svc, db, idp := newSSOHandler(t, func(o *oidcproviders.Env) { o.UserRole = "user" })
 	idp.Edit(func(_, c map[string]any) { c["roles"] = []string{"user"} })
 	session := sessionCookieOf(t, ssoLogin(t, h, idp, "/", true))
 	if me := do(t, h, request{method: http.MethodGet, path: "/api/v1/auth/me", cookie: session}); !strings.Contains(me.Body.String(), `"role":"user"`) {
