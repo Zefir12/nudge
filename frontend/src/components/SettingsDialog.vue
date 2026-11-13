@@ -3,7 +3,8 @@ import { onMounted, ref } from 'vue';
 
 // SettingsDialog is a modal with a title and the settings in its slot; it closes on the
 // close button, Escape or a click on the backdrop.
-defineProps<{ title: string }>();
+// wide is for forms that need the room (the .env editor).
+defineProps<{ title: string; wide?: boolean }>();
 const emit = defineEmits<{ close: [] }>();
 
 const dialog = ref<HTMLDialogElement | null>(null);
@@ -16,7 +17,14 @@ function onClick(e: MouseEvent) {
 </script>
 
 <template>
-  <dialog ref="dialog" class="settings" :aria-label="title" @close="emit('close')" @click="onClick">
+  <dialog
+    ref="dialog"
+    class="settings"
+    :class="{ wide }"
+    :aria-label="title"
+    @close="emit('close')"
+    @click="onClick"
+  >
     <div class="body">
       <header>
         <h2>{{ title }}</h2>
@@ -37,6 +45,10 @@ function onClick(e: MouseEvent) {
   background: var(--surface-solid);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
+}
+
+.settings.wide {
+  width: min(48rem, calc(100vw - 2rem));
 }
 
 .settings::backdrop {

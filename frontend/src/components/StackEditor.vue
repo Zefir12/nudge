@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 
-import { checkStack } from '../api/client';
+import { type StackEnvExample, checkStack } from '../api/client';
 import { readCompose } from '../compose';
 import CodeEditor from './CodeEditor.vue';
+import EnvFormEditor from './EnvFormEditor.vue';
+import SettingsDialog from './SettingsDialog.vue';
 
 // StackEditor edits a stack's compose.yaml and .env. Syntax errors show while typing;
 // compose's own check runs on demand and from validate(), which the views call before
@@ -11,7 +13,20 @@ import CodeEditor from './CodeEditor.vue';
 const compose = defineModel<string>('compose', { required: true });
 const env = defineModel<string>('env', { required: true });
 // composeFromGit makes compose.yaml read-only: it comes from a repository.
-defineProps<{ disabled?: boolean; composeFromGit?: boolean }>();
+// loadEnvExample reads the repository's env file, which the .env form editor follows.
+defineProps<{
+  disabled?: boolean;
+  composeFromGit?: boolean;
+  loadEnvExample?: () => Promise<StackEnvExample>;
+}>();
+
+// envForm opens the .env form editor; it hands back the rebuilt text.
+const envForm = ref(false);
+
+function applyEnvForm(text: string) {
+  env.value = text;
+  envForm.value = false;
+}
 
 const syntax = computed(() => readCompose(compose.value));
 const checking = ref(false);
@@ -70,10 +85,25 @@ defineExpose({ validate });
     <ul v-if="syntax.errors.length" class="errors" role="alert" aria-label="YAML errors">
       <li v-for="e in syntax.errors" :key="e">{{ e }}</li>
     </ul>
-    <label class="field">
-      <span>.env <span class="muted">(variables compose substitutes, one KEY=value per line)</span></span>
-      <CodeEditor v-model="env" language="env" size="short" :disabled="disabled" />
-    </label>
+    <div class="field">
+      <div class="env-head">
+        <label for="stack-env"
+          >.env <span class="muted">(variables compose substitutes, one KEY=value per line)</span></label
+        >
+        <button type="button" :disabled="disabled" @click="envForm = true">Editor</button>
+      </div>
+      <CodeEditor id="stack-env" v-model="env" language="env" size="short" :disabled="disabled" />
+    </div>
+    <Teleport to="body">
+      <SettingsDialog v-if="envForm" title=".env editor" wide @close="envForm = false">
+        <EnvFormEditor
+          :env="env"
+          :load-example="loadEnvExample"
+          @apply="applyEnvForm"
+          @cancel="envForm = false"
+        />
+      </SettingsDialog>
+    </Teleport>
     <div class="check">
       <button type="button" :disabled="disabled || checking || syntax.errors.length > 0" @click="check">
         {{ checking ? 'Checking…' : 'Check with compose' }}
@@ -96,6 +126,14 @@ defineExpose({ validate });
 .field {
   display: grid;
   gap: 0.3rem;
+}
+
+.env-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
 }
 
 .errors {

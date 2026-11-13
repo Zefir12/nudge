@@ -69,4 +69,22 @@ describe('StackEditor', () => {
     await flushPromises();
     expect(wrapper.text()).toContain('docker-compose is not installed');
   });
+
+  it('opens the .env form editor and takes its text', async () => {
+    let env = 'A=1\n';
+    const w = mount(StackEditor, {
+      props: { compose: 'services: {}\n', env, 'onUpdate:env': (v: string) => void (env = v) },
+      global: { stubs: { teleport: true } },
+    });
+    expect(w.find('.env-form').exists()).toBe(false);
+    await w
+      .findAll('button')
+      .find((b) => b.text() === 'Editor')!
+      .trigger('click');
+    await flushPromises();
+    await w.find('#env-0-0').setValue('2');
+    await w.find('.env-form').trigger('submit');
+    expect(env).toBe('A=2\n');
+    expect(w.find('.env-form').exists()).toBe(false);
+  });
 });
