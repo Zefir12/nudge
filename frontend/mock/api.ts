@@ -280,6 +280,21 @@ function networks(env: number) {
   }));
 }
 
+// envExample is every git stack's env file in the repository.
+const envExample = `# ${'='.repeat(20)} App ${'='.repeat(20)}
+
+# Time zone of the containers.
+TZ=UTC
+# Public port.
+PORT=8080
+
+# Database password; set it in nudge, not in git.
+DB_PASSWORD=
+# API token for the mailer (optional).
+MAIL_TOKEN=
+DEBUG=false
+`;
+
 function stacks(env: number) {
   const byName = new Map<string, ReturnType<typeof containers>>();
   for (const c of containers(env)) {
@@ -296,7 +311,7 @@ function stacks(env: number) {
           `  ${c.labels['com.docker.compose.service']}:\n    image: ${c.image}\n    restart: unless-stopped\n`,
       )
       .join('')}`,
-    env: 'TZ=Europe/Warsaw\n',
+    env: 'TZ=Europe/Warsaw\nDB_PASSWORD=hunter2\n# kept from an old setup\nLEGACY_FLAG=1\n',
     git:
       name === 'portainer'
         ? undefined
@@ -304,7 +319,7 @@ function stacks(env: number) {
             repo_url: `https://git.example.com/me/${name}.git`,
             ref: 'main',
             compose_path: 'compose.yaml',
-            env_path: '',
+            env_path: '.env.example',
             auth: 'token',
             username: '',
             known_hosts: '',
@@ -907,6 +922,21 @@ const routes: Route[] = [
         'stack',
       ),
     ),
+  ],
+  [
+    'GET',
+    new RegExp(`^${envRe}/stacks/([^/]+)/git/env-example$`),
+    withEnv((env, m) => {
+      const s = found(
+        stacks(env).find((s) => s.name === m[2] && s.git?.env_path),
+        'stack',
+      );
+      return {
+        path: s.git!.env_path,
+        commit: s.git!.commit,
+        content: envExample,
+      };
+    }),
   ],
   ['POST', /^\/stacks\/check$/, () => ({ errors: [] })],
   ['GET', new RegExp(`^${envRe}/stats$`), withEnv((env) => usage(env))],

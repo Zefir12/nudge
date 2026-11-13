@@ -378,3 +378,51 @@ func TestDeploymentPreviousIsThePreRepositoryValue(t *testing.T) {
 		t.Fatalf("run = %+v", run)
 	}
 }
+
+func TestStackEnvExample(t *testing.T) {
+	t.Parallel()
+	gt := newGitStackTest(t)
+	next := gt.repo.Commit(map[string]string{"compose.yaml": gitCompose, "app.env": "# the port\nPORT=80\nFROM_REPO=2\n"})
+	c, out := gt.do(t, "GET", "local", "/web/git/env-example", "")
+	if c != http.StatusOK {
+		t.Fatalf("get = %d %s", c, out)
+	}
+	var got stackEnvExampleResponse
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatal(err)
+	}
+	want := stackEnvExampleResponse{Path: "app.env", Commit: next, Content: "# the port\nPORT=80\nFROM_REPO=2\n"}
+	if got != want {
+		t.Fatalf("example = %+v, want %+v", got, want)
+	}
+	// Reading it changes nothing: the stack stays at its commit with its .env.
+	if s := gt.get(t); s.Git.Commit != gt.first || s.Env != "SECRET=keep\nFROM_REPO=1\n" {
+		t.Fatalf("after read: %q at %s", s.Env, s.Git.Commit)
+	}
+
+	if c, out := gt.do(t, "POST", "local", "", `{"name":"plain","compose":"services: {}\n"}`); c != http.StatusCreated {
+		t.Fatalf("create = %d %s", c, out)
+	}
+	if c, out := gt.do(t, "POST", "local", "", fmt.Sprintf(`{"name":"noenv","git":{"repo_url":%q,"compose_path":"compose.yaml"}}`, gt.repo.URL)); c != http.StatusCreated {
+		t.Fatalf("create noenv = %d %s", c, out)
+	}
+	tests := []struct {
+		name, path string
+		code       int
+		want       string
+	}{
+		{"plain stack", "/plain/git/env-example", 404, "no git source"},
+		{"no env_path", "/noenv/git/env-example", 404, "no env file"},
+		{"unknown stack", "/nope/git/env-example", 404, "no git source"},
+		{"bad name", "/BAD/git/env-example", 404, "stack not found"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, out := gt.do(t, "GET", "local", tt.path, "")
+			if c != tt.code || !strings.Contains(out, tt.want) {
+				t.Fatalf("= %d %s, want %d %q", c, out, tt.code, tt.want)
+			}
+		})
+	}
+
+}

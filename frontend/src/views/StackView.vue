@@ -6,6 +6,7 @@ import {
   downStack,
   emptyStackGit,
   getStack,
+  getStackEnvExample,
   pullStackGit,
   removeStack,
   removeStackGit,
@@ -212,6 +213,10 @@ async function onDetachGit() {
 }
 
 const editor = ref<InstanceType<typeof StackEditor> | null>(null);
+// loadEnvExample reads the repository's env file for the .env form editor, if it has one.
+const loadEnvExample = computed(() =>
+  stack.value?.git?.env_path ? () => getStackEnvExample(env.value, id.value) : undefined,
+);
 const saveError = ref('');
 const saveResult = ref('');
 
@@ -390,6 +395,7 @@ function onRevert() {
             v-model:env="envFile"
             :disabled="busy"
             :compose-from-git="!!stack.git"
+            :load-env-example="loadEnvExample"
           />
           <p v-if="saveError" class="error" role="alert">{{ saveError }}</p>
           <div class="actions">

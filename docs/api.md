@@ -111,6 +111,7 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | PUT | `/api/v1/environments/{env}/stacks/{name}/git` | session | take the compose file from a repository and read it now; see Stacks from git |
 | DELETE | `/api/v1/environments/{env}/stacks/{name}/git` | session | detach from the repository, keeping the files; `204` |
 | POST | `/api/v1/environments/{env}/stacks/{name}/git/pull` | session | get the files from the repository and deploy them, output as JSON lines |
+| GET | `/api/v1/environments/{env}/stacks/{name}/git/env-example` | session | the repository's env file (`env_path`) at the head of the ref, for the .env editor; see Stacks from git |
 | GET | `/api/v1/environments/{env}/updates` | session | the last image update check; see Image updates |
 | POST | `/api/v1/environments/{env}/updates/check` | session | check the environment's images now |
 | GET | `/api/v1/environments/{env}/updates/history` | session | updates made through nudge, with the image each replaced |
@@ -985,6 +986,11 @@ stack, as on any stack (`./config` next to the compose file is not there).
   deploys when it moved past the commit last seen. A commit whose deploy failed isn't retried;
   a newer one is, and so is a pull by hand. Polling skips health checks: use a deployment
   for those. Its audit entries and updates are under `git-poll`.
+- `GET .../stacks/{name}/git/env-example` reads the stack's `env_path` file at the head of
+  its ref and answers `{"path", "commit", "content"}`; it changes nothing (not the stack's
+  files, nor `commit`). `404` if the stack has no git source or no `env_path`; `502` as
+  above if the repository can't be read. The web UI's .env form editor shows its variables
+  in its order with their comments.
 - `DELETE .../stacks/{name}/git` detaches; the stack keeps its files and can be edited again.
 
 ### Registries

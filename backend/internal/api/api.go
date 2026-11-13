@@ -364,6 +364,7 @@ var routes = []route{
 	{"PUT /api/v1/environments/{env}/stacks/{id}/git", (*server).setStackGit},
 	{"DELETE /api/v1/environments/{env}/stacks/{id}/git", (*server).removeStackGit},
 	{"POST /api/v1/environments/{env}/stacks/{id}/git/pull", (*server).pullStackGit},
+	{"GET /api/v1/environments/{env}/stacks/{id}/git/env-example", (*server).getStackEnvExample},
 	{"GET /api/v1/system/update", (*server).getSystemUpdate},
 	{"POST /api/v1/system/update/check", (*server).checkSystemUpdate},
 	{"POST /api/v1/system/update", (*server).startSystemUpdate},

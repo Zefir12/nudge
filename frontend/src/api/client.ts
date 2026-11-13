@@ -1365,6 +1365,15 @@ export const setStackGit = (env: string, name: string, git: StackGitInput) =>
 // removeStackGit detaches a stack from its repository; it keeps its files.
 export const removeStackGit = (env: string, name: string) =>
   apiFetch<void>(envPath(env, `/stacks/${enc(name)}/git`), { method: 'DELETE' });
+// StackEnvExample is a git stack's env file (its env_path) at the head of its ref.
+export interface StackEnvExample {
+  path: string;
+  commit: string;
+  content: string;
+}
+// getStackEnvExample reads a git stack's env file from its repository; it changes nothing.
+export const getStackEnvExample = (env: string, name: string) =>
+  apiFetch<StackEnvExample>(envPath(env, `/stacks/${enc(name)}/git/env-example`));
 // checkStack asks compose about stack files without saving them: errors is empty if
 // compose accepts them.
 export const checkStack = (files: StackFiles) => apiFetch<{ errors: string[] }>('/stacks/check', post(files));
