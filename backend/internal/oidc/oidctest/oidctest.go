@@ -41,7 +41,9 @@ type Provider struct {
 	// URL is the issuer; Client trusts the server's certificate.
 	URL    string
 	Client *http.Client
-	now    func() time.Time
+	// Redirect is the redirect URI the client must have registered; RedirectURL by default.
+	Redirect string
+	now      func() time.Time
 
 	mu sync.Mutex
 	// issuer is what discovery reports.
@@ -69,7 +71,7 @@ func New(t *testing.T, now func() time.Time) *Provider {
 	mux.HandleFunc("POST /token", p.token)
 	srv := httptest.NewTLSServer(mux)
 	t.Cleanup(srv.Close)
-	p.URL, p.Client, p.issuer = srv.URL, srv.Client(), srv.URL
+	p.URL, p.Client, p.issuer, p.Redirect = srv.URL, srv.Client(), srv.URL, RedirectURL
 	return p
 }
 
@@ -119,7 +121,7 @@ func (p *Provider) Authorize(t *testing.T, authURL string) (state, code string) 
 	}
 	q := u.Query()
 	if !strings.HasPrefix(authURL, p.URL+"/authorize?") || q.Get("code_challenge_method") != "S256" || q.Get("client_id") != ClientID ||
-		q.Get("redirect_uri") != RedirectURL || !strings.Contains(q.Get("scope"), "openid") || q.Get("nonce") == "" || q.Get("state") == "" {
+		q.Get("redirect_uri") != p.Redirect || !strings.Contains(q.Get("scope"), "openid") || q.Get("nonce") == "" || q.Get("state") == "" {
 		t.Fatalf("authorize URL = %s", authURL)
 	}
 	code = rand.Text()
@@ -162,7 +164,7 @@ func (p *Provider) token(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"invalid_client"}`, http.StatusUnauthorized)
 		return
 	}
-	if err := r.ParseForm(); err != nil || r.PostForm.Get("grant_type") != "authorization_code" || r.PostForm.Get("redirect_uri") != RedirectURL {
+	if err := r.ParseForm(); err != nil || r.PostForm.Get("grant_type") != "authorization_code" || r.PostForm.Get("redirect_uri") != p.Redirect {
 		http.Error(w, `{"error":"invalid_request"}`, http.StatusBadRequest)
 		return
 	}

@@ -51,7 +51,7 @@ type setupStatusResponse struct {
 }
 
 func (s *server) setupStatus(w http.ResponseWriter, r *http.Request) {
-	if s.oidc != nil {
+	if s.sso.AnyEnabled() {
 		// The first admin is whoever the SSO provider gives the admin role.
 		s.writeJSON(w, http.StatusOK, setupStatusResponse{})
 		return
@@ -66,7 +66,7 @@ func (s *server) setupStatus(w http.ResponseWriter, r *http.Request) {
 
 // setup creates the admin and logs them in.
 func (s *server) setup(w http.ResponseWriter, r *http.Request) {
-	if s.oidc != nil {
+	if s.sso.AnyEnabled() {
 		s.writeError(w, http.StatusForbidden, "setup is off: users sign in with single sign-on")
 		return
 	}
@@ -177,17 +177,15 @@ type logoutResponse struct {
 
 // logout ends the session. An SSO user's answer names the provider's sign-out page.
 func (s *server) logout(w http.ResponseWriter, r *http.Request) {
-	sso, err := s.auth.Logout(r.Context(), sessionToken(r))
+	issuer, err := s.auth.Logout(r.Context(), sessionToken(r))
 	if err != nil {
 		s.internalError(w, "logout", err)
 		return
 	}
 	s.setSessionCookie(w, r, "", time.Time{}, -1)
-	if sso && s.oidc != nil {
-		if u := s.oidc.LogoutURL(); u != "" {
-			s.writeJSON(w, http.StatusOK, logoutResponse{LogoutURL: u})
-			return
-		}
+	if u := s.sso.LogoutURL(issuer); u != "" {
+		s.writeJSON(w, http.StatusOK, logoutResponse{LogoutURL: u})
+		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

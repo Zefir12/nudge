@@ -448,9 +448,8 @@ func parseSize(s string) (int64, error) {
 func (c *Server) checkOIDC() error {
 	o := &c.OIDC
 	if o.Issuer == "" && o.ClientID == "" && o.ClientSecret == "" {
-		if c.NoPasswordLogin {
-			return errors.New("password login can only be turned off with single sign-on (NUDGE_OIDC_ISSUER)")
-		}
+		// NUDGE_PASSWORD_LOGIN=false also needs SSO, but its providers may be in the
+		// database: serve checks that.
 		*o = OIDC{}
 		return nil
 	}

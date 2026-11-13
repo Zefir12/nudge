@@ -4,7 +4,7 @@ IMAGE ?= $(REGISTRY)/nudge
 AGENT_IMAGE ?= $(REGISTRY)/nudge-agent
 TAG ?= latest
 
-# Keep in sync with backend/go.mod, the Dockerfile and .forgejo/workflows/ci.yaml.
+# Keep in sync with backend/go.mod, the Dockerfile, .forgejo/workflows/ci.yaml and nightly.yaml.
 GO_IMAGE ?= golang:1.27.3
 # golangci-lint must be built with a Go >= go.mod's language version.
 LINT_IMAGE ?= golangci/golangci-lint:v2.15.0

@@ -369,3 +369,42 @@ func (s *server) pollDeploy(ctx context.Context, src gitstacks.Source) {
 		log.Error("audit", "err", err)
 	}
 }
+
+// stackEnvExampleResponse is a git stack's env file as its repository has it now.
+type stackEnvExampleResponse struct {
+	Path    string `json:"path"`
+	Commit  string `json:"commit"`
+	Content string `json:"content"`
+}
+
+// getStackEnvExample reads a git stack's env file (its env_path) at the head of its ref,
+// for the .env form editor. It changes nothing: not the stack's files, nor its commit.
+func (s *server) getStackEnvExample(w http.ResponseWriter, r *http.Request) {
+	name, ok := s.stackName(w, r)
+	if !ok {
+		return
+	}
+	env, _, ok := s.environment(w, r)
+	if !ok {
+		return
+	}
+	src, err := s.stackSource(r.Context(), env.ID, name)
+	if err != nil {
+		s.internalError(w, "get stack source", err)
+		return
+	}
+	if src == nil {
+		s.writeError(w, http.StatusNotFound, "the stack has no git source")
+		return
+	}
+	if src.EnvPath == "" {
+		s.writeError(w, http.StatusNotFound, "the stack's repository has no env file")
+		return
+	}
+	res, err := s.gitStacks.Fetch(r.Context(), *src)
+	if err != nil {
+		s.gitInputError(w, "read stack env example", err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, stackEnvExampleResponse{Path: src.EnvPath, Commit: res.Commit, Content: res.Env})
+}

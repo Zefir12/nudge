@@ -26,7 +26,7 @@ image without setting anything. A flag wins over its variable.
 | `-backup-keep` | `NUDGE_BACKUP_KEEP` | `7` | how many scheduled backups are kept; older ones are deleted after each new one |
 | `-backup-passphrase-file` | `NUDGE_BACKUP_PASSPHRASE_FILE` | unset | file holding the passphrase (at least 12 characters; a trailing newline is ignored) scheduled backups are encrypted with; `nudge restore` reads its passphrase from here too |
 | — | `NUDGE_ADMIN_PASSWORD` | unset | create the user `admin` with this password at start if no user exists |
-| `-oidc-issuer` | `NUDGE_OIDC_ISSUER` | unset | OpenID Connect issuer URL (`https://`); with the client ID and secret it turns on single sign-on (see Single sign-on) |
+| `-oidc-issuer` | `NUDGE_OIDC_ISSUER` | unset | OpenID Connect issuer URL (`https://`); with the client ID and secret it adds a read-only single sign-on provider (others can be added in the web UI; see Single sign-on) |
 | `-oidc-client-id` | `NUDGE_OIDC_CLIENT_ID` | unset | nudge's client ID at the provider |
 | — | `NUDGE_OIDC_CLIENT_SECRET` | unset | nudge's client secret (environment only) |
 | `-oidc-name` | `NUDGE_OIDC_NAME` | `SSO` | label of the login page's button ("Log in with …") |
@@ -239,12 +239,30 @@ through a trusted proxy that sets `X-Forwarded-Proto: https`. Writes from other 
 block nobody: rate limit and ban in front of nudge, using the `login failed` log line (see docs/api.md).
 
 ## Single sign-on
-nudge signs users in through one OpenID Connect provider (authorization code flow with
-PKCE, as a confidential client with `client_secret_basic`; ID tokens must be RS256). Set
-`NUDGE_OIDC_ISSUER`, `NUDGE_OIDC_CLIENT_ID` and `NUDGE_OIDC_CLIENT_SECRET` together (nudge
-refuses to start with only some of them) and an `https://` `NUDGE_PUBLIC_URL`. The
-redirect URI to register is `<public URL>/api/v1/auth/oidc/callback`; the scopes are
-`openid profile email`.
+nudge signs users in through OpenID Connect providers (authorization code flow with
+PKCE, as a confidential client with `client_secret_basic`; ID tokens must be RS256), one
+button each on the login page. All of them need an `https://` `NUDGE_PUBLIC_URL`; the scopes
+are `openid profile email`. There are two ways to add one, which work side by side.
+
+**In the web UI**, on the Single sign-on page (admins, `docs/api.md` for the API): name (the
+button's label), issuer URL, client ID and secret, admin and user role, require MFA, session
+length. The form shows the redirect URI to register,
+`<public URL>/api/v1/auth/oidc/<id>/callback`. The client secret is sealed with AES-256-GCM
+under the key in `<data>/secret.key` (as registry passwords are), never returned by the API,
+and must be entered again when the issuer or client ID changes. A copy of the database alone
+doesn't reveal it; a backup holds the key too, so keep backups safe. If the key is lost, the
+provider is out of use until its secret is entered again. There is one provider per issuer.
+
+**In the environment**: set `NUDGE_OIDC_ISSUER`, `NUDGE_OIDC_CLIENT_ID` and
+`NUDGE_OIDC_CLIENT_SECRET` together (nudge refuses to start with only some of them). This
+provider keeps working exactly as before an upgrade, on its redirect URI
+`<public URL>/api/v1/auth/oidc/callback`. It is listed in the UI as read-only and never
+copied to the database: the secret stays in the environment, and changing it means changing
+the environment and restarting. Remove the variables to turn it off; unlike the UI, that
+doesn't revoke anything, so its users' sessions and tokens last as described under Revoking
+access until they end. A UI provider can't use its issuer or name.
+
+In what follows, `NUDGE_OIDC_*` settings correspond to a UI provider's own fields.
 
 - **Roles.** The ID token's `roles` claim (an array) must hold `NUDGE_OIDC_ADMIN_ROLE`
   (the user is an admin) or `NUDGE_OIDC_USER_ROLE` (a user; with both, an admin). It is
@@ -255,18 +273,21 @@ redirect URI to register is `<public URL>/api/v1/auth/oidc/callback`; the scopes
 - **Users** are matched by issuer and subject (`sub`) only. A local user with the same
   name or email is never linked: the SSO user gets a name of its own (its preferred
   username, else its email, with `-2`… on a clash; never `admin`). Display name and email
-  are refreshed on each login. Changing the provider (its issuer, or the users'
+  are refreshed on each login, and several providers coexist: the same person through two
+  of them is two users. Changing the provider (its issuer, or the users'
   subjects) makes the next login a new user; an admin merges it into the old one with
   "Re-link SSO identity" on the Users page (`POST /api/v1/users/{id}/relink`, docs/api.md).
-- **Setup** is off with SSO: `POST /api/v1/setup` is refused, and the first admin is
+- **Setup** is off with any provider enabled: `POST /api/v1/setup` is refused, and the first admin is
   whoever the provider gives the admin role. `NUDGE_ADMIN_PASSWORD` still creates a local
   `admin` on a fresh install: the break-glass user.
 - **Password login** stays on by default. With `NUDGE_PASSWORD_LOGIN=false` the login page
-  shows only the SSO button and the API refuses password logins except the local `admin`'s;
-  `/login?password` shows the form for it.
+  shows only the SSO buttons and the API refuses password logins except the local `admin`'s;
+  `/login?password` shows the form for it. It needs a provider: nudge refuses to start
+  without an enabled one, and the last enabled one can't be taken away in the UI.
 - **Sessions** are nudge's own, capped by `NUDGE_OIDC_SESSION_TTL`: a user disabled at the
   provider keeps their session until then. Logout ends the nudge session and sends the
-  browser to the provider's `end_session_endpoint`.
+  browser to the `end_session_endpoint` of the provider the user signed in through. A UI
+  provider has its own length (5 minutes to 30 days).
 - **MFA.** `NUDGE_OIDC_REQUIRE_MFA=true` refuses ID tokens whose `amr` lacks `mfa`.
 - Failed SSO logins land on the login page with a generic error, are logged with the
   detail and count against the per-IP credential limit.
@@ -277,6 +298,17 @@ redirect URI to register is `<public URL>/api/v1/auth/oidc/callback`; the scopes
   their API tokens (audited); a login refused only for a missing second factor revokes
   nothing. Deploy tokens and deploy webhooks they created are not touched. Disabling the
   user in nudge (Users page) ends their sessions and stops their tokens at once.
+- **Disabling or deleting a provider** in the UI (or moving it to another issuer) signs its
+  users out and deletes their API tokens at once, in one transaction, since nobody can vouch
+  for them any more; the audit entry says how many. Logins in progress at it fail. The
+  accounts stay, with their environment access, allowances and objects, so enabling the
+  provider again (or adding one with the same issuer) signs them back in, though the tokens
+  stay gone. Or merge them into a user of another provider with "Re-link SSO identity".
+  Deploy tokens and deploy webhooks they created are not touched. The change is refused if no
+  enabled admin could sign in afterwards: a local admin with a password (only `admin` with
+  `NUDGE_PASSWORD_LOGIN=false`) or an SSO admin of a provider still enabled. An admin who
+  signs in through the provider they disable is signed out too. Other edits (roles, MFA,
+  session length) apply from the next login, like role changes at the provider.
 - **Break-glass.** SSO users count as users, so `NUDGE_ADMIN_PASSWORD` creates the local
   `admin` only on a fresh install: set it before the first SSO login if you want a way in
   without the provider (or after turning SSO off).

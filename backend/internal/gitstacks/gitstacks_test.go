@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -181,6 +182,42 @@ func TestFetchBounds(t *testing.T) {
 			t.Fatalf("err = %v", err)
 		}
 	})
+}
+
+// Not parallel: it counts what the whole process allocates, and parallel tests wait until
+// the others are done.
+func TestFetchRefusesACompressionBomb(t *testing.T) {
+	const bomb = 32 << 20 // about 32 KiB once compressed: a local pipe holds it, see TestFetchBounds
+	repo := gitstackstest.New(t)
+	repo.Commit(map[string]string{"compose.yaml": composeText, "bomb": string(make([]byte, bomb))})
+	f := newFixture(t, func(o *gitstacks.Options) { o.MaxObjectBytes = 1 << 20 })
+	src := f.prepare(t, gitstacks.Input{RepoURL: repo.URL, ComposePath: "compose.yaml"})
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, err := f.svc.Fetch(context.Background(), src)
+	runtime.ReadMemStats(&after)
+	var ge *gitstacks.Error
+	if !errors.As(err, &ge) || !strings.Contains(ge.Msg, "too large to unpack") {
+		t.Fatalf("err = %v", err)
+	}
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > bomb/2 {
+		t.Fatalf("allocated %d bytes for a blob of %d", allocated, bomb)
+	}
+	if left, _ := filepath.Glob(filepath.Join(f.temp, ".*")); len(left) != 0 {
+		t.Fatalf("left behind: %v", left)
+	}
+}
+
+func TestFetchTakesAnObjectUpToTheBound(t *testing.T) {
+	t.Parallel()
+	repo := gitstackstest.New(t)
+	repo.Commit(map[string]string{"compose.yaml": composeText, "blob": string(make([]byte, 1<<20))})
+	f := newFixture(t, func(o *gitstacks.Options) { o.MaxObjectBytes = 1 << 20 })
+	src := f.prepare(t, gitstacks.Input{RepoURL: repo.URL, ComposePath: "compose.yaml"})
+	res, err := f.svc.Fetch(context.Background(), src)
+	if err != nil || res.Compose != composeText {
+		t.Fatalf("res = %+v, err = %v", res, err)
+	}
 }
 
 func TestPrepareValidates(t *testing.T) {

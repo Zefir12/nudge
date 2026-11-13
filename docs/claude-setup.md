@@ -22,6 +22,7 @@ Docker, make, fj. The Forgejo runners (`runs-on: docker`) are shared with go-gua
    `REGISTRY_PASSWORD` for `registrydedic.zefirlabs.net` (image.yaml pushes
    `nudge` and `nudge-agent`, each as `develop` and `develop-<sha>` on every push to
    develop, and as `latest` and `main-<sha>` on every push to main).
+   Add `DISCORD_WEBHOOK` too: nightly.yaml posts its result there.
 5. **Milestones** (optional): one per PLAN.md phase, so issues can be grouped.
 
 ## First run

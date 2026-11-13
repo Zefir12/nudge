@@ -1,0 +1,87 @@
+# Finds newly published vulnerabilities even when the repo is quiet. Forgejo runs
+# `schedule` from the default branch only, so the cron starts once this reaches it.
+name: nightly
+
+on:
+  schedule:
+    - cron: "40 2 * * *" # 02:40 UTC, offset so the repos don't all hit the runner at 02:00
+  workflow_dispatch: # manual run
+
+jobs:
+  vuln:
+    name: vuln (govulncheck)
+    runs-on: docker
+    timeout-minutes: 15
+    container:
+      image: golang:1.27.3 # keep in sync with backend/go.mod, Dockerfile and the Makefile
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      # The Go image has no Node, which JavaScript actions such as checkout need.
+      - name: Install Node for actions
+        working-directory: /
+        run: apt-get update -qq && apt-get install -y -qq --no-install-recommends nodejs
+
+      - name: Checkout
+        uses: https://data.forgejo.org/actions/checkout@v6
+
+      # Nightly job: @latest is intentional so new checks are picked up. govulncheck exits
+      # non-zero when it reports a finding, which fails the job.
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
+  npm-audit:
+    name: npm audit (frontend, production deps)
+    runs-on: docker
+    timeout-minutes: 10
+    container:
+      image: node:24.22.1 # keep in sync with ci.yaml, the Makefile and Dockerfile
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: https://data.forgejo.org/actions/checkout@v6
+
+      # Reads package-lock.json, so no install is needed. Production dependencies only
+      # (dev tooling is noisy and isn't shipped); fails on high and critical advisories.
+      - name: npm audit
+        run: npm audit --omit=dev --audit-level=high
+
+  notify:
+    name: notify
+    runs-on: docker
+    needs: [vuln, npm-audit]
+    if: always()
+    timeout-minutes: 5
+    container:
+      image: golang:1.27.3 # only for curl; same image as vuln, so nothing extra to pull
+    steps:
+      - name: Notify Discord
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          VULN: ${{ needs.vuln.result }}
+          NPM_AUDIT: ${{ needs.npm-audit.result }}
+          REPO: ${{ forgejo.repository }}
+          # The web UI numbers runs by run_number; run_id is a different, instance-wide id.
+          RUN_URL: ${{ forgejo.server_url }}/${{ forgejo.repository }}/actions/runs/${{ forgejo.run_number }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "DISCORD_WEBHOOK secret is not set" >&2
+            exit 1
+          fi
+
+          if [ "$VULN" = "success" ] && [ "$NPM_AUDIT" = "success" ]; then
+            COLOR=3066993;  TITLE="Nightly run passed"
+          else
+            COLOR=15158332; TITLE="Nightly run FAILED"
+          fi
+
+          DESC="**$REPO**\ngovulncheck: $VULN\nnpm audit: $NPM_AUDIT\n[View run]($RUN_URL)"
+
+          curl -fsS -H "Content-Type: application/json" \
+            -d "{\"embeds\":[{\"title\":\"$TITLE\",\"description\":\"$DESC\",\"color\":$COLOR}]}" \
+            "$WEBHOOK"

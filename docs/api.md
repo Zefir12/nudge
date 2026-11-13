@@ -32,8 +32,14 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | POST | `/api/v1/auth/logout` | public | end the session and clear the cookie; `204` (a no-op for API tokens), or `200 {"logout_url": "..."}` for a single sign-on user: the provider's sign-out page to visit next |
 | GET | `/api/v1/auth/me` | user | the logged-in user |
 | GET | `/api/v1/auth/methods` | public | the login page's ways to sign in; see Single sign-on |
-| GET | `/api/v1/auth/oidc/login` | public | start a single sign-on login (a browser navigation); see Single sign-on |
-| GET | `/api/v1/auth/oidc/callback` | public | the provider's redirect back; starts the session |
+| GET | `/api/v1/auth/oidc/{provider}/login` | public | start a single sign-on login through a provider (a browser navigation); see Single sign-on |
+| GET | `/api/v1/auth/oidc/{provider}/callback` | public | that provider's redirect back; starts the session |
+| GET | `/api/v1/auth/oidc/login`, `/api/v1/auth/oidc/callback` | public | the same for the `NUDGE_OIDC_*` provider, whose registered redirect URI this is |
+| GET | `/api/v1/oidc-providers` | admin | `{"callback_prefix": "...", "providers": [...]}`; see SSO providers |
+| POST | `/api/v1/oidc-providers` | admin, session only | add a provider; `201` |
+| GET | `/api/v1/oidc-providers/{id}` | admin | one provider |
+| PUT | `/api/v1/oidc-providers/{id}` | admin, session only | replace a provider's settings, or disable it |
+| DELETE | `/api/v1/oidc-providers/{id}` | admin, session only | delete a provider; `204` |
 | GET | `/api/v1/tokens` | user | the user's API tokens, oldest first; see below |
 | POST | `/api/v1/tokens` | user, session only | create an API token `{"name": "ci"}`; `201` |
 | DELETE | `/api/v1/tokens/{id}` | user | revoke one of the user's tokens; `204`, or `404` |
@@ -105,6 +111,7 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | PUT | `/api/v1/environments/{env}/stacks/{name}/git` | session | take the compose file from a repository and read it now; see Stacks from git |
 | DELETE | `/api/v1/environments/{env}/stacks/{name}/git` | session | detach from the repository, keeping the files; `204` |
 | POST | `/api/v1/environments/{env}/stacks/{name}/git/pull` | session | get the files from the repository and deploy them, output as JSON lines |
+| GET | `/api/v1/environments/{env}/stacks/{name}/git/env-example` | session | the repository's env file (`env_path`) at the head of the ref, for the .env editor; see Stacks from git |
 | GET | `/api/v1/environments/{env}/updates` | session | the last image update check; see Image updates |
 | POST | `/api/v1/environments/{env}/updates/check` | session | check the environment's images now |
 | GET | `/api/v1/environments/{env}/updates/history` | session | updates made through nudge, with the image each replaced |
@@ -140,28 +147,62 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 Add a row (and a section below, for anything non-trivial) with every new endpoint.
 
 ### Single sign-on
-With an OpenID Connect provider configured (docs/config/server.md, Single sign-on):
+With OpenID Connect providers configured (docs/config/server.md, Single sign-on):
 
-- `GET /api/v1/auth/methods` answers `{"password": true, "oidc": {"name": "Authestra"}}`;
-  `oidc` is `null` without single sign-on, `password` is false with
+- `GET /api/v1/auth/methods` answers
+  `{"password": true, "providers": [{"id": "authestra", "name": "Authestra"}]}`, the enabled
+  providers with the `NUDGE_OIDC_*` one (id `env`) first; `password` is false with
   `NUDGE_PASSWORD_LOGIN=false`.
-- `GET /api/v1/auth/oidc/login?redirect=/path` sets a binding cookie `nudge_oidc`
+- `GET /api/v1/auth/oidc/{provider}/login?redirect=/path` sets a binding cookie `nudge_oidc`
   (`HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/api/v1/auth/oidc`, 10 minutes) and
   answers `302` to the provider. `redirect` must be a path on this site, else `/`.
-- `GET /api/v1/auth/oidc/callback?state=...&code=...` needs the state (one use, 10
-  minutes) and the binding cookie of the browser that started the login. Success sets the
+- `GET /api/v1/auth/oidc/{provider}/callback?state=...&code=...` needs the state (one use, 10
+  minutes, of a login started at this provider, unchanged since) and the binding cookie of
+  the browser that started the login. Success sets the
   session cookie and answers `302` to the saved path. A failure answers `302` to
   `/login?error=sso`; a valid sign-in without the admin or user role (or without `mfa` in `amr`
-  when MFA is required) answers a `403` page. Both are audited as
-  `GET /api/v1/auth/oidc/callback` with the subject as target. A sign-in refused for having
+  when MFA is required) answers a `403` page. Both are audited under the route with
+  the subject as target. A sign-in refused for having
   no role also ends every session and deletes every API token of that SSO user (if they
   signed in before); its audit entry names the nudge user and says how many were revoked.
   Every attempt counts against the per-IP credential limit until it succeeds.
+- `GET /api/v1/auth/oidc/login` and `GET /api/v1/auth/oidc/callback` do the same for the
+  `NUDGE_OIDC_*` provider.
 - The session cookie stays `SameSite=Strict`: the callback's redirect follows the
   provider's cross-site navigation, so the cookie isn't sent with that one request, but it
   loads only the web UI, whose own API calls are same-site.
-- `POST /api/v1/setup` answers `403`, and `GET /api/v1/setup` always `{"needed":false}`.
-- Without single sign-on both `oidc` routes are `404`.
+- With any provider enabled, `POST /api/v1/setup` answers `403`, and `GET /api/v1/setup`
+  always `{"needed":false}`.
+- The `oidc` routes of an unknown or disabled provider are `404`.
+
+### SSO providers
+Admin only. The writes need a session (API tokens get `403`, like other routes that decide
+who can sign in) and are audited; the audit target names the provider and, when users lost
+access, how much was revoked.
+
+A provider is
+`{"id": "authestra", "name": "Authestra", "issuer": "https://auth.example.net", "client_id": "nudge", "admin_role": "admin", "user_role": "user", "require_mfa": false, "session_ttl_minutes": 720, "enabled": true, "read_only": false, "secret_unreadable": false, "callback_url": "https://nudge.example.net/api/v1/auth/oidc/authestra/callback", "created_at": "...", "updated_at": "..."}`.
+`client_secret` is write-only: no answer ever has it. `read_only` marks the `NUDGE_OIDC_*`
+provider (id `env`, no timestamps), which `PUT` and `DELETE` refuse with `409`.
+`secret_unreadable` means the stored secret can't be decrypted (another `secret.key`): the
+provider is out of use until a `PUT` gives the secret again.
+
+- `GET /api/v1/oidc-providers` also has `callback_prefix`, what a new provider's callback URL
+  starts with (its id and `/callback` follow), empty without an `https://` public URL.
+- `POST` takes `name`, `issuer` (`https://`), `client_id`, `client_secret`, `admin_role` (all
+  required), `id` (lowercase letters, digits and dashes, up to 40; by default from the name;
+  fixed from then on, as it is in the callback URL), `user_role` (empty signs in admins only),
+  `require_mfa`, `session_ttl_minutes` (5 to 43200, default 720) and `enabled` (default true).
+  `400` on invalid input or without an `https://` public URL; `409` if another provider has
+  the id, the name or the issuer: there is one provider per issuer.
+- `PUT` takes the same without `id`. A missing `client_secret` keeps the stored one (`400` if
+  `issuer` or `client_id` changes: the secret must be given again); a missing `enabled` keeps
+  the state; a missing `session_ttl_minutes` is 720.
+- `enabled: false`, another `issuer` and `DELETE` take the provider away from its users: in
+  one transaction all their sessions end and their API tokens are deleted. Their accounts
+  stay. `409` if that would leave no enabled admin able to sign in (a local admin with a
+  password, or an SSO admin of a provider still enabled), or no enabled provider with
+  `NUDGE_PASSWORD_LOGIN=false`. Other changes apply from the next login.
 
 ### Setup and login
 `POST /api/v1/setup` and `POST /api/v1/auth/login` take
@@ -930,7 +971,7 @@ stack, as on any stack (`./config` next to the compose file is not there).
   - `poll_seconds`: 0 (off, default), or 60 to 86400. See below.
 
   `400` for a refused source; `502` with nudge's own words if the repository can't be read
-  or lacks the file (a clone may take 256 MiB and 2 minutes). The remote's words are only logged.
+  or lacks the file (a clone may take 256 MiB and 2 minutes, and no object in it may inflate past 128 MiB). The remote's words are only logged.
 - `GET .../stacks/{name}` adds `git`: the fields above without `secret`, plus `commit`,
   `last_error`, `checked_at` and `pulled_at`. `commit` is the commit of the stack's files.
 - `PUT .../stacks/{name}` on such a stack answers `409` if `compose` differs; `env` can
@@ -945,6 +986,11 @@ stack, as on any stack (`./config` next to the compose file is not there).
   deploys when it moved past the commit last seen. A commit whose deploy failed isn't retried;
   a newer one is, and so is a pull by hand. Polling skips health checks: use a deployment
   for those. Its audit entries and updates are under `git-poll`.
+- `GET .../stacks/{name}/git/env-example` reads the stack's `env_path` file at the head of
+  its ref and answers `{"path", "commit", "content"}`; it changes nothing (not the stack's
+  files, nor `commit`). `404` if the stack has no git source or no `env_path`; `502` as
+  above if the repository can't be read. The web UI's .env form editor shows its variables
+  in its order with their comments.
 - `DELETE .../stacks/{name}/git` detaches; the stack keeps its files and can be edited again.
 
 ### Registries

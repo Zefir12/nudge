@@ -99,8 +99,16 @@ refuses `ws://` unless `NUDGE_INSECURE=1`.
   front of nudge, which read the `login failed` log line. Guesses at other credentials
   (webhook secrets, deploy tokens, SSO callbacks) are limited per IP, with bounded memory.
 - Roles, ownership, allowances and users' containers: see [Permission model](#permission-model-multi-user-118).
-- Single sign-on (#110, internal/oidc): one OpenID Connect provider, nudge a confidential
-  client (authorization code + PKCE S256, `client_secret_basic`). Discovery, JWKS and ID
+- Single sign-on (#110, #194; internal/oidc, internal/oidcproviders): several OpenID Connect
+  providers side by side, each with its own `oidc.Client` and callback URL, so a state started
+  at one is unknown at another. The `NUDGE_OIDC_*` one stays read-only in the environment;
+  the others are in `oidc_providers`, their client secret sealed with secretbox and bound to
+  the provider's id and issuer, so a database edit can't send it elsewhere, and an API
+  change of issuer or client ID must give it again. Taking a provider away (disable, delete,
+  new issuer) revokes its users' sessions and API tokens in the transaction of the change,
+  and is refused if no admin could sign in afterwards; `oidcproviders.Service.Complete`
+  holds a read lock across session creation so a login can't slip past that. nudge is a
+  confidential client (authorization code + PKCE S256, `client_secret_basic`). Discovery, JWKS and ID
   token checks are go-oidc's (RS256 only, issuer, audience, expiry against the injected
   clock, one JWKS refetch on an unknown kid); nudge checks the nonce, `azp`, `iat`, the
   admin or user role in `roles` and, optionally, `mfa` in `amr`. Discovery is lazy (nudge starts
@@ -110,7 +118,7 @@ refuses `ws://` unless `NUDGE_INSECURE=1`.
   and a capped body. Users are matched by issuer + `sub`, never by name or email (after a
   provider change an admin re-links the new identity to the old user explicitly); they
   have no password, and their sessions are nudge sessions capped by
-  `NUDGE_OIDC_SESSION_TTL`. With SSO, setup is off; `NUDGE_PASSWORD_LOGIN=false` keeps
+  the provider's session TTL. With SSO, setup is off; `NUDGE_PASSWORD_LOGIN=false` keeps
   password login only for the local break-glass `admin`.
 - Deploy webhooks (`POST /api/v1/hooks/{id}`, internal/deployhooks): a public route whose
   credential is the webhook's own secret, as a bearer token or as the key of an
@@ -146,10 +154,10 @@ object or setting is the admins' until something explicitly opens it to users.
   Users page (`users.go`).
 - SSO users (`internal/oidc`, see the Single sign-on bullet in Auth) get their role from
   the ID token's `roles` claim on every login: `NUDGE_OIDC_ADMIN_ROLE` makes an admin,
-  `NUDGE_OIDC_USER_ROLE` a user, neither refuses the login (audited). They are matched by
+  `NUDGE_OIDC_USER_ROLE` a user (a provider added in the UI has its own two roles), neither refuses the login (audited). They are matched by
   issuer + `sub` only and never linked to a local account, so a provider account can't
   take over a local one by name or email. The role is fixed at login: a demotion at the
-  provider takes effect at the next login or when `NUDGE_OIDC_SESSION_TTL` ends the
+  provider takes effect at the next login or when the provider's session TTL ends the
   session; disabling the user in nudge ends it at once.
 - Credentials carry their user's role: a session, an API token (its owner's role), a
   deploy token or deploy webhook (its creator's, checked on every use). A disabled user's
@@ -383,7 +391,13 @@ environment works alike and agents have no git code or credentials.
   regular files are accepted, and no clone stays around to manage. The price: extra files
   in the repository aren't available to the stack.
 - **Bounds:** the clone's writes go through a counting filesystem (`limitFS`, 256 MiB),
-  everything is under a 2 minute context, and go-git's object cache is capped.
+  everything is under a 2 minute context, and go-git's object cache is capped. To index a
+  pack, go-git inflates each object into memory, so a blob of 1 GiB of zeros takes 1 MiB of
+  disk and 1 GiB of memory. `packChecker` reads the pack as it arrives, in streaming
+  fashion, and fails the pull if an object inflates past 128 MiB (a delta counts as its
+  target). It holds back the pack's tail until the check has passed, as go-git only
+  starts inflating into memory once it has every object. That leaves a clone's peak memory at a
+  few times the largest object it accepts.
 - **Credentials** are sealed with the secretbox like registry passwords, and only carry
   over on a change if they'd go to the same place. SSH host keys come only from the source's
   `known_hosts`: a wrong compose file is root on the host, so there is no trust on first use,

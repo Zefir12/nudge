@@ -22,6 +22,7 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/environments"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/gitstacks"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/notify"
+	"git.zefirlabs.net/zefir/nudge/backend/internal/oidcproviders"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/registries"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/secretbox"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/store"
@@ -48,6 +49,13 @@ func newTestHandlerWith(t *testing.T, connect environments.ConnectFunc) (http.Ha
 
 // newTestHandlerOpts is newTestHandlerWith with mod changing the options, if not nil.
 func newTestHandlerOpts(t *testing.T, connect environments.ConnectFunc, mod func(*Options)) (http.Handler, *auth.Service, *sql.DB) {
+	t.Helper()
+	return newTestHandlerSSO(t, connect, nil, mod)
+}
+
+// newTestHandlerSSO is newTestHandlerOpts with ssoMod changing the SSO service's options,
+// if not nil.
+func newTestHandlerSSO(t *testing.T, connect environments.ConnectFunc, ssoMod func(*oidcproviders.Options), mod func(*Options)) (http.Handler, *auth.Service, *sql.DB) {
 	t.Helper()
 	st, err := store.Open(context.Background(), t.TempDir())
 	if err != nil {
@@ -84,6 +92,14 @@ func newTestHandlerOpts(t *testing.T, connect environments.ConnectFunc, mod func
 		Usage:      usage.New(usage.Options{DB: st.DB(), Envs: envs, Clock: fixedClock{now}}),
 		Allowances: allowances.New(allowances.Options{DB: st.DB(), Now: func() time.Time { return now }}),
 		GitStacks:  gitstacks.New(gitstacks.Options{DB: st.DB(), Box: box, TempDir: t.TempDir(), AllowFile: true, Now: func() time.Time { return now }}),
+	}
+	ssoOpts := oidcproviders.Options{DB: st.DB(), Box: box, Auth: svc, PublicURL: "https://nudge.example.net"}
+	if ssoMod != nil {
+		ssoMod(&ssoOpts)
+	}
+	opts.SSO = oidcproviders.New(ssoOpts)
+	if err := opts.SSO.Load(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 	if mod != nil {
 		mod(&opts)

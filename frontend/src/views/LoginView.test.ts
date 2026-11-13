@@ -71,31 +71,51 @@ describe('LoginView sign-in methods', () => {
   it('offers SSO next to the password form', async () => {
     stubApi({
       'GET /setup': { body: { needed: false } },
-      'GET /auth/methods': { body: { password: true, oidc: { name: 'Authestra' } } },
+      'GET /auth/methods': { body: { password: true, providers: [{ id: 'authestra', name: 'Authestra' }] } },
     });
     const { wrapper } = await mountAt('/login?redirect=/env/local/stacks');
     await flushPromises();
     const sso = wrapper.find('a.sso');
     expect(sso.text()).toBe('Log in with Authestra');
-    expect(sso.attributes('href')).toBe('/api/v1/auth/oidc/login?redirect=%2Fenv%2Flocal%2Fstacks');
+    expect(sso.attributes('href')).toBe('/api/v1/auth/oidc/authestra/login?redirect=%2Fenv%2Flocal%2Fstacks');
     expect(wrapper.find('form').exists()).toBe(true);
+  });
+
+  it('offers one button per provider', async () => {
+    stubApi({
+      'GET /setup': { body: { needed: false } },
+      'GET /auth/methods': {
+        body: {
+          password: false,
+          providers: [
+            { id: 'a', name: 'Alpha' },
+            { id: 'b', name: 'Beta' },
+          ],
+        },
+      },
+    });
+    const { wrapper } = await mountAt('/login');
+    await flushPromises();
+    const links = wrapper.findAll('a.sso');
+    expect(links.map((l) => l.text())).toEqual(['Log in with Alpha', 'Log in with Beta']);
+    expect(links[1]!.attributes('href')).toBe('/api/v1/auth/oidc/b/login?redirect=%2F');
   });
 
   it('hides the password form when password login is off', async () => {
     stubApi({
       'GET /setup': { body: { needed: false } },
-      'GET /auth/methods': { body: { password: false, oidc: { name: 'SSO' } } },
+      'GET /auth/methods': { body: { password: false, providers: [{ id: 'env', name: 'SSO' }] } },
     });
     const { wrapper } = await mountAt('/login?redirect=//evil.example');
     await flushPromises();
     expect(wrapper.find('form').exists()).toBe(false);
-    expect(wrapper.find('a.sso').attributes('href')).toBe('/api/v1/auth/oidc/login?redirect=%2F');
+    expect(wrapper.find('a.sso').attributes('href')).toBe('/api/v1/auth/oidc/env/login?redirect=%2F');
   });
 
   it('shows the password form for the break-glass admin with ?password', async () => {
     stubApi({
       'GET /setup': { body: { needed: false } },
-      'GET /auth/methods': { body: { password: false, oidc: { name: 'SSO' } } },
+      'GET /auth/methods': { body: { password: false, providers: [{ id: 'env', name: 'SSO' }] } },
     });
     const { wrapper } = await mountAt('/login?password');
     await flushPromises();
@@ -105,7 +125,7 @@ describe('LoginView sign-in methods', () => {
   it('shows a generic error after a failed SSO login', async () => {
     stubApi({
       'GET /setup': { body: { needed: false } },
-      'GET /auth/methods': { body: { password: true, oidc: { name: 'SSO' } } },
+      'GET /auth/methods': { body: { password: true, providers: [{ id: 'env', name: 'SSO' }] } },
     });
     const { wrapper } = await mountAt('/login?error=sso');
     await flushPromises();
