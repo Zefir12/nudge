@@ -24,6 +24,7 @@ const example = shallowRef<StackEnvExample | null>(null);
 const form = shallowRef<EnvForm | null>(null);
 const fields = ref<EnvVar[]>([]);
 const others = ref<EnvVar[]>([]);
+const dropped = ref<string[]>([]);
 // shown holds the field keys whose secret value is shown.
 const shown = reactive(new Set<string>());
 
@@ -32,6 +33,7 @@ function use(f: EnvForm) {
   // The form's own objects, made reactive, so build() sees what was typed.
   fields.value = f.fields;
   others.value = f.others;
+  dropped.value = f.dropped;
 }
 
 async function load() {
@@ -84,6 +86,10 @@ function apply() {
       <p v-if="example" class="muted">
         Variables of <code>{{ example.path }}</code> at <code>{{ shortCommit(example.commit) }}</code
         >, valued from the .env or else from the example.
+      </p>
+      <p v-if="dropped.length" class="warning" role="note">
+        The .env sets {{ dropped.join(', ') }} more than once. The form uses the last line for each; Apply
+        leaves the earlier ones out.
       </p>
       <p v-if="!fields.length && !others.length" class="muted">The .env has no variables.</p>
       <template v-for="(section, s) in [fields, others]" :key="s">
@@ -146,6 +152,12 @@ h3 {
 
 p {
   margin: 0;
+}
+
+.warning {
+  padding: 0.4rem 0.6rem;
+  border-radius: 4px;
+  background: var(--warn-soft);
 }
 
 .var {

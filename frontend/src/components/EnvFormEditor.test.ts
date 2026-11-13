@@ -43,6 +43,16 @@ describe('EnvFormEditor', () => {
     expect(applied(w)).toBe('# the port\nPORT=81\nDEBUG=false\n\nEXTRA=1\n');
   });
 
+  it('says which repeated .env variables lose their earlier lines', async () => {
+    const w = await mountForm('PORT=1\nPORT=2\n', 'PORT=8080\n');
+    expect(w.find('[role="note"]').text()).toContain('sets PORT more than once');
+    expect((w.find('#env-0-0').element as HTMLInputElement).value).toBe('2');
+    await w.find('form').trigger('submit');
+    expect(applied(w)).toBe('PORT=2\n');
+    const plain = await mountForm('PORT=1\n', 'PORT=8080\n');
+    expect(plain.find('[role="note"]').exists()).toBe(false);
+  });
+
   it('masks secret-looking values with a show/hide toggle', async () => {
     const w = await mountForm('DB_PASSWORD=s3cret\nPORT=80\n');
     const secret = w.find('#env-0-0');

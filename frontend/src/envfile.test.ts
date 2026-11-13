@@ -29,6 +29,14 @@ describe('parseLine', () => {
     ['A=""', 'A', '', '"', false, ''],
     ['A="\\q"', 'A', '\\q', '"', false, ''],
     ['my.var-1=x', 'my.var-1', 'x', '', false, ''],
+    ['A= # note', 'A', '', '', false, ' # note'],
+    ['A=   # note', 'A', '', '', false, '   # note'],
+    ['A= x', 'A', 'x', '', false, ''],
+    ['A=1\r', 'A', '1', '', false, '\r'],
+    ['A="x" # n\r', 'A', 'x', '"', false, ' # n\r'],
+    ["A='x'\r", 'A', 'x', "'", false, '\r'],
+    ['A=\r', 'A', '', '', false, '\r'],
+    ['A="\\$x"', 'A', '\\$x', '"', false, ''],
   ])('reads %s', (line, name, value, quote, exported, trailing) => {
     expect(parseLine(line)).toEqual({ name, value, quote, exported, trailing });
   });
@@ -60,13 +68,41 @@ describe('parseEnv', () => {
     'A="multi\nline"\nB=2\n',
     'garbage line\n  # indented comment\n  A = 1  \r\n',
     'A=1\nA=2\n',
+    'A=1\r\n# c\r\nB="x"\r\n',
+    'K="-----BEGIN KEY-----\nabc\n\n-----END KEY-----"\nB=2\n',
+    "K='one\r\ntwo'\r\n",
+    'K="never closed\n\nB=2\n',
+    'K="closed" junk\nB=2\n',
   ])('round-trips %j exactly', (text) => {
     expect(serializeEnv(parseEnv(text))).toBe(text);
     expect(formFromEnv(text).build()).toBe(text);
   });
 
-  it('keeps a multi-line value as text, not as a field', () => {
-    expect(vars('A="multi\nline"\nB=2\n').map((v) => v.name)).toEqual(['B']);
+  it('reads a quoted value over several lines as one variable', () => {
+    const vs = vars('# pem\nK="-----BEGIN-----\nabc\n\n-----END-----" # n\nB=2\n');
+    expect(vs.map((v) => [v.name, v.value, v.comments, v.trailing])).toEqual([
+      ['K', '-----BEGIN-----\nabc\n\n-----END-----', ['# pem'], ' # n'],
+      ['B', '2', [], ''],
+    ]);
+    expect(vars("K='a\r\nb'\r\n")[0]).toMatchObject({ value: 'a\nb', trailing: '\r' });
+  });
+
+  it('keeps an unclosed quoted value as one raw block of text', () => {
+    const doc = parseEnv('# c\nK="open\n\nB=2\n');
+    expect(doc.items).toEqual([
+      { kind: 'text', lines: ['# c'] },
+      { kind: 'text', lines: ['K="open', '', 'B=2'], raw: true },
+    ]);
+  });
+
+  it('reads the variables of a CRLF file', () => {
+    expect(vars('A=1\r\n# c\r\nB="x y"\r\n').map((v) => [v.name, v.value, v.comments])).toEqual([
+      ['A', '1', []],
+      ['B', 'x y', ['# c\r']],
+    ]);
+    const form = formFromEnv('A=1\r\nB=2\r\n');
+    form.fields[0]!.value = 'a b';
+    expect(form.build()).toBe('A="a b"\r\nB=2\r\n');
   });
 });
 
@@ -85,24 +121,48 @@ describe('formatLine', () => {
     [{ ...base, quote: "'" as const }, 'a $b', "A='a $b'"],
     [{ ...base, quote: "'" as const }, "it's", 'A="it\'s"'],
     [{ ...base, quote: '"' as const }, 'x', 'A="x"'],
+    [{ ...base, quote: "'" as const }, "pa$$w'x", 'A="pa$$$$w\'x"'],
+    [{ ...base, quote: "'" as const }, "a\\$'", 'A="a\\\\$$\'"'],
+    [{ ...base, quote: '"' as const }, 'p\\$x', 'A="p\\$x"'],
+    [{ ...base, quote: '"' as const }, 'a\\nb\\', 'A="a\\\\nb\\\\"'],
+    [{ ...base, trailing: '\r' }, 'a b', 'A="a b"\r'],
   ])('writes %j with %j', (v, value, want) => {
     expect(formatLine(v, value)).toBe(want);
   });
 
-  it.each(['plain', '', 'a b', ' lead', 'a#b', 'q"q', "s'q", 'back\\slash', 'two\nlines', 'tab\there', '$X'])(
-    'reads back %j as written',
-    (value) => {
-      for (const quote of ['', '"', "'"] as const) {
-        for (const trailing of ['', ' # note']) {
-          const line = formatLine({ name: 'A', quote, exported: false, trailing }, value);
-          expect(parseLine(line)?.value, line).toBe(value);
-        }
+  it.each([
+    'plain',
+    '',
+    'a b',
+    ' lead',
+    'a#b',
+    'q"q',
+    "s'q",
+    'back\\slash',
+    'two\nlines',
+    'tab\there',
+    '$X',
+    '\\$X',
+    '\\\\$X',
+    'end\\',
+  ])('reads back %j as written', (value) => {
+    for (const quote of ['', '"', "'"] as const) {
+      for (const trailing of ['', ' # note']) {
+        const line = formatLine({ name: 'A', quote, exported: false, trailing }, value);
+        expect(parseLine(line)?.value, line).toBe(value);
       }
-    },
-  );
+    }
+  });
 });
 
 describe('formFromEnv', () => {
+  it('keeps an unchanged \\$ escape when a value is rewritten', () => {
+    const form = formFromEnv('A="p\\$x"\n');
+    expect(form.fields[0]!.value).toBe('p\\$x');
+    form.fields[0]!.value += 'y';
+    expect(form.build()).toBe('A="p\\$xy"\n');
+  });
+
   it('rewrites only the changed variable, in place', () => {
     const form = formFromEnv('# c\nA=1 # one\n\nB="x"\n');
     expect(form.fields.map((f) => f.name)).toEqual(['A', 'B']);
@@ -140,6 +200,57 @@ describe('formFromExample', () => {
       '# App settings\n\n# the port\nPORT=80\n# db password\nDB_PASSWORD=\nDEBUG=false\n\n' +
         '# mine\nEXTRA=2\n# about port\nOTHER="a b"\n# loose note\nnot a var\n',
     );
+  });
+
+  it('keeps a multi-line value whole, as one field, when the example names it', () => {
+    const pem = 'K="-----BEGIN-----\nabc\n\n# PORT=8080\n-----END-----"';
+    const ex = '# the port\nPORT=8080\n# key\nK=\n';
+    const form = formFromExample(`${pem}\nPORT=81\n`, ex);
+    expect(form.fields.map((f) => [f.name, f.value])).toEqual([
+      ['PORT', '81'],
+      ['K', '-----BEGIN-----\nabc\n\n# PORT=8080\n-----END-----'],
+    ]);
+    expect(form.others).toEqual([]);
+    const built = form.build();
+    expect(built).toBe(`# the port\nPORT=81\n# key\n${pem}\n`);
+    expect(built.match(/^K=/gm)).toHaveLength(1);
+    expect(formFromExample(built, ex).build()).toBe(built);
+  });
+
+  it('keeps an unclosed quoted value whole at the bottom', () => {
+    const form = formFromExample('K="open\n\nPORT=8080\n', example);
+    expect(form.build()).toBe(
+      '# App settings\n\n# the port\nPORT=8080\n# db password\nDB_PASSWORD=\nDEBUG=false\n\n' +
+        'K="open\n\nPORT=8080\n',
+    );
+  });
+
+  it('uses the last of a repeated .env variable and says the earlier ones are dropped', () => {
+    const form = formFromExample('PORT=1\nDEBUG=true\nPORT=2\nX=1\nX=2\n', example);
+    expect(form.fields.map((f) => [f.name, f.value])).toEqual([
+      ['PORT', '2'],
+      ['DB_PASSWORD', ''],
+      ['DEBUG', 'true'],
+    ]);
+    expect(form.dropped).toEqual(['PORT']);
+    // Repeats of a variable the example lacks stay as written, in order.
+    expect(form.others.map((o) => [o.name, o.value])).toEqual([
+      ['X', '1'],
+      ['X', '2'],
+    ]);
+    expect(form.build()).toContain('# the port\nPORT=2\n');
+    expect(form.build()).not.toContain('PORT=1');
+    expect(formFromExample('PORT=1\n', example).dropped).toEqual([]);
+  });
+
+  it('makes one field of a name the example repeats', () => {
+    const ex = '# first\nA=1\nB=2\n# again\nA=3\n';
+    const form = formFromExample('A=9\n', ex);
+    expect(form.fields.map((f) => [f.name, f.value, f.comments])).toEqual([
+      ['A', '9', ['# first']],
+      ['B', '2', []],
+    ]);
+    expect(form.build()).toBe('# first\nA=9\nB=2\n# again\n');
   });
 
   it('is stable: building from what it built gives the same text', () => {
