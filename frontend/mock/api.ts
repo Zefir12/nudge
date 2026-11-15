@@ -927,14 +927,16 @@ const routes: Route[] = [
     'GET',
     new RegExp(`^${envRe}/stacks/([^/]+)/git/env-example$`),
     withEnv((env, m) => {
+      // A git stack without env_path reads the repository's .env.example instead.
       const s = found(
-        stacks(env).find((s) => s.name === m[2] && s.git?.env_path),
+        stacks(env).find((s) => s.name === m[2] && s.git),
         'stack',
       );
       return {
-        path: s.git!.env_path,
+        path: s.git!.env_path || '.env.example',
         commit: s.git!.commit,
         content: envExample,
+        kind: s.git!.env_path ? 'env' : 'example',
       };
     }),
   ],

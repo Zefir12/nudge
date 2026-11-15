@@ -123,6 +123,43 @@ func TestFetchRefs(t *testing.T) {
 	}
 }
 
+func TestFetchExample(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	tests := []struct {
+		name    string
+		files   map[string]string
+		envPath string
+		path    string
+		want    string
+	}{
+		{"next to the compose file", map[string]string{"deploy/.env.example": "A=1\n", ".env.example": "B=2\n"}, "", "deploy/.env.example", "A=1\n"},
+		{"at the root", map[string]string{".env.example": "B=2\n"}, "", ".env.example", "B=2\n"},
+		{"none", map[string]string{}, "", "", ""},
+		{"a directory is no example", map[string]string{"deploy/.env.example/x": "A=1\n"}, "", "", ""},
+		{"an env file comes instead", map[string]string{".env.example": "B=2\n", "deploy/env": "C=3\n"}, "deploy/env", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			repo := gitstackstest.New(t)
+			files := map[string]string{"deploy/compose.yaml": composeText}
+			for k, v := range tt.files {
+				files[k] = v
+			}
+			repo.Commit(files)
+			src := f.prepare(t, gitstacks.Input{RepoURL: repo.URL, ComposePath: "deploy/compose.yaml", EnvPath: tt.envPath})
+			res, err := f.svc.Fetch(context.Background(), src)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.ExamplePath != tt.path || res.Example != tt.want {
+				t.Fatalf("example = %q %q, want %q %q", res.ExamplePath, res.Example, tt.path, tt.want)
+			}
+		})
+	}
+}
+
 func TestFetchRefusals(t *testing.T) {
 	t.Parallel()
 	repo := gitstackstest.New(t)

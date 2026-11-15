@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue
 import { onBeforeRouteLeave, RouterLink, useRouter } from 'vue-router';
 
 import {
+  ApiError,
   downStack,
   emptyStackGit,
   getStack,
@@ -213,10 +214,20 @@ async function onDetachGit() {
 }
 
 const editor = ref<InstanceType<typeof StackEditor> | null>(null);
-// loadEnvExample reads the repository's env file for the .env form editor, if it has one.
-const loadEnvExample = computed(() =>
-  stack.value?.git?.env_path ? () => getStackEnvExample(env.value, id.value) : undefined,
-);
+// loadEnvExample reads the repository's env file (env_path, or else a .env.example) for
+// the .env form editor; null if a stack without env_path has no .env.example.
+const loadEnvExample = computed(() => {
+  const g = stack.value?.git;
+  if (!g) return undefined;
+  return async () => {
+    try {
+      return await getStackEnvExample(env.value, id.value);
+    } catch (e) {
+      if (!g.env_path && e instanceof ApiError && e.status === 404) return null;
+      throw e;
+    }
+  };
+});
 const saveError = ref('');
 const saveResult = ref('');
 

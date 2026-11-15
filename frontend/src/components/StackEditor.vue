@@ -17,7 +17,7 @@ const env = defineModel<string>('env', { required: true });
 defineProps<{
   disabled?: boolean;
   composeFromGit?: boolean;
-  loadEnvExample?: () => Promise<StackEnvExample>;
+  loadEnvExample?: () => Promise<StackEnvExample | null>;
 }>();
 
 // envForm opens the .env form editor; it hands back the rebuilt text.
