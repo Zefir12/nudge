@@ -9,15 +9,16 @@ import {
   formFromEnv,
   formFromExample,
   formWithHints,
-  isSecretName,
+  isSecret,
 } from '../envfile';
 
 // EnvFormEditor edits a .env as a form: one field per variable with its comments above
 // it. With loadExample giving a git stack's env file (kind "env") the fields follow it,
 // and the .env's own variables follow under "Other variables". Given a .env.example
-// (kind "example"), or nothing, the .env's variables are in place; an example's variables
-// the .env doesn't set follow under "Not set yet", empty with the example's value as a
-// hint, and only those filled in are added. apply hands back the rebuilt text; nothing
+// (kind "example"), or nothing, the .env's variables are in place; its commented-out
+// variables ("# KEY=value") and an example's variables the .env doesn't set (commented-out
+// ones included) follow under "Not set yet", empty with the example's value as a hint,
+// and only those filled in are set. apply hands back the rebuilt text; nothing
 // is saved here.
 const props = defineProps<{ env: string; loadExample?: () => Promise<StackEnvExample | null> }>();
 const emit = defineEmits<{ apply: [env: string]; cancel: [] }>();
@@ -70,7 +71,9 @@ function withoutExample() {
 
 onMounted(load);
 
-const masked = (key: string, v: EnvVar) => isSecretName(v.name) && !shown.has(key);
+// secret masks a field by its name and value (see isSecret).
+const secret = (v: EnvVar) => isSecret(v.name, v.value);
+const masked = (key: string, v: EnvVar) => secret(v) && !shown.has(key);
 const toggle = (key: string) => (shown.has(key) ? shown.delete(key) : shown.add(key));
 const multiline = (v: EnvVar) => v.value.includes('\n');
 const shortCommit = (c: string) => c.slice(0, 12);
@@ -111,7 +114,7 @@ function apply() {
         </p>
         <h3 v-if="s === 2 && unset.length">Not set yet</h3>
         <p v-if="s === 2 && unset.length" class="muted">
-          In the example but not in the .env. Fill one in to add it; empty ones stay unset.
+          Commented out in the .env or only in the example. Fill one in to set it; empty ones stay unset.
         </p>
         <div v-for="(v, i) in section" :key="`${s}-${i}`" class="var">
           <label :for="`env-${s}-${i}`">
@@ -136,7 +139,7 @@ function apply() {
               spellcheck="false"
             />
             <button
-              v-if="isSecretName(v.name) && !multiline(v)"
+              v-if="secret(v) && !multiline(v)"
               type="button"
               class="toggle"
               :aria-label="`${masked(`${s}-${i}`, v) ? 'Show' : 'Hide'} ${v.name}`"

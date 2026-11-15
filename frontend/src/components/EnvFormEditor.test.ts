@@ -73,6 +73,43 @@ describe('EnvFormEditor', () => {
     expect(secret.attributes('type')).toBe('password');
   });
 
+  it('masks secrets by name and value, not booleans', async () => {
+    const w = await mountForm(
+      'SupabaseSync__ConnectionString=Host=h;Password=p\nAccountTokens__Enabled=true\nDATABASE_URL=postgresql://u:p@db/app\nSECRET_ON=true\n',
+    );
+    expect(w.findAll('input').map((i) => i.attributes('type'))).toEqual([
+      'password',
+      'text',
+      'password',
+      'text',
+    ]);
+  });
+
+  it('offers commented-out variables of the .env and an example under Not set yet', async () => {
+    const w = await mountForm(
+      '# the proxy\n# KnownProxies__0=\nPORT=81\n',
+      '# Optional: OIDC\n# Oidc__Enabled=true\n# Oidc__ClientSecret=\n',
+      'example',
+    );
+    expect(w.findAll('.name').map((n) => n.text())).toEqual([
+      'PORT',
+      'KnownProxies__0',
+      'Oidc__Enabled',
+      'Oidc__ClientSecret',
+    ]);
+    expect(w.find('label[for="env-2-0"]').text()).toContain('the proxy');
+    expect(w.find('#env-2-1').attributes('placeholder')).toBe('true');
+    expect(w.find('#env-2-2').attributes('type')).toBe('password');
+    await w.find('form').trigger('submit');
+    expect(applied(w)).toBe('# the proxy\n# KnownProxies__0=\nPORT=81\n');
+    await w.find('#env-2-0').setValue('10.0.0.1');
+    await w.find('#env-2-1').setValue('true');
+    await w.find('form').trigger('submit');
+    expect(w.emitted('apply')?.[1]?.[0]).toBe(
+      '# the proxy\nKnownProxies__0=10.0.0.1\nPORT=81\n# Optional: OIDC\nOidc__Enabled=true\n',
+    );
+  });
+
   it('offers the .env alone when the example cannot be read', async () => {
     const w = await mountForm('A=1\n', new Error('app.env is not in the repository'));
     expect(w.find('[role="alert"]').text()).toContain('app.env is not in the repository');
