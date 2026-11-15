@@ -8,14 +8,18 @@ import {
   commentText,
   formFromEnv,
   formFromExample,
+  formWithHints,
   isSecretName,
 } from '../envfile';
 
 // EnvFormEditor edits a .env as a form: one field per variable with its comments above
-// it. With loadExample (a git stack's env file) the fields follow the example, and the
-// .env's own variables follow under "Other variables"; without it, the .env's variables
-// in place. apply hands back the rebuilt text; nothing is saved here.
-const props = defineProps<{ env: string; loadExample?: () => Promise<StackEnvExample> }>();
+// it. With loadExample giving a git stack's env file (kind "env") the fields follow it,
+// and the .env's own variables follow under "Other variables". Given a .env.example
+// (kind "example"), or nothing, the .env's variables are in place; an example's variables
+// the .env doesn't set follow under "Not set yet", empty with the example's value as a
+// hint, and only those filled in are added. apply hands back the rebuilt text; nothing
+// is saved here.
+const props = defineProps<{ env: string; loadExample?: () => Promise<StackEnvExample | null> }>();
 const emit = defineEmits<{ apply: [env: string]; cancel: [] }>();
 
 const loading = ref(false);
@@ -24,6 +28,7 @@ const example = shallowRef<StackEnvExample | null>(null);
 const form = shallowRef<EnvForm | null>(null);
 const fields = ref<EnvVar[]>([]);
 const others = ref<EnvVar[]>([]);
+const unset = ref<EnvVar[]>([]);
 const dropped = ref<string[]>([]);
 // shown holds the field keys whose secret value is shown.
 const shown = reactive(new Set<string>());
@@ -33,6 +38,7 @@ function use(f: EnvForm) {
   // The form's own objects, made reactive, so build() sees what was typed.
   fields.value = f.fields;
   others.value = f.others;
+  unset.value = f.unset;
   dropped.value = f.dropped;
 }
 
@@ -46,7 +52,9 @@ async function load() {
   try {
     const ex = await props.loadExample();
     example.value = ex;
-    use(formFromExample(props.env, ex.content));
+    if (!ex) use(formFromEnv(props.env));
+    else if (ex.kind === 'example') use(formWithHints(props.env, ex.content));
+    else use(formFromExample(props.env, ex.content));
   } catch (e) {
     loadError.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -83,7 +91,11 @@ function apply() {
       </div>
     </template>
     <template v-else-if="form">
-      <p v-if="example" class="muted">
+      <p v-if="example?.kind === 'example'" class="muted">
+        Hints from <code>{{ example.path }}</code> at <code>{{ shortCommit(example.commit) }}</code
+        >; nothing is set from it.
+      </p>
+      <p v-else-if="example" class="muted">
         Variables of <code>{{ example.path }}</code> at <code>{{ shortCommit(example.commit) }}</code
         >, valued from the .env or else from the example.
       </p>
@@ -91,11 +103,15 @@ function apply() {
         The .env sets {{ dropped.join(', ') }} more than once. The form uses the last line for each; Apply
         leaves the earlier ones out.
       </p>
-      <p v-if="!fields.length && !others.length" class="muted">The .env has no variables.</p>
-      <template v-for="(section, s) in [fields, others]" :key="s">
+      <p v-if="!fields.length && !others.length && !unset.length" class="muted">The .env has no variables.</p>
+      <template v-for="(section, s) in [fields, others, unset]" :key="s">
         <h3 v-if="s === 1 && others.length">Other variables</h3>
         <p v-if="s === 1 && others.length" class="muted">
           In the .env but not in the example; written after it.
+        </p>
+        <h3 v-if="s === 2 && unset.length">Not set yet</h3>
+        <p v-if="s === 2 && unset.length" class="muted">
+          In the example but not in the .env. Fill one in to add it; empty ones stay unset.
         </p>
         <div v-for="(v, i) in section" :key="`${s}-${i}`" class="var">
           <label :for="`env-${s}-${i}`">
@@ -115,6 +131,7 @@ function apply() {
               :id="`env-${s}-${i}`"
               v-model="v.value"
               :type="masked(`${s}-${i}`, v) ? 'password' : 'text'"
+              :placeholder="s === 2 ? v.original : undefined"
               autocomplete="off"
               spellcheck="false"
             />

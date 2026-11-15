@@ -3,14 +3,21 @@ import { describe, expect, it, vi } from 'vite-plus/test';
 
 import EnvFormEditor from './EnvFormEditor.vue';
 
-const example = { path: 'app.env', commit: '9fceb02d0ae598e95dc970b74767f19372d61af8', content: '' };
+const example = {
+  path: 'app.env',
+  commit: '9fceb02d0ae598e95dc970b74767f19372d61af8',
+  content: '',
+  kind: 'env' as const,
+};
 
-async function mountForm(env: string, content?: string | Error) {
+async function mountForm(env: string, content?: string | Error | null, kind: 'env' | 'example' = 'env') {
   const loadExample =
     content === undefined
       ? undefined
       : vi.fn(() =>
-          content instanceof Error ? Promise.reject(content) : Promise.resolve({ ...example, content }),
+          content instanceof Error
+            ? Promise.reject(content)
+            : Promise.resolve(content === null ? null : { ...example, content, kind }),
         );
   const wrapper = mount(EnvFormEditor, { props: { env, loadExample } });
   await flushPromises();
@@ -76,6 +83,32 @@ describe('EnvFormEditor', () => {
     expect(w.findAll('.name').map((n) => n.text())).toEqual(['A']);
     await w.find('form').trigger('submit');
     expect(applied(w)).toBe('A=1\n');
+  });
+
+  it('offers the unset variables of a .env.example as hints', async () => {
+    const w = await mountForm(
+      'PORT=81\n',
+      '# the port\nPORT=8080\n# the mail host\nSMTP_HOST=mail.example\nDEBUG=false\n',
+      'example',
+    );
+    expect(w.text()).toContain('nothing is set from it');
+    expect(w.findAll('.name').map((n) => n.text())).toEqual(['PORT', 'SMTP_HOST', 'DEBUG']);
+    expect(w.find('h3').text()).toBe('Not set yet');
+    const host = w.find('#env-2-0');
+    expect((host.element as HTMLInputElement).value).toBe('');
+    expect(host.attributes('placeholder')).toBe('mail.example');
+    await w.find('form').trigger('submit');
+    expect(applied(w)).toBe('PORT=81\n');
+    await host.setValue('smtp.local');
+    await w.find('form').trigger('submit');
+    expect(w.emitted('apply')?.[1]?.[0]).toBe('PORT=81\n# the mail host\nSMTP_HOST=smtp.local\n');
+  });
+
+  it('edits the .env alone when the stack has no example', async () => {
+    const w = await mountForm('A=1\n', null);
+    expect(w.find('[role="alert"]').exists()).toBe(false);
+    expect(w.findAll('.name').map((n) => n.text())).toEqual(['A']);
+    expect(w.text()).not.toContain('Not set yet');
   });
 
   it('cancels without applying', async () => {

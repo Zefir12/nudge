@@ -5,6 +5,7 @@ import {
   commentText,
   formFromEnv,
   formFromExample,
+  formWithHints,
   formatLine,
   isSecretName,
   parseEnv,
@@ -265,6 +266,32 @@ describe('formFromExample', () => {
     expect(formFromExample('', example).build()).toBe(example);
     expect(formFromExample('A=1\n', '').build()).toBe('A=1\n');
     expect(formFromExample('', '').build()).toBe('');
+  });
+});
+
+describe('formWithHints', () => {
+  const example = '# Section\n\n# the port\nPORT=8080\n# db password\nDB_PASSWORD=changeme\nPORT=9\n';
+
+  it('lists the example variables the .env lacks, empty, with the example value as hint', () => {
+    const form = formWithHints('PORT=80\nEXTRA=1\n', example);
+    expect(form.fields.map((v) => v.name)).toEqual(['PORT', 'EXTRA']);
+    expect(form.unset.map((v) => [v.name, v.value, v.original, v.comments])).toEqual([
+      ['DB_PASSWORD', '', 'changeme', ['# db password']],
+    ]);
+  });
+
+  it('leaves the .env as it is until a hint is filled in', () => {
+    expect(formWithHints('PORT=80\n', example).build()).toBe('PORT=80\n');
+    expect(formWithHints('', example).build()).toBe('');
+  });
+
+  it('appends the variables filled in, with their comments', () => {
+    const form = formWithHints('A=1', example);
+    form.unset.find((v) => v.name === 'DB_PASSWORD')!.value = 's3 cret';
+    expect(form.build()).toBe('A=1\n# db password\nDB_PASSWORD="s3 cret"\n');
+    const empty = formWithHints('', example);
+    empty.unset[0]!.value = '81';
+    expect(empty.build()).toBe('# the port\nPORT=81\n');
   });
 });
 

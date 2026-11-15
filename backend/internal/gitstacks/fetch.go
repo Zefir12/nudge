@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -98,6 +99,21 @@ type Result struct {
 	Compose string
 	// Env is the env file's text, empty if the source has none.
 	Env string
+	// ExamplePath is the repository's .env.example when the source has no env file
+	// (see exampleNames), empty if there is none; Example is its text. It is a hint for
+	// the .env editor only: a pull never sets its values.
+	ExamplePath string
+	Example     string
+}
+
+// exampleNames are the files read as a stack's .env.example, in order: next to the
+// compose file, then at the root of the repository.
+func exampleNames(composePath string) []string {
+	names := []string{path.Join(path.Dir(composePath), ".env.example")}
+	if names[0] != ".env.example" {
+		names = append(names, ".env.example")
+	}
+	return names
 }
 
 // Head returns the commit src's ref points at, without cloning.
@@ -165,6 +181,15 @@ func (s *Service) Fetch(ctx context.Context, src Source) (Result, error) {
 	if src.EnvPath != "" {
 		if res.Env, err = readFile(commit, src.EnvPath); err != nil {
 			return Result{}, err
+		}
+	} else {
+		// An example that is missing, too large or not a file is no example: it must
+		// never fail a pull.
+		for _, name := range exampleNames(src.ComposePath) {
+			if text, err := readFile(commit, name); err == nil {
+				res.ExamplePath, res.Example = name, text
+				break
+			}
 		}
 	}
 	return res, nil
