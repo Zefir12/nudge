@@ -19,7 +19,13 @@ import (
 	"github.com/coder/websocket"
 )
 
-// fast keeps keepalives quick so dead peers are noticed within a test.
+// testCfg keeps production keepalives: a test that doesn't test keepalives must not have
+// its session closed by one. With 200 ms timeouts, a ping or write delayed by a loaded
+// -race runner closed sessions mid-test ("open stream: tunnel closed").
+var testCfg = Config{HandshakeTimeout: 2 * time.Second}
+
+// fast keeps keepalives quick so dead peers are noticed within a test; only keepalive
+// tests use it.
 var fast = Config{HandshakeTimeout: 2 * time.Second, KeepAliveInterval: 50 * time.Millisecond, KeepAliveTimeout: 200 * time.Millisecond}
 
 // checkLeaks fails the test if goroutines started during it are still running once its
@@ -210,7 +216,7 @@ func waitDone(t *testing.T, name string, s *Session) {
 
 func TestHandshake(t *testing.T) {
 	checkLeaks(t)
-	p := newWSPair(t.Context(), t, fast)
+	p := newWSPair(t.Context(), t, testCfg)
 	if got := p.server.Peer(); got != (Hello{Version: "agent-v1", Hostname: "host1"}) {
 		t.Errorf("server sees peer %+v", got)
 	}
@@ -233,7 +239,7 @@ func TestHandshakeOldAgent(t *testing.T) {
 			close(accepted)
 			return
 		}
-		s, err := Accept(t.Context(), ws, Hello{Version: "server-v2"}, fast)
+		s, err := Accept(t.Context(), ws, Hello{Version: "server-v2"}, testCfg)
 		if err != nil {
 			t.Errorf("Accept: %v", err)
 			close(accepted)
@@ -243,7 +249,7 @@ func TestHandshakeOldAgent(t *testing.T) {
 		<-s.Done()
 	}))
 	defer srv.Close()
-	agent, err := connect(t.Context(), dial(t, srv), Hello{Version: "agent-v1"}, 1, fast)
+	agent, err := connect(t.Context(), dial(t, srv), Hello{Version: "agent-v1"}, 1, testCfg)
 	if err != nil {
 		t.Fatalf("a protocol 1 agent was refused: %v", err)
 	}
@@ -270,7 +276,7 @@ func TestHandshakeOldAgent(t *testing.T) {
 
 func TestStreamKinds(t *testing.T) {
 	t.Parallel()
-	server, agent := newPipePair(t.Context(), t, fast)
+	server, agent := newPipePair(t.Context(), t, testCfg)
 	for _, want := range []Kind{KindDocker, KindControl} {
 		open := server.Open
 		if want == KindControl {
@@ -340,14 +346,14 @@ func TestHandshakeRefused(t *testing.T) {
 					serverErr <- err
 					return
 				}
-				s, err := Accept(r.Context(), ws, Hello{Version: "server-v1"}, fast)
+				s, err := Accept(r.Context(), ws, Hello{Version: "server-v1"}, testCfg)
 				if s != nil {
 					_ = s.Close()
 				}
 				serverErr <- err
 			}))
 			defer srv.Close()
-			s, err := connect(t.Context(), dial(t, srv), tt.hello, tt.protocol, fast)
+			s, err := connect(t.Context(), dial(t, srv), tt.hello, tt.protocol, testCfg)
 			if s != nil {
 				_ = s.Close()
 			}
@@ -383,7 +389,7 @@ func TestHandshakeBadMessage(t *testing.T) {
 					serverErr <- err
 					return
 				}
-				_, err = Accept(r.Context(), ws, Hello{}, fast)
+				_, err = Accept(r.Context(), ws, Hello{}, testCfg)
 				serverErr <- err
 			}))
 			defer srv.Close()
@@ -428,14 +434,11 @@ func TestManyStreams(t *testing.T) {
 	for _, transport := range []string{"pipe", "websocket"} {
 		t.Run(transport, func(t *testing.T) {
 			checkLeaks(t)
-			// Production timeouts: with fast's 200 ms write timeout, writes queued behind 100
-			// streams on a slow runner under -race close the session.
-			cfg := Config{HandshakeTimeout: fast.HandshakeTimeout}
 			var server, agent *Session
 			if transport == "pipe" {
-				server, agent = newPipePair(t.Context(), t, cfg)
+				server, agent = newPipePair(t.Context(), t, testCfg)
 			} else {
-				p := newWSPair(t.Context(), t, cfg)
+				p := newWSPair(t.Context(), t, testCfg)
 				server, agent = p.server, p.agent
 			}
 			echo(t, agent)
@@ -474,7 +477,7 @@ func TestClose(t *testing.T) {
 			checkLeaks(t)
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			p := newWSPair(ctx, t, fast)
+			p := newWSPair(ctx, t, testCfg)
 			// Streams the agent holds open without answering, as a slow Docker call would.
 			var streams []net.Conn
 			for range 3 {
@@ -533,7 +536,7 @@ func TestKeepAliveClosesDeadPeer(t *testing.T) {
 
 func TestServerRefusesAgentStreams(t *testing.T) {
 	checkLeaks(t)
-	_, agent := newPipePair(t.Context(), t, fast)
+	_, agent := newPipePair(t.Context(), t, testCfg)
 	c, err := agent.mux.OpenStream()
 	if err != nil {
 		t.Fatal(err)
@@ -547,7 +550,7 @@ func TestServerRefusesAgentStreams(t *testing.T) {
 
 func TestPing(t *testing.T) {
 	t.Parallel()
-	server, agent := newPipePair(t.Context(), t, fast)
+	server, agent := newPipePair(t.Context(), t, testCfg)
 	rtt, err := server.Ping()
 	if err != nil {
 		t.Fatalf("Ping: %v", err)
