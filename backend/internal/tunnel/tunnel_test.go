@@ -19,14 +19,14 @@ import (
 	"github.com/coder/websocket"
 )
 
-// testCfg keeps production keepalives: a test that doesn't test keepalives must not have
-// its session closed by one. With 200 ms timeouts, a ping or write delayed by a loaded
-// -race runner closed sessions mid-test ("open stream: tunnel closed").
+// testCfg keeps the production keepalives: with fast's 200 ms timeout, a runner that stalls
+// the session for longer under -race closes it mid-test (#248). Tests that don't check
+// keepalives use it; a closing session is noticed from the closed connection.
 var testCfg = Config{HandshakeTimeout: 2 * time.Second}
 
-// fast keeps keepalives quick so dead peers are noticed within a test; only keepalive
-// tests use it.
-var fast = Config{HandshakeTimeout: 2 * time.Second, KeepAliveInterval: 50 * time.Millisecond, KeepAliveTimeout: 200 * time.Millisecond}
+// fast keeps keepalives quick so dead peers are noticed within a test. Only for tests of
+// keepalives: any stall over 200 ms closes the session.
+var fast = Config{HandshakeTimeout: testCfg.HandshakeTimeout, KeepAliveInterval: 50 * time.Millisecond, KeepAliveTimeout: 200 * time.Millisecond}
 
 // checkLeaks fails the test if goroutines started during it are still running once its
 // cleanups ran. Tests using it must not be parallel.
