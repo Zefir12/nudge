@@ -19,7 +19,7 @@ with its own image. Read PLAN.md for the roadmap and docs/ for decisions.
   behind an interface, use `net.Pipe`/`httptest` for tunnels and HTTP.
 
 ## Stack
-- Go 1.27.3 (backend/go.mod; keep backend/go.mod, Dockerfile, Makefile and CI in sync).
+- Go 1.27.4 (backend/go.mod; keep backend/go.mod, Dockerfile, Makefile and CI in sync).
 - Frontend: Vue 3 (`<script setup lang="ts">`, Composition API), TypeScript, plain CSS
   (tokens in frontend/src/style.css, scoped styles in components; no CSS frameworks),
   Vite+ (`vp`) for dev, build, test, lint and format.

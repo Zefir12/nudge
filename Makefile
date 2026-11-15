@@ -5,7 +5,7 @@ AGENT_IMAGE ?= $(REGISTRY)/nudge-agent
 TAG ?= latest
 
 # Keep in sync with backend/go.mod, the Dockerfile, .forgejo/workflows/ci.yaml and nightly.yaml.
-GO_IMAGE ?= golang:1.27.3
+GO_IMAGE ?= golang:1.27.4
 # golangci-lint must be built with a Go >= go.mod's language version.
 LINT_IMAGE ?= golangci/golangci-lint:v2.15.0
 # The frontend's toolchain (Vite+, from frontend/package.json).
