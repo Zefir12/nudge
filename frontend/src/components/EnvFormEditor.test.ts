@@ -110,6 +110,25 @@ describe('EnvFormEditor', () => {
     );
   });
 
+  it('never shows a secret commented-out or example value as placeholder', async () => {
+    const w = await mountForm(
+      '# DB_PASSWORD=old-secret\n# DATABASE_URL=postgresql://u:hunter2@db/app\n# PORT=80\nA=1\n',
+      '# API_KEY=example-key\n',
+      'example',
+    );
+    expect(w.html()).not.toContain('old-secret');
+    expect(w.html()).not.toContain('hunter2');
+    expect(w.html()).not.toContain('example-key');
+    expect(w.findAll('.name').map((n) => n.text())).toEqual([
+      'A',
+      'DB_PASSWORD',
+      'DATABASE_URL',
+      'PORT',
+      'API_KEY',
+    ]);
+    expect(w.find('#env-2-2').attributes('placeholder')).toBe('80');
+  });
+
   it('offers the .env alone when the example cannot be read', async () => {
     const w = await mountForm('A=1\n', new Error('app.env is not in the repository'));
     expect(w.find('[role="alert"]').text()).toContain('app.env is not in the repository');

@@ -75,6 +75,9 @@ onMounted(load);
 const secret = (v: EnvVar) => isSecret(v.name, v.value);
 const masked = (key: string, v: EnvVar) => secret(v) && !shown.has(key);
 const toggle = (key: string) => (shown.has(key) ? shown.delete(key) : shown.add(key));
+// hint is an unset variable's example or commented-out value as placeholder, unless it's
+// a secret: a placeholder is never masked, and a commented .env value can be a real one.
+const hint = (s: number, v: EnvVar) => (s === 2 && !isSecret(v.name, v.original) ? v.original : undefined);
 const multiline = (v: EnvVar) => v.value.includes('\n');
 const shortCommit = (c: string) => c.slice(0, 12);
 
@@ -134,7 +137,7 @@ function apply() {
               :id="`env-${s}-${i}`"
               v-model="v.value"
               :type="masked(`${s}-${i}`, v) ? 'password' : 'text'"
-              :placeholder="s === 2 ? v.original : undefined"
+              :placeholder="hint(s, v)"
               autocomplete="off"
               spellcheck="false"
             />

@@ -252,6 +252,14 @@ export const commentText = (line: string) => line.trimStart().replace(/^# ?/, ''
 // Words, not substrings, so AccountTokens__Enabled or KEYCLOAK_URL are not secrets.
 const secretWordRe = /^(pass|pwd|dsn|private)$|(password|passwd|secret|token|key|credentials?)$/;
 
+// secretLastWordRe is the last word of a name that holds secrets: API_KEYS, PASSWORDS.
+// Plurals count only last, so AccountTokens__Enabled stays a setting.
+const secretLastWordRe = /(passes|pwds|passwords|passwds|secrets|tokens|keys)$/;
+
+// secretSubstringRe is a secret word inside a one-word name: DBPASS, SECRETKEYBASE.
+// Over-masking (TURKEY) is harmless; a secret in clear is not.
+const secretSubstringRe = /pass|pwd|secret|token|key|credential/;
+
 // nameWords splits a name into lower-case words at _, ., - and camelCase.
 const nameWords = (name: string) =>
   name
@@ -264,18 +272,20 @@ const nameWords = (name: string) =>
 // Secret, Password or Token, or a connection string.
 export function isSecretName(name: string): boolean {
   if (/connection_?strings?/i.test(name)) return true;
-  return nameWords(name).some((w) => secretWordRe.test(w));
+  const words = nameWords(name);
+  if (words.length === 1) return secretSubstringRe.test(words[0]!);
+  return words.some((w) => secretWordRe.test(w)) || secretLastWordRe.test(words.at(-1) ?? '');
 }
 
 // isSecretValue says a value holds a secret whatever its name: a URI with a password
-// (postgresql://user:pass@host) or keywords with one (Host=h;Password=p).
+// (postgresql://user:pa/ss@host) or keywords with one (Host=h;Password=p, host=h password=p).
 export const isSecretValue = (value: string) =>
-  /[a-z][a-z0-9+.-]*:\/\/[^\s/@:]*:[^\s/@]+@/i.test(value) || /(^|;)\s*(password|pwd)\s*=/i.test(value);
+  /[a-z][a-z0-9+.-]*:\/\/[^\s/@:]*:[^\s@]+@/i.test(value) || /(^|[;\s])(password|pwd)\s*=/i.test(value);
 
-const booleanRe = /^(true|false|yes|no|on|off)$/i;
+const booleanRe = /^(true|false)$/i;
 
 // isSecret says a field is masked: a secret name with a value that isn't a plain
-// true/false, or a value that holds a secret.
+// true/false, or a value that holds a secret. Only true/false: a password may be "no".
 export const isSecret = (name: string, value: string) =>
   (isSecretName(name) && !booleanRe.test(value.trim())) || isSecretValue(value);
 
