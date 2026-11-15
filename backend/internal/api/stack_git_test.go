@@ -379,6 +379,35 @@ func TestDeploymentPreviousIsThePreRepositoryValue(t *testing.T) {
 	}
 }
 
+// TestStackEnvExampleFile reads a .env.example for a git stack without env_path, and a
+// pull leaves its values out of the .env.
+func TestStackEnvExampleFile(t *testing.T) {
+	t.Parallel()
+	gt := newGitStackTest(t)
+	next := gt.repo.Commit(map[string]string{"compose.yaml": gitCompose, ".env.example": "# the port\nPORT=80\n"})
+	body := fmt.Sprintf(`{"name":"ex","env":"SECRET=keep\n","git":{"repo_url":%q,"compose_path":"compose.yaml"}}`, gt.repo.URL)
+	if c, out := gt.do(t, "POST", "local", "", body); c != http.StatusCreated {
+		t.Fatalf("create = %d %s", c, out)
+	}
+	c, out := gt.do(t, "GET", "local", "/ex/git/env-example", "")
+	if c != http.StatusOK {
+		t.Fatalf("get = %d %s", c, out)
+	}
+	var got stackEnvExampleResponse
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatal(err)
+	}
+	want := stackEnvExampleResponse{Path: ".env.example", Commit: next, Content: "# the port\nPORT=80\n", Kind: "example"}
+	if got != want {
+		t.Fatalf("example = %+v, want %+v", got, want)
+	}
+	c, out = gt.do(t, "GET", "local", "/ex", "")
+	var s stackResponse
+	if c != http.StatusOK || json.Unmarshal([]byte(out), &s) != nil || s.Env != "SECRET=keep\n" {
+		t.Fatalf("stack = %d %s", c, out)
+	}
+}
+
 func TestStackEnvExample(t *testing.T) {
 	t.Parallel()
 	gt := newGitStackTest(t)
@@ -391,7 +420,7 @@ func TestStackEnvExample(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatal(err)
 	}
-	want := stackEnvExampleResponse{Path: "app.env", Commit: next, Content: "# the port\nPORT=80\nFROM_REPO=2\n"}
+	want := stackEnvExampleResponse{Path: "app.env", Commit: next, Content: "# the port\nPORT=80\nFROM_REPO=2\n", Kind: "env"}
 	if got != want {
 		t.Fatalf("example = %+v, want %+v", got, want)
 	}
@@ -412,7 +441,7 @@ func TestStackEnvExample(t *testing.T) {
 		want       string
 	}{
 		{"plain stack", "/plain/git/env-example", 404, "no git source"},
-		{"no env_path", "/noenv/git/env-example", 404, "no env file"},
+		{"no env_path nor example", "/noenv/git/env-example", 404, "no env file"},
 		{"unknown stack", "/nope/git/env-example", 404, "no git source"},
 		{"bad name", "/BAD/git/env-example", 404, "stack not found"},
 	}

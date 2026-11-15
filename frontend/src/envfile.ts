@@ -227,6 +227,9 @@ export interface EnvForm {
   // dropped names the variables the example has that the .env sets more than once: the
   // form uses the .env's last line for each and leaves the earlier ones out.
   dropped: string[];
+  // unset are a .env.example's variables the .env doesn't set (formWithHints): empty,
+  // with the example's value in original as a hint. Only those given a value are written.
+  unset: EnvVar[];
   // build writes the .env text with the fields' and others' current values.
   build: () => string;
 }
@@ -238,7 +241,33 @@ const clone = (v: EnvVar): EnvVar => ({ ...v, comments: [...v.comments] });
 export function formFromEnv(env: string): EnvForm {
   const doc = parseEnv(env);
   const fields = doc.items.filter((it): it is EnvVar => it.kind === 'var');
-  return { fields, others: [], dropped: [], build: () => serializeEnv(doc) };
+  return { fields, others: [], dropped: [], unset: [], build: () => serializeEnv(doc) };
+}
+
+// formWithHints is the form for a .env with a .env.example whose values are only hints:
+// the .env's own variables, in place as in formFromEnv, then every variable of the
+// example the .env doesn't set, empty, with its comments and its example value as
+// original. build appends those given a value after the .env, each with its comments;
+// the rest stay unset.
+export function formWithHints(env: string, example: string): EnvForm {
+  const own = formFromEnv(env);
+  const set = new Set(own.fields.map((v) => v.name));
+  const unset: EnvVar[] = [];
+  for (const it of parseEnv(example).items) {
+    if (it.kind !== 'var' || set.has(it.name)) continue;
+    set.add(it.name);
+    unset.push({ ...clone(it), value: '' });
+  }
+  return {
+    ...own,
+    unset,
+    build: () => {
+      const text = own.build();
+      const lines = unset.filter((v) => v.value !== '').flatMap(varLines);
+      if (!lines.length) return text;
+      return `${text}${text && !text.endsWith('\n') ? '\n' : ''}${lines.join('\n')}\n`;
+    },
+  };
 }
 
 // formFromExample is the form for a .env with an example from the repository: the
@@ -300,6 +329,7 @@ export function formFromExample(env: string, example: string): EnvForm {
     fields,
     others,
     dropped: [...dropped],
+    unset: [],
     build: () => {
       let text = serializeEnv({ items: top, newline: true });
       if (text === '\n') text = '';

@@ -375,10 +375,14 @@ type stackEnvExampleResponse struct {
 	Path    string `json:"path"`
 	Commit  string `json:"commit"`
 	Content string `json:"content"`
+	// Kind is "env" for the stack's env_path, whose values a pull sets in .env, or
+	// "example" for a .env.example, whose values are only hints.
+	Kind string `json:"kind"`
 }
 
-// getStackEnvExample reads a git stack's env file (its env_path) at the head of its ref,
-// for the .env form editor. It changes nothing: not the stack's files, nor its commit.
+// getStackEnvExample reads a git stack's env file (its env_path), or else its
+// .env.example, at the head of its ref, for the .env form editor. It changes nothing:
+// not the stack's files, nor its commit.
 func (s *server) getStackEnvExample(w http.ResponseWriter, r *http.Request) {
 	name, ok := s.stackName(w, r)
 	if !ok {
@@ -397,14 +401,18 @@ func (s *server) getStackEnvExample(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusNotFound, "the stack has no git source")
 		return
 	}
-	if src.EnvPath == "" {
-		s.writeError(w, http.StatusNotFound, "the stack's repository has no env file")
-		return
-	}
 	res, err := s.gitStacks.Fetch(r.Context(), *src)
 	if err != nil {
 		s.gitInputError(w, "read stack env example", err)
 		return
 	}
-	s.writeJSON(w, http.StatusOK, stackEnvExampleResponse{Path: src.EnvPath, Commit: res.Commit, Content: res.Env})
+	if src.EnvPath != "" {
+		s.writeJSON(w, http.StatusOK, stackEnvExampleResponse{Path: src.EnvPath, Commit: res.Commit, Content: res.Env, Kind: "env"})
+		return
+	}
+	if res.ExamplePath == "" {
+		s.writeError(w, http.StatusNotFound, "the stack's repository has no env file")
+		return
+	}
+	s.writeJSON(w, http.StatusOK, stackEnvExampleResponse{Path: res.ExamplePath, Commit: res.Commit, Content: res.Example, Kind: "example"})
 }
