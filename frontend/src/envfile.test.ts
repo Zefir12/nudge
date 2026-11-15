@@ -7,11 +7,14 @@ import {
   formFromExample,
   formWithHints,
   formatLine,
+  isSecret,
   isSecretName,
+  parseCommented,
   parseEnv,
   parseLine,
   serializeEnv,
 } from './envfile';
+import embrExample from './testdata/embr-staging.env.example?raw';
 
 const vars = (text: string) => parseEnv(text).items.filter((it): it is EnvVar => it.kind === 'var');
 
@@ -172,6 +175,145 @@ describe('formFromEnv', () => {
   });
 });
 
+describe('commented-out variables', () => {
+  it.each([
+    ['# KEY=', 'KEY', ''],
+    ['#KEY=value', 'KEY', 'value'],
+    ['  #  Photos__S3__Region=garage', 'Photos__S3__Region', 'garage'],
+    ['# A="two words"', 'A', 'two words'],
+    ['# A=1 # note', 'A', '1'],
+  ])('parseCommented(%j) reads %s=%j', (line, name, value) => {
+    expect(parseCommented(line)).toMatchObject({ name, value });
+  });
+
+  it.each([
+    '# Host=<host>;Port=5432;Database=embr_staging;Username=embr_staging;Password=...',
+    '#   (`docker inspect <postgres container>`, under Networks), e.g. DB_NETWORK=postgres18_default',
+    '# e.g. DB_NETWORK=x',
+    '# Note: A=b',
+    '# With Enabled=true every value is required.',
+    '# MODE=fast is the default',
+    '# export A=1',
+    '# a.b=1',
+    '# A="open',
+    '# a note',
+  ])('parseCommented(%j) is prose', (line) => {
+    expect(parseCommented(line)).toBeNull();
+  });
+
+  it('are variables only with the commented option', () => {
+    const text = '# about A\n# A=1\nB=2\n';
+    expect(vars(text).map((v) => [v.name, v.comments])).toEqual([['B', ['# about A', '# A=1']]]);
+    const doc = parseEnv(text, { commented: true });
+    const got = doc.items.filter((it): it is EnvVar => it.kind === 'var');
+    expect(got.map((v) => [v.name, v.value, v.original, v.commented, v.comments])).toEqual([
+      ['A', '', '1', true, ['# about A']],
+      ['B', '2', '2', undefined, []],
+    ]);
+    expect(serializeEnv(doc)).toBe(text);
+  });
+
+  it('keeps a .env with commented-out variables byte for byte', () => {
+    for (const text of [embrExample, embrExample.replace(/\n/g, '\r\n'), '# A=1\r\n#B=\nC=3']) {
+      expect(serializeEnv(parseEnv(text, { commented: true }))).toBe(text);
+      expect(formFromEnv(text).build()).toBe(text);
+    }
+  });
+
+  it("offers a .env's commented-out variables and uncomments those filled in, in place", () => {
+    const env =
+      '# proxies\n# ForwardedHeaders__KnownProxies__0=\n# the origin\nFrontend__Cors__Origins__0=https://a\n# A=x\r\nA=1\n# B=1\n# B=2\n';
+    const form = formFromEnv(env);
+    expect(form.fields.map((v) => [v.name, v.comments])).toEqual([
+      ['Frontend__Cors__Origins__0', ['# the origin']],
+      ['A', []],
+    ]);
+    expect(form.unset.map((v) => [v.name, v.original, v.comments])).toEqual([
+      ['ForwardedHeaders__KnownProxies__0', '', ['# proxies']],
+      ['B', '1', []],
+    ]);
+    form.unset[0]!.value = '10.0.0.1';
+    form.unset[1]!.value = '1';
+    expect(form.build()).toBe(
+      '# proxies\nForwardedHeaders__KnownProxies__0=10.0.0.1\n# the origin\nFrontend__Cors__Origins__0=https://a\n# A=x\r\nA=1\nB=1\n# B=2\n',
+    );
+  });
+
+  it("offers every key of embr's staging example, commented-out ones included", () => {
+    const form = formWithHints('EMBR_IMAGE=x\n', embrExample);
+    const names = form.unset.map((v) => v.name);
+    expect(names).toEqual([
+      'ConnectionStrings__Default',
+      'DB_NETWORK',
+      'DB_NETWORK_EXTERNAL',
+      'Auth__BootstrapAdminEmail',
+      'Auth__BootstrapAdminPassword',
+      'Auth__BootstrapAdminName',
+      'ForwardedHeaders__KnownProxies__0',
+      'ForwardedHeaders__KnownNetworks__0',
+      'Frontend__Cors__Origins__0',
+      'AccountTokens__Enabled',
+      'AccountTokens__Key',
+      'Oidc__Enabled',
+      'Oidc__Authority',
+      'Oidc__ClientId',
+      'Oidc__ClientSecret',
+      'Oidc__PostLogoutRedirectUri',
+      'Oidc__AutoCreateUsers',
+      'Oidc__MapAdminRole',
+      'Oidc__AdminRole',
+      'Fitbit__ClientId',
+      'Fitbit__ClientSecret',
+      'DeepSeek__ApiKey',
+      'Photos__Enabled',
+      'Photos__S3__ServiceUrl',
+      'Photos__S3__Region',
+      'Photos__S3__Bucket',
+      'Photos__S3__AccessKey',
+      'Photos__S3__SecretKey',
+      'SupabaseSync__Enabled',
+      'SupabaseSync__ConnectionString',
+      'SupabaseSync__OwnerEmail',
+      'EMBR_PUBLISH',
+    ]);
+    const by = (n: string) => form.unset.find((v) => v.name === n)!;
+    expect(by('Photos__S3__Region').original).toBe('garage');
+    expect(by('AccountTokens__Enabled').original).toBe('true');
+    expect(by('ConnectionStrings__Default').comments.map(commentText)).toEqual([
+      'Shared PostgreSQL instance: own database and user for staging. Npgsql format:',
+      'Host=<host>;Port=5432;Database=embr_staging;Username=embr_staging;Password=...',
+    ]);
+    expect(by('Oidc__Enabled').comments.map(commentText)).toEqual([
+      'Optional: login with authestra (OIDC), backend/README.md "Login with authestra".',
+      'Redirect URI to register in authestra: https://<staging hostname>/api/auth/callback',
+    ]);
+    expect(by('Oidc__Authority').comments).toEqual([]);
+    expect(by('DB_NETWORK').comments).toHaveLength(6);
+
+    expect(form.build()).toBe('EMBR_IMAGE=x\n');
+    by('Photos__S3__Region').value = 'garage';
+    by('Oidc__Enabled').value = 'true';
+    expect(form.build()).toBe(
+      'EMBR_IMAGE=x\n' +
+        '# Optional: login with authestra (OIDC), backend/README.md "Login with authestra".\n' +
+        '# Redirect URI to register in authestra: https://<staging hostname>/api/auth/callback\n' +
+        'Oidc__Enabled=true\n' +
+        'Photos__S3__Region=garage\n',
+    );
+  });
+
+  it("prefers the .env's own commented-out variable over the example's", () => {
+    const form = formWithHints('# note\n# A=mine\nB=1\n', '# from example\n# A=theirs\n# B=2\n# C=3\n');
+    expect(form.unset.map((v) => [v.name, v.original])).toEqual([
+      ['A', 'mine'],
+      ['C', '3'],
+    ]);
+    form.unset[0]!.value = 'v';
+    form.unset[1]!.value = 'w';
+    expect(form.build()).toBe('# note\nA=v\nB=1\nC=w\n');
+  });
+});
+
 describe('formFromExample', () => {
   const example = '# App settings\n\n# the port\nPORT=8080\n# db password\nDB_PASSWORD=\nDEBUG=false\n';
 
@@ -304,10 +446,50 @@ describe('helpers', () => {
     ['client_secret', true],
     ['PRIVATE_URL', true],
     ['AWS_CREDENTIALS', true],
+    ['AccountTokens__Key', true],
+    ['Photos__S3__AccessKey', true],
+    ['Photos__S3__SecretKey', true],
+    ['Oidc__ClientSecret', true],
+    ['DeepSeek__ApiKey', true],
+    ['APIKEY', true],
+    ['SupabaseSync__ConnectionString', true],
+    ['ConnectionStrings__Default', true],
+    ['Auth__BootstrapAdminPassword', true],
+    ['AccountTokens__Enabled', false],
+    ['API_KEYS', true],
+    ['TOKENS', true],
+    ['SECRETS', true],
+    ['DB_PASSWORDS', true],
+    ['DBPASS', true],
+    ['SECRETKEYBASE', true],
+    ['dbpassword', true],
+    ['KEYCLOAK_URL', false],
+    ['Oidc__ClientId', false],
     ['PORT', false],
     ['HOST', false],
   ])('isSecretName(%s) = %s', (name, want) => {
     expect(isSecretName(name)).toBe(want);
+  });
+
+  it.each([
+    ['DB_PASSWORD', 's3cret', true],
+    ['DB_PASSWORD', '', true],
+    ['SECRET_ENABLED', 'true', false],
+    ['TOKEN_AUTH', 'False', false],
+    ['AccountTokens__Enabled', 'true', false],
+    ['SupabaseSync__ConnectionString', 'postgresql://ro:pw@db.supabase.co:5432/postgres', true],
+    ['DATABASE_URL', 'postgresql://ro:pw@db:5432/app', true],
+    ['DATABASE_URL', 'postgresql://db:5432/app', false],
+    ['UPSTREAM', 'https://user@host/', false],
+    ['DB', 'Host=h;Port=5432;Password=p', true],
+    ['DB', 'host=h PASSWORD=p dbname=app', true],
+    ['DATABASE_URL', 'postgresql://u:pa/ss@db/app', true],
+    ['DB_PASSWORD', 'no', true],
+    ['API_TOKEN', 'on', true],
+    ['FEATURE', 'on', false],
+    ['PORT', '80', false],
+  ])('isSecret(%s, %j) = %s', (name, value, want) => {
+    expect(isSecret(name, value)).toBe(want);
   });
 
   it.each([

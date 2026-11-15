@@ -19,6 +19,10 @@ export interface EnvVar {
   exported: boolean;
   // trailing is an unquoted line's inline comment (" # ..."), kept on a new value.
   trailing: string;
+  // commented marks a commented-out variable ("# KEY=value", parseEnv's commented
+  // option): line is the comment as written, original the value it shows, and value
+  // starts empty. Given a value it is written as KEY=value; left empty, it stays as is.
+  commented?: boolean;
 }
 
 // EnvText is lines that belong to no variable: blank lines, comments followed by a blank
@@ -106,10 +110,31 @@ function onlyComment(s: string): boolean {
 
 const isComment = (line: string) => line.trimStart().startsWith('#');
 
+// commentedRe reads a comment that is a whole KEY=value line; the name is a plain env
+// name (letters, digits, _), so prose like "e.g. A=b" or "Note: A=b" isn't one.
+const commentedRe = /^[ \t]*#[ \t]*([A-Za-z_][A-Za-z0-9_]*[ \t]*=.*)$/;
+
+// parseCommented reads a commented-out variable: "# KEY=" or "# KEY=value". An unquoted
+// value with whitespace or ";" is prose or code (Host=h;Port=5432;...), not a variable.
+export function parseCommented(line: string): Parsed | null {
+  const m = commentedRe.exec(stripCR(line));
+  if (!m) return null;
+  const v = parseVar(m[1]!);
+  if (!v || v === 'open') return null;
+  if (v.quote === '' && /[\s;]/.test(v.value)) return null;
+  return withCR(v, line);
+}
+
+export interface ParseOptions {
+  // commented reads commented-out variables ("# KEY=value") as EnvVars with commented
+  // set instead of as comment lines.
+  commented?: boolean;
+}
+
 // parseEnv splits .env text into variables (with the comment lines directly above
 // them) and the text between them. A quoted value may run over several lines; its
 // variable's line then holds them all.
-export function parseEnv(text: string): EnvDoc {
+export function parseEnv(text: string, opts: ParseOptions = {}): EnvDoc {
   const newline = text.endsWith('\n');
   const lines = text === '' ? [] : (newline ? text.slice(0, -1) : text).split('\n');
   const items: EnvItem[] = [];
@@ -125,7 +150,14 @@ export function parseEnv(text: string): EnvDoc {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
     if (isComment(line)) {
-      pending.push(line);
+      const c = opts.commented ? parseCommented(line) : null;
+      if (c) {
+        const comments = pending;
+        pending = [];
+        items.push({ kind: 'var', ...c, value: '', comments, line, original: c.value, commented: true });
+      } else {
+        pending.push(line);
+      }
       continue;
     }
     const first = parseVar(stripCR(line));
@@ -200,8 +232,10 @@ export function formatLine(
 const escapes: Record<string, string> = { '\\': '\\\\', '"': '\\"', '\n': '\\n', '\r': '\\r', '\t': '\\t' };
 
 // varLines is a variable's comments and line, its line rewritten if the value changed.
+// A commented-out variable keeps its comment line until it is given a value.
 export function varLines(v: EnvVar): string[] {
-  return [...v.comments, v.value === v.original ? v.line : formatLine(v, v.value)];
+  const unchanged = v.commented ? v.value === '' : v.value === v.original;
+  return [...v.comments, unchanged ? v.line : formatLine(v, v.value)];
 }
 
 // serializeEnv writes a document back to text.
@@ -214,10 +248,46 @@ export function serializeEnv(doc: EnvDoc): string {
 // commentText is a comment line as people read it, without the # and one space.
 export const commentText = (line: string) => line.trimStart().replace(/^# ?/, '');
 
-const secretRe = /PASS|SECRET|TOKEN|KEY|PRIVATE|CREDENTIAL/i;
+// secretWordRe is a word of a name that holds a secret: AccessKey, DB_PASS, ClientSecret.
+// Words, not substrings, so AccountTokens__Enabled or KEYCLOAK_URL are not secrets.
+const secretWordRe = /^(pass|pwd|dsn|private)$|(password|passwd|secret|token|key|credentials?)$/;
 
-// isSecretName says a variable's name looks like it holds a secret.
-export const isSecretName = (name: string) => secretRe.test(name);
+// secretLastWordRe is the last word of a name that holds secrets: API_KEYS, PASSWORDS.
+// Plurals count only last, so AccountTokens__Enabled stays a setting.
+const secretLastWordRe = /(passes|pwds|passwords|passwds|secrets|tokens|keys)$/;
+
+// secretSubstringRe is a secret word inside a one-word name: DBPASS, SECRETKEYBASE.
+// Over-masking (TURKEY) is harmless; a secret in clear is not.
+const secretSubstringRe = /pass|pwd|secret|token|key|credential/;
+
+// nameWords splits a name into lower-case words at _, ., - and camelCase.
+const nameWords = (name: string) =>
+  name
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    .split(/[_.-]+/)
+    .filter(Boolean);
+
+// isSecretName says a variable's name looks like it holds a secret: a word like Key,
+// Secret, Password or Token, or a connection string.
+export function isSecretName(name: string): boolean {
+  if (/connection_?strings?/i.test(name)) return true;
+  const words = nameWords(name);
+  if (words.length === 1) return secretSubstringRe.test(words[0]!);
+  return words.some((w) => secretWordRe.test(w)) || secretLastWordRe.test(words.at(-1) ?? '');
+}
+
+// isSecretValue says a value holds a secret whatever its name: a URI with a password
+// (postgresql://user:pa/ss@host) or keywords with one (Host=h;Password=p, host=h password=p).
+export const isSecretValue = (value: string) =>
+  /[a-z][a-z0-9+.-]*:\/\/[^\s/@:]*:[^\s@]+@/i.test(value) || /(^|[;\s])(password|pwd)\s*=/i.test(value);
+
+const booleanRe = /^(true|false)$/i;
+
+// isSecret says a field is masked: a secret name with a value that isn't a plain
+// true/false, or a value that holds a secret. Only true/false: a password may be "no".
+export const isSecret = (name: string, value: string) =>
+  (isSecretName(name) && !booleanRe.test(value.trim())) || isSecretValue(value);
 
 // EnvForm is what the form editor shows: fields in order, then the variables of the
 // current .env that the example lacks.
@@ -227,8 +297,9 @@ export interface EnvForm {
   // dropped names the variables the example has that the .env sets more than once: the
   // form uses the .env's last line for each and leaves the earlier ones out.
   dropped: string[];
-  // unset are a .env.example's variables the .env doesn't set (formWithHints): empty,
-  // with the example's value in original as a hint. Only those given a value are written.
+  // unset are the variables the .env doesn't set: its own commented-out ones (in place),
+  // then a .env.example's (formWithHints, appended). Empty, with the example's value in
+  // original as a hint. Only those given a value are written.
   unset: EnvVar[];
   // build writes the .env text with the fields' and others' current values.
   build: () => string;
@@ -237,33 +308,45 @@ export interface EnvForm {
 const clone = (v: EnvVar): EnvVar => ({ ...v, comments: [...v.comments] });
 
 // formFromEnv is the form for a .env without an example: its own variables, in place,
-// with its other lines kept where they are.
+// with its other lines kept where they are. A commented-out variable ("# KEY=value") the
+// .env doesn't set is in unset, once per name; given a value, its line is uncommented.
 export function formFromEnv(env: string): EnvForm {
-  const doc = parseEnv(env);
-  const fields = doc.items.filter((it): it is EnvVar => it.kind === 'var');
-  return { fields, others: [], dropped: [], unset: [], build: () => serializeEnv(doc) };
+  const doc = parseEnv(env, { commented: true });
+  const all = doc.items.filter((it): it is EnvVar => it.kind === 'var');
+  const fields = all.filter((v) => !v.commented);
+  const names = new Set(fields.map((v) => v.name));
+  const unset: EnvVar[] = [];
+  for (const v of all) {
+    if (!v.commented || names.has(v.name)) continue;
+    names.add(v.name);
+    unset.push(v);
+  }
+  return { fields, others: [], dropped: [], unset, build: () => serializeEnv(doc) };
 }
 
 // formWithHints is the form for a .env with a .env.example whose values are only hints:
 // the .env's own variables, in place as in formFromEnv, then every variable of the
-// example the .env doesn't set, empty, with its comments and its example value as
-// original. build appends those given a value after the .env, each with its comments;
-// the rest stay unset.
+// example the .env doesn't set (commented-out ones included), empty, with its comments
+// and its example value as original. build appends those given a value after the .env,
+// each with its comments; the rest stay unset.
 export function formWithHints(env: string, example: string): EnvForm {
   const own = formFromEnv(env);
-  const set = new Set(own.fields.map((v) => v.name));
-  const unset: EnvVar[] = [];
-  for (const it of parseEnv(example).items) {
+  const set = new Set([...own.fields, ...own.unset].map((v) => v.name));
+  const unset: EnvVar[] = [...own.unset];
+  const added: EnvVar[] = [];
+  for (const it of parseEnv(example, { commented: true }).items) {
     if (it.kind !== 'var' || set.has(it.name)) continue;
     set.add(it.name);
-    unset.push({ ...clone(it), value: '' });
+    const v = { ...clone(it), value: '' };
+    unset.push(v);
+    added.push(v);
   }
   return {
     ...own,
     unset,
     build: () => {
       const text = own.build();
-      const lines = unset.filter((v) => v.value !== '').flatMap(varLines);
+      const lines = added.filter((v) => v.value !== '').flatMap(varLines);
       if (!lines.length) return text;
       return `${text}${text && !text.endsWith('\n') ? '\n' : ''}${lines.join('\n')}\n`;
     },
