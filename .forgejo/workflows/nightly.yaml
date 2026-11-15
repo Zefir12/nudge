@@ -13,7 +13,7 @@ jobs:
     runs-on: docker
     timeout-minutes: 15
     container:
-      image: golang:1.27.3 # keep in sync with backend/go.mod, Dockerfile and the Makefile
+      image: golang:1.27.4 # keep in sync with backend/go.mod, Dockerfile and the Makefile
     defaults:
       run:
         working-directory: backend
@@ -58,7 +58,7 @@ jobs:
     if: always()
     timeout-minutes: 5
     container:
-      image: golang:1.27.3 # only for curl; same image as vuln, so nothing extra to pull
+      image: golang:1.27.4 # only for curl; same image as vuln, so nothing extra to pull
     steps:
       - name: Notify Discord
         env:

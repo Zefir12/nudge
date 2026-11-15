@@ -13,7 +13,7 @@ RUN npm run build
 # The static docker-compose v2 binary that deploys stacks (docs/architecture.md, Stacks).
 FROM docker/compose-bin:v2.39.1 AS compose
 
-FROM golang:1.27.3 AS gobase
+FROM golang:1.27.4 AS gobase
 
 WORKDIR /src/backend
 COPY backend/go.mod backend/go.sum ./
