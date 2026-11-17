@@ -41,7 +41,7 @@ describe('SetupView', () => {
     await fill(wrapper, 'longenough', 'longenough');
     expect(fetch).toHaveBeenCalledWith('/api/v1/setup', expect.objectContaining({ method: 'POST' }));
     expect(currentUser.value).toEqual(admin);
-    expect(router.currentRoute.value.name).toBe('dashboard');
+    await vi.waitFor(() => expect(router.currentRoute.value.name).toBe('dashboard'));
   });
 
   it.each([
@@ -76,6 +76,6 @@ describe('SetupView', () => {
       'GET /setup': { body: { needed: false } },
     });
     await fill(wrapper, 'longenough', 'longenough');
-    expect(router.currentRoute.value.name).toBe('login');
+    await vi.waitFor(() => expect(router.currentRoute.value.name).toBe('login'));
   });
 });

@@ -48,7 +48,7 @@ describe('VolumeView', () => {
     await wrapper.find('input[type=checkbox]').setValue(true);
     await remove(wrapper).trigger('click');
     await flushPromises();
-    expect(router.currentRoute.value.name).toBe('volumes');
+    await vi.waitFor(() => expect(router.currentRoute.value.name).toBe('volumes'));
   });
 
   it('shows why the volume was not removed', async () => {
@@ -64,6 +64,6 @@ describe('VolumeView', () => {
     await remove(wrapper).trigger('click');
     await flushPromises();
     expect(wrapper.find('[role=alert]').text()).toBe('the volume is in use by a container');
-    expect(router.currentRoute.value.name).toBe('volume');
+    await vi.waitFor(() => expect(router.currentRoute.value.name).toBe('volume'));
   });
 });
