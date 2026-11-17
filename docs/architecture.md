@@ -397,7 +397,11 @@ environment works alike and agents have no git code or credentials.
   fashion, and fails the pull if an object inflates past 128 MiB (a delta counts as its
   target). It holds back the pack's tail until the check has passed, as go-git only
   starts inflating into memory once it has every object. That leaves a clone's peak memory at a
-  few times the largest object it accepts.
+  few times the largest object it accepts. It also refuses a pack of more than 200k
+  objects (go-git keeps about half a KiB of index per object, so 1M one-byte blobs, an 18 MB
+  pack, cost 600 MiB). go-git resolves deltas after the download without looking at the
+  context; the clone's files (`limitFS`) fail reads once the context is done, and go-git
+  reads the pack back for each object, so the 2 minute bound holds there too.
 - **Credentials** are sealed with the secretbox like registry passwords, and only carry
   over on a change if they'd go to the same place. SSH host keys come only from the source's
   `known_hosts`: a wrong compose file is root on the host, so there is no trust on first use,
