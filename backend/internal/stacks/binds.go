@@ -147,7 +147,8 @@ func (l *Local) redactedStderr(name string, stderr *cappedBuffer) string {
 }
 
 // envValues returns the values in a .env file of at least minRedacted bytes, as written
-// and unquoted, longest first so a short value can't break up a longer one containing it.
+// and as compose reads them (see envValueForms), longest first so a short value can't
+// break up a longer one containing it.
 func envValues(env string) []string {
 	var values []string
 	for line := range strings.Lines(env) {
@@ -159,8 +160,7 @@ func envValues(env string) []string {
 		if !ok {
 			continue
 		}
-		value = strings.TrimSpace(value)
-		for _, v := range []string{value, unquote(value)} {
+		for _, v := range envValueForms(strings.TrimSpace(value)) {
 			if len(v) >= minRedacted {
 				values = append(values, v)
 			}
@@ -175,12 +175,88 @@ func envValues(env string) []string {
 	return slices.Compact(values)
 }
 
-// unquote strips one pair of matching single or double quotes around v.
-func unquote(v string) string {
-	if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
-		return v[1 : len(v)-1]
+// envValueForms returns the forms of a .env value (the text after "=", trimmed) that
+// compose's stderr may echo: the value as written, and the value compose reads. A
+// quoted value is the text up to the matching closing quote (a double-quoted one also
+// with its escapes decoded); an unquoted one ends before an inline " #" comment.
+//
+// Best effort: a quoted value that doesn't close on its line spans several lines; only
+// its first line is returned, and mask doesn't match across lines anyway.
+func envValueForms(value string) []string {
+	forms := []string{value}
+	if value == "" {
+		return forms
 	}
-	return v
+	switch q := value[0]; q {
+	case '\'', '"':
+		end := closingQuote(value, q)
+		if end < 0 {
+			return append(forms, value[1:])
+		}
+		inner := value[1:end]
+		forms = append(forms, inner)
+		if q == '"' {
+			if decoded := unescapeDouble(inner); decoded != inner {
+				forms = append(forms, decoded)
+			}
+		}
+	default:
+		if i := inlineComment(value); i >= 0 {
+			forms = append(forms, strings.TrimSpace(value[:i]))
+		}
+	}
+	return forms
+}
+
+// inlineComment returns the index of the "#" that starts an inline comment in an
+// unquoted value (one after a space or tab), or -1.
+func inlineComment(value string) int {
+	for i := 1; i < len(value); i++ {
+		if value[i] == '#' && (value[i-1] == ' ' || value[i-1] == '\t') {
+			return i
+		}
+	}
+	return -1
+}
+
+// closingQuote returns the index of the quote q that closes value (which starts with q),
+// or -1. Inside double quotes a backslash escapes the next byte.
+func closingQuote(value string, q byte) int {
+	for i := 1; i < len(value); i++ {
+		switch {
+		case q == '"' && value[i] == '\\':
+			i++
+		case value[i] == q:
+			return i
+		}
+	}
+	return -1
+}
+
+// unescapeDouble decodes the backslash escapes of a double-quoted .env value.
+func unescapeDouble(s string) string {
+	if !strings.Contains(s, `\`) {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' || i+1 == len(s) {
+			b.WriteByte(s[i])
+			continue
+		}
+		i++
+		switch s[i] {
+		case 'n':
+			b.WriteByte('\n')
+		case 'r':
+			b.WriteByte('\r')
+		case 't':
+			b.WriteByte('\t')
+		default:
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
 }
 
 // relSource names src as the stack in dir would: "./data", "../shared/data", ".".

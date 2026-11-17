@@ -122,10 +122,36 @@ func TestLocalBindCheckCommandLine(t *testing.T) {
 
 func TestEnvValues(t *testing.T) {
 	t.Parallel()
-	env := "# comment\nexport TOKEN='abc def'\nPASSWORD=\"s3cret\"\nSHORT=yes\nEMPTY=\n  URL = postgres://u:pw@db/x \nnot a pair\nKEY=s3cret\n"
-	want := []string{"postgres://u:pw@db/x", "'abc def'", "\"s3cret\"", "abc def", "s3cret"}
+	env := "# comment\nexport TOKEN='abc def'\nPASSWORD=\"s3cret\"\nSHORT=yes\nEMPTY=\n  URL = postgres://u:pw@db/x \nnot a pair\nKEY=s3cret\nINLINE=hunter2secret # prod\nQUOTED=\"abc123\" # c\n"
+	want := []string{"hunter2secret # prod", "postgres://u:pw@db/x", "hunter2secret", "\"abc123\" # c", "'abc def'", "\"s3cret\"", "abc def", "abc123", "s3cret"}
 	if got := envValues(env); !slices.Equal(got, want) {
 		t.Errorf("envValues = %q, want %q", got, want)
+	}
+}
+
+func TestEnvValueForms(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		value string
+		want  []string
+	}{
+		{value: "", want: []string{""}},
+		{value: "abc123", want: []string{"abc123"}},
+		{value: "abc123 # c", want: []string{"abc123 # c", "abc123"}},
+		{value: "abc def\t# c", want: []string{"abc def\t# c", "abc def"}},
+		{value: "abc#123", want: []string{"abc#123"}},
+		{value: `"abc123"`, want: []string{`"abc123"`, "abc123"}},
+		{value: `"abc123" # c`, want: []string{`"abc123" # c`, "abc123"}},
+		{value: `'abc123' # c`, want: []string{`'abc123' # c`, "abc123"}},
+		{value: `'a\'bc'`, want: []string{`'a\'bc'`, `a\`}},
+		{value: `"a\"b # c" # d`, want: []string{`"a\"b # c" # d`, `a\"b # c`, `a"b # c`}},
+		{value: `"x\ny\\z"`, want: []string{`"x\ny\\z"`, `x\ny\\z`, "x\ny\\z"}},
+		{value: `"unterminated`, want: []string{`"unterminated`, "unterminated"}},
+	}
+	for _, tt := range tests {
+		if got := envValueForms(tt.value); !slices.Equal(got, tt.want) {
+			t.Errorf("envValueForms(%q) = %q, want %q", tt.value, got, tt.want)
+		}
 	}
 }
 
