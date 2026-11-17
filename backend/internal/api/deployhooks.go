@@ -26,8 +26,6 @@ import (
 const (
 	// maxHookBody bounds a trigger's body, read whole before its signature is checked.
 	maxHookBody = 1 << 20
-	// hookReadTimeout bounds reading a trigger's body.
-	hookReadTimeout = 30 * time.Second
 	// hookWaitTimeout bounds how long ?wait=1 waits for a run.
 	hookWaitTimeout = 5 * time.Minute
 )
@@ -283,13 +281,11 @@ func (s *server) triggerDeployHook(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusRequestEntityTooLarge, "the body is too large")
 		return
 	}
-	// A slow sender can't hold the request open; not every writer supports deadlines.
-	// The deadline goes again once the body is in: net/http's read that notices a client
-	// going away would hit it and cancel a ?wait=1 caller's request.
-	rc := http.NewResponseController(w)
-	_ = rc.SetReadDeadline(time.Now().Add(hookReadTimeout))
+	// A slow sender can't hold the request open; the deadline goes once the body is in,
+	// or it would cancel a ?wait=1 caller's request (readDeadline).
+	clearDeadline := readDeadline(w)
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxHookBody))
-	_ = rc.SetReadDeadline(time.Time{})
+	clearDeadline()
 	var tooBig *http.MaxBytesError
 	switch {
 	case errors.As(err, &tooBig):
