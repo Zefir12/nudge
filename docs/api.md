@@ -959,10 +959,12 @@ stack, as on any stack (`./config` next to the compose file is not there).
     `git@host:path`. Credentials in the URL are refused.
   - `ref`: a branch or tag, empty for the default branch.
   - `compose_path`, `env_path`: relative paths in the repository, regular files of at most
-    1 MiB. `env_path` is optional: at each pull its variables are set in `.env`, whose other
-    lines stay, so secrets survive. A variable dropped from the file stays in `.env`. The
-    repository wins for names it sets, even over a deployment's last run, so don't list a
-    deployment's variables in this file.
+    1 MiB. `env_path` is optional: at each pull it fills `.env`, and `.env` wins. A
+    variable `.env` sets keeps its value whatever the file says; one `.env` lacks or has
+    empty gets the file's line, only if the file's value isn't empty (an example file's
+    `NAME=` never adds or blanks anything). Added variables go at the end; `.env`'s
+    comments and other lines stay. A variable dropped from the file stays in `.env`. A
+    deployment run's variables are set after the pull, so they win over both.
   - `auth`: `none` (default), `token` (HTTPS; `username` defaults to `git`) or `ssh`.
   - `secret`: the token, or an unencrypted PEM private key. Stored sealed and never
     answered. Left out on `PUT`, the stored one stays as long as `repo_url`, `auth`,

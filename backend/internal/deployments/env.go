@@ -64,16 +64,18 @@ func envLine(line string) (name, value string, ok bool) {
 	return name, value, name != ""
 }
 
-// MergeEnv sets the variables of repo, a .env text, in env: a variable's line is replaced
-// by repo's line as written, keeping its quoting, and the ones env lacks are added at the
-// end. env's other lines stay, so secrets and a deploy's variables survive unless repo
-// names them too, when repo wins.
+// MergeEnv fills env, the text of a stack's .env, from repo, the text of an env file
+// in its repository: env wins. A variable env sets keeps its line, whatever repo says.
+// One env lacks, or has with an empty value, gets repo's line as written (keeping its
+// quoting), but only if repo's value isn't empty: an example file's "NAME=" never adds
+// or blanks a variable. Filled variables stay in place; added ones go at the end in
+// repo's order. env's other lines (comments, blank lines) stay; repo's are dropped.
 func MergeEnv(env, repo string) string {
 	theirs := map[string]string{}
 	var order []string
 	for line := range strings.SplitSeq(repo, "\n") {
-		name, _, ok := envLine(line)
-		if !ok {
+		name, value, ok := envLine(line)
+		if !ok || value == "" {
 			continue
 		}
 		if _, dup := theirs[name]; !dup {
@@ -84,13 +86,13 @@ func MergeEnv(env, repo string) string {
 	seen := map[string]bool{}
 	lines := strings.Split(env, "\n")
 	for i, line := range lines {
-		name, _, ok := envLine(line)
+		name, value, ok := envLine(line)
 		if !ok {
 			continue
 		}
-		if t, set := theirs[name]; set {
+		seen[name] = true
+		if t, set := theirs[name]; set && value == "" {
 			lines[i] = t
-			seen[name] = true
 		}
 	}
 	out := strings.Join(lines, "\n")
