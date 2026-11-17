@@ -71,7 +71,7 @@ run: web-build
 # --- FRONTEND (frontend/: Vue 3 + Vite+) ---
 
 frontend/node_modules: frontend/package.json frontend/package-lock.json
-	$(NPM) ci --no-audit --no-fund
+	$(NPM) ci --no-audit --no-fund --ignore-scripts
 	@touch $@
 
 web-install: frontend/node_modules
