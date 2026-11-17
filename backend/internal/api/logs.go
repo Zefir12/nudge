@@ -100,7 +100,7 @@ func (s *server) containerLogs(w http.ResponseWriter, r *http.Request) {
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	defer cancel()
-	wg.Go(func() { keepAlive(ctx, cancel, ws) })
+	wg.Go(func() { s.keepAlive(ctx, cancel, ws, env.ID) })
 
 	logs, err := c.ContainerLogs(ctx, id, client.ContainerLogsOptions{
 		ShowStdout: true, ShowStderr: true, Follow: follow, Timestamps: timestamps, Tail: tail,
@@ -141,27 +141,6 @@ func (s *server) endStream(ctx context.Context, ws *websocket.Conn, what string,
 	}
 	if wsjson.Write(ctx, ws, end) == nil {
 		_ = ws.Close(websocket.StatusNormalClosure, "")
-	}
-}
-
-// keepAlive pings a log or stats client until ctx is done and cancels the stream when a
-// ping goes unanswered.
-func keepAlive(ctx context.Context, cancel context.CancelFunc, ws *websocket.Conn) {
-	t := time.NewTicker(logPingInterval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			pctx, pcancel := context.WithTimeout(ctx, logPingTimeout)
-			err := ws.Ping(pctx)
-			pcancel()
-			if err != nil {
-				cancel()
-				return
-			}
-		}
 	}
 }
 

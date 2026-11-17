@@ -123,6 +123,9 @@ type Options struct {
 	// TrustedProxies are the reverse proxies whose X-Forwarded-For (client IP for the
 	// credential limiter and logs) and X-Forwarded-Proto are believed; empty means none.
 	TrustedProxies []netip.Prefix
+	// StreamRecheck is how often open streams check that their credential and access
+	// still hold; 0 means a minute. Tests shorten it.
+	StreamRecheck time.Duration
 }
 
 // publicRoutes need no session; every other pattern, including the /api/ catch-all,
@@ -429,6 +432,10 @@ func New(opts Options) http.Handler {
 	if s.now == nil {
 		s.now = time.Now
 	}
+	s.streamRecheck = opts.StreamRecheck
+	if s.streamRecheck <= 0 {
+		s.streamRecheck = streamRecheck
+	}
 	if s.stackRunner == nil {
 		s.stackRunner = func(environments.Environment) stacks.Runner { return nil }
 	}
@@ -528,6 +535,8 @@ type server struct {
 	after func(time.Duration) <-chan time.Time
 	// now is Options.Now.
 	now func() time.Time
+	// streamRecheck is Options.StreamRecheck.
+	streamRecheck time.Duration
 }
 
 // protect requires a session or an API token for every route outside publicRoutes.
@@ -584,7 +593,8 @@ func (s *server) authenticate(api *http.ServeMux, token bool, lookup func(*http.
 			s.internalError(w, "authenticate", err)
 			return
 		}
-		r = r.WithContext(withUser(r.Context(), u))
+		// Streams check again later (keepAlive) with the same lookup.
+		r = r.WithContext(withRecheck(withUser(r.Context(), u), recheckFor(r, u, lookup)))
 		if token && sessionOnlyRoutes[pattern] {
 			s.serveAudited(s.tokenRefused, w, r)
 			return
