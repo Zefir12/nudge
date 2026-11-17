@@ -230,8 +230,8 @@ func shortCommit(c string) string {
 	return c
 }
 
-// filesFromRepo is f with what a pull got: the compose file replaced, the env file's
-// variables set in .env, whose other lines (secrets, a deploy's variables) stay.
+// filesFromRepo is f with what a pull got: the compose file replaced, and .env filled
+// from the env file (MergeEnv: .env wins, so secrets and a deploy's variables stay).
 func filesFromRepo(f stacks.Files, src gitstacks.Source, res gitstacks.Result) stacks.Files {
 	f.Compose = res.Compose
 	if src.EnvPath != "" {

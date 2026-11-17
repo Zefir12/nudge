@@ -663,11 +663,21 @@ func TestMergeEnv(t *testing.T) {
 		{"empty both", "", "", ""},
 		{"nothing local", "", "A=1\n", "A=1\n"},
 		{"keeps others", "SECRET=x\nIMAGE=a@sha256:1\n", "A=1\n", "SECRET=x\nIMAGE=a@sha256:1\nA=1\n"},
-		{"repo wins, in place", "# c\nA=old\nB=2\n", "A=new\n", "# c\nA=new\nB=2\n"},
-		{"keeps quoting", "A=old\n", `A="a #b"` + "\n", `A="a #b"` + "\n"},
+		{"env wins over repo", "# c\nA=old\nB=2\n", "A=new\n", "# c\nA=old\nB=2\n"},
+		{"empty env value filled, in place", "# c\nA=\nB=2\n", "A=new\n", "# c\nA=new\nB=2\n"},
+		{"empty quoted env value filled", "A=\"\"\n", "A=1\n", "A=1\n"},
+		{"keeps repo quoting", "A=\n", `A="a #b"` + "\n", `A="a #b"` + "\n"},
+		{"empty repo value never blanks", "SECRET=x\n", "SECRET=\n", "SECRET=x\n"},
+		{"empty repo value never adds", "B=2\n", "A=\nC=''\n", "B=2\n"},
+		{"empty repo value leaves empty env", "A=\n", "A=\n", "A=\n"},
+		{"embr example", "ConnectionStrings__Default=Host=db\nEMBR_IMAGE=embr@sha256:1\n",
+			"# copy to .env\nConnectionStrings__Default=\nEMBR_IMAGE=\nLOG_LEVEL=info\n",
+			"ConnectionStrings__Default=Host=db\nEMBR_IMAGE=embr@sha256:1\nLOG_LEVEL=info\n"},
+		{"comments and blank lines kept", "# top\n\nA=1\n# end\n", "B=2\n", "# top\n\nA=1\n# end\nB=2\n"},
 		{"repo comments dropped", "", "# about\n\nA=1\n", "A=1\n"},
 		{"adds a newline first", "A=1", "B=2", "A=1\nB=2\n"},
-		{"export", "export A=old\n", "A=new", "A=new\n"},
+		{"export kept", "export A=old\n", "A=new", "export A=old\n"},
+		{"export filled", "export A=\n", "A=new", "A=new\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -675,5 +685,16 @@ func TestMergeEnv(t *testing.T) {
 				t.Fatalf("MergeEnv = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestMergeEnvThenRunVariables: a run's variables are set after the pull's merge, so they
+// win over both the .env and the repository's env file.
+func TestMergeEnvThenRunVariables(t *testing.T) {
+	t.Parallel()
+	merged := MergeEnv("SECRET=x\nIMAGE=app@sha256:1\n", "SECRET=\nIMAGE=app:example\nTAG=repo\n")
+	got, _ := SetVariables(merged, map[string]string{"IMAGE": "app:v2", "TAG": "run"})
+	if want := "SECRET=x\nIMAGE=app:v2\nTAG=run\n"; got != want {
+		t.Fatalf("env = %q, want %q", got, want)
 	}
 }

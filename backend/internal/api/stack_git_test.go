@@ -127,7 +127,9 @@ func TestGitStackComposeIsReadOnly(t *testing.T) {
 func TestPullStackGit(t *testing.T) {
 	t.Parallel()
 	gt := newGitStackTest(t)
-	next := gt.repo.Commit(map[string]string{"compose.yaml": gitCompose + "# v2\n", "app.env": "FROM_REPO=2\n"})
+	// The .env wins: an example's empty SECRET never blanks it, FROM_REPO keeps its value,
+	// and only NEW, which .env lacks and the file sets, is added.
+	next := gt.repo.Commit(map[string]string{"compose.yaml": gitCompose + "# v2\n", "app.env": "SECRET=\nFROM_REPO=2\nNEW=3\nEMPTY=\n"})
 	c, out := gt.do(t, "POST", "local", "/web/git/pull", "")
 	if c != http.StatusOK || !strings.Contains(out, "pulled commit "+next[:12]) {
 		t.Fatalf("pull = %d %s", c, out)
@@ -136,7 +138,7 @@ func TestPullStackGit(t *testing.T) {
 		t.Fatalf("events = %+v", evs)
 	}
 	got := gt.get(t)
-	if got.Git.Commit != next || got.Compose != gitCompose+"# v2\n" || got.Env != "SECRET=keep\nFROM_REPO=2\n" {
+	if got.Git.Commit != next || got.Compose != gitCompose+"# v2\n" || got.Env != "SECRET=keep\nFROM_REPO=1\nNEW=3\n" {
 		t.Fatalf("after pull: %+v %q %q", got.Git, got.Compose, got.Env)
 	}
 	if synced := gt.runner.synced["web"]; synced.Compose != got.Compose || synced.Env != got.Env {
@@ -267,12 +269,14 @@ func TestDeploymentPullsGitStack(t *testing.T) {
 			headers: bearer(token), body: `{"variables":{"API_IMAGE":"app:v2"}}`})
 		return deployRunOf(t, rec.Body.String())
 	}
-	next := gt.repo.Commit(map[string]string{"compose.yaml": gitCompose + "# ci\n"})
+	// The env file's API_IMAGE fills the .env, then the run's value goes on top.
+	next := gt.repo.Commit(map[string]string{"compose.yaml": gitCompose + "# ci\n", "app.env": "SECRET=\nAPI_IMAGE=app:repo\n"})
 	if run := deploy(); run.Status != "succeeded" {
 		t.Fatalf("run = %+v", run)
 	}
 	got := gt.get(t)
-	if got.Git.Commit != next || !strings.Contains(got.Compose, "# ci") || !strings.Contains(got.Env, "API_IMAGE=app:v2") || !strings.Contains(got.Env, "SECRET=keep") {
+	if got.Git.Commit != next || !strings.Contains(got.Compose, "# ci") || !strings.Contains(got.Env, "API_IMAGE=app:v2") ||
+		strings.Contains(got.Env, "app:repo") || !strings.Contains(got.Env, "SECRET=keep") {
 		t.Fatalf("after deploy: %+v %q %q", got.Git, got.Compose, got.Env)
 	}
 	// A deploy that fails goes back to the files that worked, commit included.
