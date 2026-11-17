@@ -62,7 +62,8 @@ const pollMinutes = computed({
       </label>
     </div>
     <p v-if="input.env_path" class="muted">
-      Its variables are set in the stack's .env at every pull. Other variables there, such as secrets, stay.
+      At every pull it fills the stack's .env with the variables the .env lacks or has empty. Values set in
+      the .env, such as secrets, always win; empty values in the file are ignored.
     </p>
     <div class="row">
       <label class="field">
