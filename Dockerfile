@@ -11,7 +11,9 @@ COPY frontend/ ./
 RUN npm run build
 
 # The static docker-compose v2 binary that deploys stacks (docs/architecture.md, Stacks).
-FROM docker/compose-bin:v2.39.1 AS compose
+# govulncheck can't see this copied binary: check Compose's security advisories when
+# bumping it, and bump it when one lands (v2.40.2 fixed CVE-2025-62725).
+FROM docker/compose-bin:v2.40.3 AS compose
 
 FROM golang:1.27.4 AS gobase
 
