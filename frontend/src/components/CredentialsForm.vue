@@ -40,6 +40,8 @@ function onSubmit() {
 
 <template>
   <form class="credentials" @submit.prevent="onSubmit">
+    <!-- Extra fields before the credentials, such as setup's token. -->
+    <slot />
     <label>
       Username
       <input v-model="username" name="username" autocomplete="username" required />

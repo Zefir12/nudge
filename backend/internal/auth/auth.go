@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"errors"
@@ -112,6 +113,8 @@ type Options struct {
 	// AdminPasswordOnly refuses password login to everyone but AdminUsername, the
 	// break-glass user, when users sign in through SSO.
 	AdminPasswordOnly bool
+	// SetupToken is the token first-run setup requires (a random one by default).
+	SetupToken string
 }
 
 // Service manages users and sessions in the store's database.
@@ -124,6 +127,8 @@ type Service struct {
 	ssoTTL time.Duration
 	// adminOnly is Options.AdminPasswordOnly.
 	adminOnly bool
+	// setupToken is what ValidSetupToken accepts; fixed for the process's life.
+	setupToken string
 
 	hashes  chan struct{}
 	waiters chan struct{}
@@ -137,16 +142,17 @@ type Service struct {
 // New returns a Service.
 func New(opts Options) *Service {
 	s := &Service{
-		db:        opts.DB,
-		log:       opts.Log,
-		now:       opts.Now,
-		params:    opts.Params,
-		ttl:       opts.SessionTTL,
-		ssoTTL:    opts.SSOSessionTTL,
-		adminOnly: opts.AdminPasswordOnly,
-		hashes:    make(chan struct{}, maxConcurrentHashes),
-		waiters:   make(chan struct{}, maxHashWaiters),
-		ipLimit:   newLimiter(ipFailureLimit, failureWindow, maxLimiterKeys),
+		db:         opts.DB,
+		log:        opts.Log,
+		now:        opts.Now,
+		params:     opts.Params,
+		ttl:        opts.SessionTTL,
+		ssoTTL:     opts.SSOSessionTTL,
+		adminOnly:  opts.AdminPasswordOnly,
+		setupToken: opts.SetupToken,
+		hashes:     make(chan struct{}, maxConcurrentHashes),
+		waiters:    make(chan struct{}, maxHashWaiters),
+		ipLimit:    newLimiter(ipFailureLimit, failureWindow, maxLimiterKeys),
 	}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
@@ -163,6 +169,10 @@ func New(opts Options) *Service {
 	if s.ssoTTL == 0 {
 		s.ssoTTL = s.ttl
 	}
+	if s.setupToken == "" {
+		// 128 random bits: whoever can read the server's log may run setup, nobody else.
+		s.setupToken = rand.Text()
+	}
 	// Hash the dummy now, so the first unknown-user login isn't slower than later ones.
 	_, _ = s.dummy()
 	return s
@@ -175,6 +185,15 @@ func (s *Service) SetupNeeded(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("count users: %w", err)
 	}
 	return !exists, nil
+}
+
+// SetupToken returns the one-time token first-run setup requires. The server logs it at
+// start while no user exists, so only someone who can read the log can create the admin.
+func (s *Service) SetupToken() string { return s.setupToken }
+
+// ValidSetupToken reports whether token is the setup token, in constant time.
+func (s *Service) ValidSetupToken(token string) bool {
+	return subtle.ConstantTimeCompare([]byte(strings.TrimSpace(token)), []byte(s.setupToken)) == 1
 }
 
 // CreateFirstUser creates the first admin while no user exists. The check and the insert are

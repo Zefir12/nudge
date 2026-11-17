@@ -88,8 +88,13 @@ export interface Credentials {
   password: string;
 }
 
+// SetupRequest is the first admin's credentials and the setup token from the server's log.
+export interface SetupRequest extends Credentials {
+  token: string;
+}
+
 export const getSetupStatus = () => apiFetch<{ needed: boolean }>('/setup');
-export const setup = (c: Credentials) => apiFetch<User>('/setup', post(c), { redirectOn401: false });
+export const setup = (c: SetupRequest) => apiFetch<User>('/setup', post(c), { redirectOn401: false });
 export const login = (c: Credentials) => apiFetch<User>('/auth/login', post(c), { redirectOn401: false });
 // The caller navigates to login itself, so a 401 (session already gone) must not redirect too.
 // An SSO user's logout answers with the provider's sign-out page; others get nothing.

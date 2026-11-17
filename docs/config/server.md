@@ -124,7 +124,11 @@ server keeps the source files here either way.
 
 ## First user
 With no user in the database the web UI asks for an admin username and password
-(`POST /api/v1/setup`); until then only health, setup and login answer. To skip that
+(`POST /api/v1/setup`); until then only health, setup and login answer. Setup also needs
+the setup token nudge logs at start while no user exists (`setup_token` in the warning
+"no user yet", e.g. `docker compose logs nudge`), so whoever reaches the port first can't
+make themselves admin. The token is random, new at each start, and useless once a user
+exists. To skip that
 step, set `NUDGE_ADMIN_PASSWORD`: at start, if no user exists, nudge creates `admin` with
 it (at least 8 characters, else the server refuses to start). Once a user exists the
 variable is ignored, so changing it later does not change the password. It has no flag,

@@ -205,6 +205,11 @@ func serve(ctx context.Context, cfg config.Server, log *slog.Logger) (err error)
 			log.Info("created admin user from NUDGE_ADMIN_PASSWORD", "username", auth.AdminUsername)
 		}
 	}
+	if !sso.AnyEnabled() {
+		if err := logSetupToken(context.WithoutCancel(ctx), log, authSvc); err != nil {
+			return err
+		}
+	}
 	connect, err := environments.LocalConnect(cfg.DockerHost)
 	if err != nil {
 		return err
@@ -433,4 +438,20 @@ func stackCredentials(regs *registries.Service) stacks.CredentialFunc {
 		}
 		return creds, nil
 	}
+}
+
+// logSetupToken logs the token first-run setup needs while no user exists. Only someone
+// who can read the log can create the first admin, not whoever reaches the port first.
+func logSetupToken(ctx context.Context, log *slog.Logger, authSvc *auth.Service) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	needed, err := authSvc.SetupNeeded(ctx)
+	if err != nil {
+		return fmt.Errorf("check setup: %w", err)
+	}
+	if needed {
+		log.Warn("no user yet: create the admin in the web UI with this setup token, or set NUDGE_ADMIN_PASSWORD",
+			"setup_token", authSvc.SetupToken())
+	}
+	return nil
 }
