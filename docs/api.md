@@ -687,11 +687,14 @@ usual Docker errors. Then each sample is a text frame (the daemon's first readin
 has no previous one to compute CPU from, is skipped); the last frame is `{"done": true}`
 when the container stopped or `{"error": "..."}`.
 
-`GET /api/v1/environments/{env}/stats` answers `{"containers": [{"id", "name", ...sample}],
-"skipped": 0, "total": {"cpu_percent", "memory_usage", "network_rx", "network_tx", "block_read",
-"block_write"}}`, sorted by name. It takes about a second (the daemon waits for a second
-reading) and samples 8 containers at a time, for at most a minute; a container that stops
-meanwhile, or isn't sampled in time, is left out and counted in `skipped`.
+`GET /api/v1/environments/{env}/stats` answers `{"time": "...", "containers": [{"id", "name",
+...sample}], "skipped": 0, "total": {"cpu_percent", "memory_usage", "network_rx", "network_tx",
+"block_read", "block_write"}}`, sorted by name. While usage is collected it is the metrics
+collector's latest tick (see Metrics) when there is one from the last three collection
+intervals, and `time` is when that tick was taken; it then asks the daemon nothing. Else
+it samples now and leaves `time` out: that takes about a second (the daemon waits for a
+second reading) and samples 8 containers at a time, for at most a minute. A container that
+stops meanwhile, or isn't sampled in time, is left out and counted in `skipped`.
 
 `GET /api/v1/environments/{env}/stats/summary` answers `{"sampled_at": "...", "cpu_percent":
 200, "memory_usage": 536870912, "containers": 2, "host": {"cpu_percent": 23.5,

@@ -991,6 +991,8 @@ export interface ContainerUsage extends StatsSample {
 }
 
 export interface EnvironmentStats {
+  // time is when the collector's tick this comes from was taken; absent when sampled now.
+  time?: string;
   containers: ContainerUsage[];
   // skipped counts running containers that could not be sampled.
   skipped: number;

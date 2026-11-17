@@ -535,13 +535,20 @@ history.
 
 - `Service.Run` lists the environments every interval and keeps one collector goroutine
   per environment (owned by Run, cancelled when the environment goes or Run's context
-  ends). Each tick (`Collect`) lists the running containers, samples them with the one-shot
-  stats call the API's overview uses (`SampleContainers`, 8 at a time, bounded by a
-  minute) and stores every container's row and the environment's totals in one
-  transaction. A tick cut short or one that sampled nothing is dropped; an offline
-  environment simply has no ticks.
+  ends). Each tick (`Collect`) lists the running containers, samples them 8 at a time,
+  bounded by a minute (`sampleTick`), and stores every container's row and the
+  environment's totals in one transaction. A tick cut short or one that sampled nothing
+  is dropped; an offline environment simply has no ticks.
+- The collector keeps each container's last CPU reading (and the last stored tick's), so
+  a container it has seen is read one-shot (`stream=false&one-shot=true`, no wait on the
+  daemon) and its CPU measured since that reading: a stored tick's covers the whole
+  interval, a live tick's the time since the last tick. A new container, or one whose
+  counter went back (a restart), is read with the daemon's previous reading, which costs
+  the daemon a second. The readings are replaced every tick, so they hold only what runs.
 - Each container row carries its owner key, from the API's ownership rule
-  (`api.ContainerOwners`: the owner label unless the image sets one). A user's history is
+  (`api.ContainerOwners`: the owner label unless the image sets one). The collector keeps
+  what it learnt of each image by ID across ticks (an image's labels never change; at most
+  1000, then it starts over), so an image is inspected once, not every tick. A user's history is
   the sum of their rows at query time rather than kept per owner: no third copy of every
   tick, and it is exactly the rows the user may see.
 - `Cleanup` (every 10 minutes) rolls finished hours up into `*_hours` (average, maximum,

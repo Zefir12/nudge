@@ -3,13 +3,16 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker/dockertest"
@@ -148,13 +151,38 @@ func TestOwnershipMetrics(t *testing.T) {
 func TestContainerOwners(t *testing.T) {
 	t.Parallel()
 	ot := newOwnTest(t)
-	got, err := ContainerOwners(t.Context(), ot.fake, ot.fake.Containers)
-	if err != nil {
-		t.Fatal(err)
+	items := append(slices.Clone(ot.fake.Containers), container.Summary{
+		ID: "lost", ImageID: "sha256:gone", Labels: map[string]string{ownerLabel: ot.bobKey},
+	})
+	c := &inspectCounter{Client: ot.fake}
+	images := map[string]bool{}
+	for i := range 2 {
+		got, err := ContainerOwners(t.Context(), c, items, images)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 2 || got["mine"] != ot.bobKey || got["alices"] != ot.alice {
+			t.Errorf("call %d: owners = %v, want mine (bob) and alices (alice), not forged or lost", i, got)
+		}
 	}
-	if len(got) != 2 || got["mine"] != ot.bobKey || got["alices"] != ot.alice {
-		t.Errorf("owners = %v, want mine (bob) and alices (alice), not forged", got)
+	// The images are inspected once; the missing one isn't cached, so it is asked again.
+	if want := map[string]bool{"sha256:plain": true, "sha256:forged": false}; !maps.Equal(images, want) {
+		t.Errorf("cache = %v, want %v", images, want)
 	}
+	if want := []string{"sha256:plain", "sha256:forged", "sha256:gone", "sha256:gone"}; !slices.Equal(c.inspected, want) {
+		t.Errorf("inspected = %v, want %v", c.inspected, want)
+	}
+}
+
+// inspectCounter records the images Client is asked to inspect.
+type inspectCounter struct {
+	docker.Client
+	inspected []string
+}
+
+func (c *inspectCounter) ImageInspect(ctx context.Context, id string, opts ...client.ImageInspectOption) (client.ImageInspectResult, error) {
+	c.inspected = append(c.inspected, id)
+	return c.Client.ImageInspect(ctx, id, opts...)
 }
 
 // The live stream sends each tick within the caller's scope, and ends with an error
@@ -216,5 +244,57 @@ func TestLiveMetrics(t *testing.T) {
 	})
 	if rec := do(t, off.h, request{method: "GET", path: off.path(off.local, "/metrics/live"), cookie: off.admin}); rec.Code != http.StatusNotFound {
 		t.Errorf("collection off = %d %s, want 404", rec.Code, rec.Body)
+	}
+}
+
+// The stats overview answers the collector's latest tick, within the caller's scope,
+// without sampling again; with no recent tick it samples.
+func TestEnvironmentStatsFromTick(t *testing.T) {
+	t.Parallel()
+	envs := &metricsEnvs{}
+	var svc *metrics.Service
+	ot := newOwnTestOpts(t, withMetrics(t, envs, &svc))
+	envs.fake = ot.fake
+	envs.list = []environments.Environment{{ID: ot.local}}
+	for _, name := range ownedObjects {
+		ot.fake.Stats[name] = []container.StatsResponse{linuxStats(1)}
+	}
+	path := ot.path(ot.local, "/stats")
+	// Before a tick it samples now, without a time.
+	if got := getJSON[environmentStats](t, ot.h, path, ot.bob); got.Time != nil || len(got.Containers) != 1 {
+		t.Errorf("before a tick = %+v, want bob's one container sampled now", got)
+	}
+
+	runCtx, stop := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		svc.Run(runCtx)
+	}()
+	defer func() {
+		stop()
+		<-done
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, ok := svc.LatestTick(ot.local, metrics.Scope{All: true}); ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no tick collected")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	calls := len(ot.fake.StatsOptions())
+	admin := getJSON[environmentStats](t, ot.h, path, ot.admin)
+	if admin.Time == nil || !admin.Time.Equal(metricsNow) || len(admin.Containers) != 4 || admin.Total.CPUPercent != 400 {
+		t.Errorf("admin's stats = %+v, want the tick's 4 containers", admin)
+	}
+	bob := getJSON[environmentStats](t, ot.h, path, ot.bob)
+	if len(bob.Containers) != 1 || bob.Containers[0].ID != "mine" || bob.Containers[0].Name != "mine" || bob.Total.CPUPercent != 100 {
+		t.Errorf("bob's stats = %+v, want his one container", bob)
+	}
+	if n := len(ot.fake.StatsOptions()); n != calls {
+		t.Errorf("stats calls = %d, want none past the tick's %d", n, calls)
 	}
 }
