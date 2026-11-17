@@ -2,18 +2,36 @@ package stacks
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"path/filepath"
 	"slices"
 	"strings"
+	"unicode/utf8"
 )
 
 // maxConfigOutput bounds what `compose config` may print for the bind check; a bigger
 // project is deployed unchecked.
 const maxConfigOutput = 8 << 20
+
+// configArgs is the bind check's compose subcommand. --no-env-resolution leaves the
+// services' env_file entries unread: bind sources don't depend on them, and the output
+// then holds no values of the stack's .env. Interpolation still reads .env, as up does.
+var configArgs = []string{"config", "--format", "json", "--no-env-resolution"}
+
+// Bounds on the stderr of a failed `compose config` that is logged: maxConfigStderr is
+// read, its first maxLoggedStderr bytes logged once redacted. Reading more than is logged
+// keeps a secret cut at the read limit out of the log.
+const (
+	maxConfigStderr = 4 << 10
+	maxLoggedStderr = 1 << 10
+)
+
+// minRedacted is the shortest .env value redacted from logged compose errors; shorter
+// ones ("1", "yes") are no secrets and masking them would garble the message.
+const minRedacted = 4
 
 // Mount is one mount of the container nudge runs in.
 type Mount struct {
@@ -74,13 +92,13 @@ func (l *Local) checkBinds(ctx context.Context, name string) *BindError {
 		l.log.Warn("stack bind check skipped: "+reason, append([]any{"stack", name}, args...)...)
 		return nil
 	}
-	out := &cappedBuffer{max: maxConfigOutput}
-	code, err := l.exec(ctx, l.command(name, []string{"config", "--format", "json"}, out, io.Discard))
+	out, stderr := &cappedBuffer{max: maxConfigOutput}, &cappedBuffer{max: maxConfigStderr}
+	code, err := l.exec(ctx, l.command(name, configArgs, out, stderr))
 	switch {
 	case err != nil:
-		return skip("compose config did not run", "err", err)
+		return skip("compose config did not run", "err", err, "stderr", l.redactedStderr(name, stderr))
 	case code != 0:
-		return skip("compose config failed", "exit_code", code)
+		return skip("compose config failed", "exit_code", code, "stderr", l.redactedStderr(name, stderr))
 	case out.over:
 		return skip("compose config output too large", "limit", maxConfigOutput)
 	}
@@ -108,6 +126,61 @@ func (l *Local) checkBinds(ctx context.Context, name string) *BindError {
 		return &BindError{Source: relSource(dir, src), Path: src, Mount: m}
 	}
 	return nil
+}
+
+// redactedStderr is what compose wrote to stderr, for a log: the values of stack name's
+// .env masked and cut to maxLoggedStderr bytes.
+func (l *Local) redactedStderr(name string, stderr *cappedBuffer) string {
+	var secrets []string
+	if files, err := l.dir.Read(name); err == nil {
+		secrets = envValues(files.Env)
+	}
+	text := strings.TrimSpace(mask(stderr.String(), secrets))
+	if len(text) > maxLoggedStderr {
+		cut := maxLoggedStderr
+		for cut > 0 && !utf8.RuneStart(text[cut]) {
+			cut--
+		}
+		text = text[:cut] + "..."
+	}
+	return text
+}
+
+// envValues returns the values in a .env file of at least minRedacted bytes, as written
+// and unquoted, longest first so a short value can't break up a longer one containing it.
+func envValues(env string) []string {
+	var values []string
+	for line := range strings.Lines(env) {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		_, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		for _, v := range []string{value, unquote(value)} {
+			if len(v) >= minRedacted {
+				values = append(values, v)
+			}
+		}
+	}
+	slices.SortFunc(values, func(a, b string) int {
+		if n := cmp.Compare(len(b), len(a)); n != 0 {
+			return n
+		}
+		return strings.Compare(a, b)
+	})
+	return slices.Compact(values)
+}
+
+// unquote strips one pair of matching single or double quotes around v.
+func unquote(v string) string {
+	if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
+		return v[1 : len(v)-1]
+	}
+	return v
 }
 
 // relSource names src as the stack in dir would: "./data", "../shared/data", ".".
@@ -195,7 +268,7 @@ func within(dir, path string) bool {
 	return strings.HasPrefix(path, dir+"/")
 }
 
-// cappedBuffer keeps up to max bytes and notes whether more were written.
+// cappedBuffer keeps the first max bytes written and notes whether more were.
 type cappedBuffer struct {
 	bytes.Buffer
 	max  int
@@ -203,8 +276,9 @@ type cappedBuffer struct {
 }
 
 func (b *cappedBuffer) Write(p []byte) (int, error) {
-	if b.over || b.Len()+len(p) > b.max {
+	if room := b.max - b.Len(); len(p) > room {
 		b.over = true
+		_, _ = b.Buffer.Write(p[:max(room, 0)])
 		return len(p), nil
 	}
 	return b.Buffer.Write(p)
