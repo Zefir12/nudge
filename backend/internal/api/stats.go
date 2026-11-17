@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strconv"
 	"sync"
 	"time"
 
@@ -35,6 +36,11 @@ func (s *server) containerStats(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	release, ok := s.takeStream(w, r, env.ID)
+	if !ok {
+		return
+	}
+	defer release()
 	ictx, icancel := context.WithTimeout(r.Context(), dockerTimeout)
 	ct, ref, err := s.ownedContainer(ictx, c, id)
 	icancel()
@@ -123,6 +129,13 @@ func (s *server) environmentStats(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, err
 		}
+		// runDocker has checked the environment, so its id parses.
+		envID, _ := strconv.ParseInt(r.PathValue("env"), 10, 64)
+		release, ok := s.streamSlot(r, envID)
+		if !ok {
+			return nil, &statusError{code: http.StatusTooManyRequests, msg: errTooManyStreams}
+		}
+		defer release()
 		return s.sampleEnvironment(ctx, c, sc)
 	})
 	if ok {

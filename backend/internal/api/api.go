@@ -88,6 +88,9 @@ type Options struct {
 	// its spec or its image: labels that steer tools on the host such as reverse proxies
 	// (traefik.) or updaters. Empty denies none.
 	DeniedLabels []string
+	// MaxStreams is how many log, stats and exec streams a user may hold open at once in
+	// one environment (admins four times as many); 0 means 32.
+	MaxStreams int
 	// Events is the Docker events hub, shared with the notification watcher; nil means
 	// the API makes its own.
 	Events *events.Hub
@@ -408,6 +411,7 @@ func New(opts Options) http.Handler {
 		checks:         make(chan struct{}, maxStackChecks),
 		done:           context.Background(),
 		userRegistries: newRegistrySet(opts.UserRegistries),
+		streams:        newStreamLimiter(opts.MaxStreams),
 	}
 	if s.sso == nil {
 		s.sso = oidcproviders.New(oidcproviders.Options{})
@@ -501,6 +505,8 @@ type server struct {
 	done context.Context
 	// events fans each environment's Docker events out to the clients watching it.
 	events *events.Hub
+	// streams bounds each user's log, stats and exec streams (streamlimit.go).
+	streams *streamLimiter
 
 	publicURL     string
 	secureCookies bool

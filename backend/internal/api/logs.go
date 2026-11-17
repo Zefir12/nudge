@@ -73,6 +73,11 @@ func (s *server) containerLogs(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	release, ok := s.takeStream(w, r, env.ID)
+	if !ok {
+		return
+	}
+	defer release()
 	ictx, icancel := context.WithTimeout(r.Context(), dockerTimeout)
 	ct, ref, err := s.ownedContainer(ictx, c, id)
 	icancel()
