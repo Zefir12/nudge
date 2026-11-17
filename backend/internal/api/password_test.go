@@ -52,6 +52,20 @@ func TestChangePassword(t *testing.T) {
 	if rec := do(t, h, request{method: "POST", path: "/api/v1/auth/login", body: `{"username":"bob","password":"evenlonger"}`}); rec.Code != http.StatusOK {
 		t.Errorf("login with the new password = %d", rec.Code)
 	}
+	tokenWorks := func() bool {
+		rec := do(t, h, request{method: "GET", path: "/api/v1/auth/me", headers: map[string]string{"Authorization": "Bearer " + tok.Token}})
+		return rec.Code == http.StatusOK
+	}
+	if !tokenWorks() {
+		t.Error("the API token went without revoke_tokens")
+	}
+	rec = do(t, h, request{method: "POST", path: "/api/v1/auth/password", cookie: bob, body: `{"current":"evenlonger","new":"evenlonger2","revoke_tokens":true}`})
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("change with revoke_tokens = %d %s", rec.Code, rec.Body)
+	}
+	if tokenWorks() {
+		t.Error("the API token survived revoke_tokens")
+	}
 
 	rec = do(t, h, request{method: "GET", path: "/api/v1/audit", cookie: admin})
 	if !strings.Contains(rec.Body.String(), "POST /api/v1/auth/password") {

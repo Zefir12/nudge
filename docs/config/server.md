@@ -295,8 +295,9 @@ In what follows, `NUDGE_OIDC_*` settings correspond to a UI provider's own field
   taken away keeps their session (as an admin) until `NUDGE_OIDC_SESSION_TTL` ends it or
   they log in again, and API tokens they created keep working until then. The next SSO
   login without either role is refused and ends all of that user's sessions and deletes
-  their API tokens (audited); a login refused only for a missing second factor revokes
-  nothing. Deploy tokens and deploy webhooks they created are not touched. Disabling the
+  their API tokens, deploy webhooks and deploy tokens (audited); a login refused only for
+  a missing second factor revokes nothing. Taking a provider away does the same for its
+  users. A deploy webhook stops working as soon as its creator is no longer an admin. Disabling the
   user in nudge (Users page) ends their sessions and stops their tokens at once.
 - **Disabling or deleting a provider** in the UI (or moving it to another issuer) signs its
   users out and deletes their API tokens at once, in one transaction, since nobody can vouch

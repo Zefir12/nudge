@@ -125,7 +125,7 @@ func (s *server) startSession(w http.ResponseWriter, r *http.Request, c credenti
 }
 
 // changePassword changes the logged-in user's own password and ends their other
-// sessions; this one stays.
+// sessions; this one stays. With revoke_tokens it deletes their API tokens too.
 func (s *server) changePassword(w http.ResponseWriter, r *http.Request) {
 	u, ok := userFrom(r.Context())
 	if !ok {
@@ -135,12 +135,14 @@ func (s *server) changePassword(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Current string `json:"current"`
 		New     string `json:"new"`
+		// RevokeTokens also deletes the user's API tokens; scripts using them stop.
+		RevokeTokens bool `json:"revoke_tokens"`
 	}
 	if !s.decodeJSON(w, r, &req) {
 		return
 	}
 	ip := clientIP(r)
-	err := s.auth.ChangePassword(r.Context(), u.ID, sessionToken(r), req.Current, req.New)
+	err := s.auth.ChangePassword(r.Context(), u.ID, sessionToken(r), req.Current, req.New, req.RevokeTokens)
 	var inputErr *auth.InputError
 	switch {
 	case errors.As(err, &inputErr):

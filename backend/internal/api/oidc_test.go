@@ -195,7 +195,7 @@ func TestSSOLostRole(t *testing.T) {
 	access(t, http.StatusUnauthorized)
 	var username, target string
 	if err := db.QueryRow(`SELECT username, target FROM audit_log WHERE target LIKE '%no role%'`).Scan(&username, &target); err != nil ||
-		username != users[0].Username || target != "user-1: no role; revoked 1 sessions, 1 API tokens" {
+		username != users[0].Username || target != "user-1: no role; revoked 1 sessions, 1 API tokens, 0 webhooks, 0 deploy tokens" {
 		t.Errorf("audit = %q %q, %v", username, target, err)
 	}
 }
