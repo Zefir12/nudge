@@ -698,3 +698,11 @@ func TestMergeEnvThenRunVariables(t *testing.T) {
 		t.Fatalf("env = %q, want %q", got, want)
 	}
 }
+
+func TestEnvValues(t *testing.T) {
+	t.Parallel()
+	got := EnvValues("# A=x\nA=1\nexport B=\"two words\"\nC=\n\nD='q'\n")
+	if want := []string{"1", "two words", "q"}; !slices.Equal(got, want) {
+		t.Errorf("EnvValues = %q, want %q", got, want)
+	}
+}

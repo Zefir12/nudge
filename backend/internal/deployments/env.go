@@ -43,6 +43,18 @@ func SetVariables(env string, vars map[string]string) (string, map[string]string
 	return out, previous
 }
 
+// EnvValues lists the values of the variables in env, the text of a stack's .env, in
+// order, without quotes; empty values are left out.
+func EnvValues(env string) []string {
+	var out []string
+	for line := range strings.SplitSeq(env, "\n") {
+		if _, value, ok := envLine(line); ok && value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
 // envLine parses a variable line of a .env file; comments and blank lines aren't.
 func envLine(line string) (name, value string, ok bool) {
 	s := strings.TrimSpace(line)
