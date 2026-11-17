@@ -95,7 +95,7 @@ func (s *server) deployDeployment(ctx context.Context, d deployments.Deployment,
 	setStep(deployments.StepPulling)
 	// Compose's output is kept to say why it failed, without the .env's values.
 	secrets := envSecrets(run.Variables, original, written)
-	tail := &composeTail{}
+	tail := &composeTail{secrets: secrets}
 	follow := deployOutput(setStep)
 	sr := stackRun{env: env, c: c, runner: runner, name: d.Stack, wait: h.Wait(), out: func(l stacks.Line) {
 		follow(l)
@@ -113,11 +113,11 @@ func (s *server) deployDeployment(ctx context.Context, d deployments.Deployment,
 	var problem string
 	switch {
 	case err != nil:
-		lines := s.composeOutput(tail, secrets, report)
+		lines := s.composeOutput(tail, report)
 		s.log.Warn("deployment run", "deployment", d.Name, "run", run.ID, "err", err, "compose", lines)
 		problem = deployError(err)
 	case code != 0:
-		lines := s.composeOutput(tail, secrets, report)
+		lines := s.composeOutput(tail, report)
 		s.log.Warn("deployment run", "deployment", d.Name, "run", run.ID, "step", step, "exit_code", code, "compose", lines)
 		problem = withComposeLine((&composeExit{code: code}).Error(), lines)
 		if step != deployments.StepPulling {
@@ -152,10 +152,10 @@ func (s *server) deployDeployment(ctx context.Context, d deployments.Deployment,
 	}
 	setStep(deployments.StepRollingBack)
 	// The rollback's output has its own tail, and no longer moves the step.
-	rtail := &composeTail{}
+	rtail := &composeTail{secrets: secrets}
 	sr.out = rtail.add
 	if err := s.rollBack(ctx, sr, d, run, original, user); err != nil {
-		lines := s.composeOutput(rtail, secrets, report)
+		lines := s.composeOutput(rtail, report)
 		s.log.Warn("deployment run: roll back", "deployment", d.Name, "run", run.ID, "err", err, "compose", lines)
 		msg := deployError(err)
 		if ce := (*composeExit)(nil); errors.As(err, &ce) {
@@ -272,8 +272,8 @@ func (s *server) serviceProblem(ctx context.Context, c docker.Client, stack stri
 
 // composeOutput reports the last lines of a failed compose run, with lines holding a
 // .env value hidden, and returns them for the log.
-func (s *server) composeOutput(t *composeTail, secrets []string, report deployments.Report) []string {
-	lines := t.redacted(secrets)
+func (s *server) composeOutput(t *composeTail, report deployments.Report) []string {
+	lines := t.kept()
 	for _, l := range lines {
 		report(deployments.Progress{Message: "compose: " + l})
 	}

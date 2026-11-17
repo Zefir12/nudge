@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/deployments"
@@ -25,18 +26,24 @@ const (
 const hiddenComposeLine = "[a line was hidden: it contains a value from the stack's .env]"
 
 // composeTail keeps the last lines of one compose run's output, both streams, so a
-// failed run can show why compose failed. Not safe for concurrent use: compose's output
+// failed run can show why compose failed. A line holding one of secrets is replaced by
+// hiddenComposeLine when it is added, before a long line is cut, so a secret crossing
+// the cut can't leave its prefix behind. Not safe for concurrent use: compose's output
 // comes through one callback.
 type composeTail struct {
-	lines []string
-	size  int
+	secrets []string
+	lines   []string
+	size    int
 }
 
-// add keeps l, dropping the oldest lines over the bounds.
+// add keeps l, hidden if it holds a secret, dropping the oldest lines over the bounds.
 func (t *composeTail) add(l stacks.Line) {
 	text := strings.TrimSpace(l.Text)
 	if text == "" {
 		return
+	}
+	if containsAny(l.Text, t.secrets) {
+		text = hiddenComposeLine
 	}
 	if len(text) > composeLineBytes {
 		text = strings.ToValidUTF8(text[:composeLineBytes], "") + "…"
@@ -49,19 +56,14 @@ func (t *composeTail) add(l stacks.Line) {
 	}
 }
 
-// redacted returns the kept lines with every line that contains one of secrets replaced
-// by hiddenComposeLine.
-func (t *composeTail) redacted(secrets []string) []string {
-	out := make([]string, 0, len(t.lines))
-	for _, l := range t.lines {
-		if containsAny(l, secrets) {
-			l = hiddenComposeLine
-		}
-		out = append(out, l)
-	}
-	return out
+// kept returns a copy of the kept lines, oldest first.
+func (t *composeTail) kept() []string {
+	return slices.Clone(t.lines)
 }
 
+// containsAny reports whether s contains one of subs. The match is a plain,
+// case-sensitive substring match: a value compose prints in another form (URL-encoded,
+// quoted differently, split over lines) is not found.
 func containsAny(s string, subs []string) bool {
 	for _, sub := range subs {
 		if strings.Contains(s, sub) {
@@ -72,7 +74,8 @@ func containsAny(s string, subs []string) bool {
 }
 
 // envSecrets are the values compose's output must not show: those of the given texts of
-// a stack's .env (before and after a run), minSecretLen bytes or longer. The values of
+// a stack's .env (before and after a run), in every form compose may print them (see
+// deployments.EnvValues), minSecretLen bytes or longer. The values of
 // the run's own variables are left out, as the run shows them anyway (an image tag is
 // often what compose's error is about), unless another variable holds the same value.
 func envSecrets(run map[string]string, envs ...string) []string {

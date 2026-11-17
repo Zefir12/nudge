@@ -16,7 +16,7 @@ func TestComposeTail(t *testing.T) {
 		tail.add(stacks.Line{Text: "line " + strconv.Itoa(i)})
 	}
 	tail.add(stacks.Line{Text: "   "})
-	got := tail.redacted(nil)
+	got := tail.kept()
 	if len(got) != composeTailLines || got[0] != "line 5" || got[len(got)-1] != "line 24" {
 		t.Errorf("kept %q, want the last %d lines", got, composeTailLines)
 	}
@@ -26,7 +26,7 @@ func TestComposeTail(t *testing.T) {
 	for range 20 {
 		tail.add(stacks.Line{Text: long})
 	}
-	got = tail.redacted(nil)
+	got = tail.kept()
 	size := 0
 	for _, l := range got {
 		size += len(l)
@@ -46,7 +46,7 @@ func TestEnvSecrets(t *testing.T) {
 	got := envSecrets(map[string]string{"API_IMAGE": "app:v2"}, before, after)
 	slices.Sort(got)
 	// app:v2 is the run's own value, but TOKEN holds it too; KEEP's is too short.
-	want := []string{"app:v1", "app:v2", "hunter22", "s3cret!"}
+	want := []string{"'hunter22'", "app:v1", "app:v2", "hunter22", "s3cret!"}
 	if !slices.Equal(got, want) {
 		t.Errorf("envSecrets = %q, want %q", got, want)
 	}
@@ -54,10 +54,38 @@ func TestEnvSecrets(t *testing.T) {
 		t.Errorf("envSecrets of the run's own value = %q, want none", got)
 	}
 
-	var tail composeTail
+	tail := composeTail{secrets: want}
 	tail.add(stacks.Line{Text: "connect: password hunter22 refused"})
 	tail.add(stacks.Line{Text: "pull app:v3"})
-	if got := tail.redacted(want); got[0] != hiddenComposeLine || got[1] != "pull app:v3" {
-		t.Errorf("redacted = %q", got)
+	if got := tail.kept(); got[0] != hiddenComposeLine || got[1] != "pull app:v3" {
+		t.Errorf("kept = %q", got)
+	}
+
+	// Every form compose may print: the value an inline comment or quotes surround,
+	// and a double-quoted one with its escapes decoded.
+	env := "A=abcd # c\nB=\"efgh\" # c\nC=\"x\\\"y\\\\z\"\nD=\"open\n"
+	got = envSecrets(nil, env)
+	for _, printed := range []string{"abcd", "efgh", `x"y\z`, "open"} {
+		if !slices.Contains(got, printed) {
+			t.Errorf("envSecrets(%q) = %q, lacks %q", env, got, printed)
+		}
+	}
+}
+
+// A secret crossing the cut of a long line must not leave its prefix in the kept line.
+func TestComposeTailSecretAtCut(t *testing.T) {
+	t.Parallel()
+	secret := "s3cret-token-value"
+	text := strings.Repeat("x", composeLineBytes-5) + secret + " tail"
+	tail := composeTail{secrets: []string{secret}}
+	tail.add(stacks.Line{Text: text})
+	got := tail.kept()
+	if len(got) != 1 || got[0] != hiddenComposeLine {
+		t.Errorf("kept = %q, want the line hidden", got)
+	}
+	for _, l := range got {
+		if strings.Contains(l, secret[:5]) {
+			t.Errorf("kept line leaks the secret's prefix: %q", l)
+		}
 	}
 }
