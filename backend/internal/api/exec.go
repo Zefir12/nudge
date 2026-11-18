@@ -161,7 +161,7 @@ func (s *server) execSession(parent context.Context, ws *websocket.Conn, c docke
 	defer att.Close()
 	stop := context.AfterFunc(ctx, att.Close)
 	defer stop()
-	wg.Go(func() { keepAlive(ctx, cancel, ws) })
+	wg.Go(func() { s.keepAlive(ctx, cancel, ws, env) })
 	wg.Go(func() { s.execInput(ctx, cancel, ws, c, env, execID, att.Conn) })
 
 	buf := make([]byte, execChunk)
