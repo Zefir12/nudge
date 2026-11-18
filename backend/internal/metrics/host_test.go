@@ -84,13 +84,13 @@ func TestHostStored(t *testing.T) {
 	mt.svc.host = fh.read
 	ctx := t.Context()
 	env := environments.Environment{ID: 1}
-	var prev hostReadings
+	prev := newCollectorState()
 	mt.clock.set(t0.Add(time.Minute))
-	if err := mt.svc.collect(ctx, env, true, &prev); err != nil {
+	if err := mt.svc.collect(ctx, env, true, prev); err != nil {
 		t.Fatal(err)
 	}
 	mt.clock.set(t0.Add(3 * time.Minute))
-	if err := mt.svc.collect(ctx, env, true, &prev); err != nil {
+	if err := mt.svc.collect(ctx, env, true, prev); err != nil {
 		t.Fatal(err)
 	}
 	if n := mt.count(t, `SELECT COUNT(*) FROM environment_samples WHERE host_cpu IS NULL`); n != 1 {
