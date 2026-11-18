@@ -64,9 +64,10 @@ func newTestHandlerSSO(t *testing.T, connect environments.ConnectFunc, ssoMod fu
 	t.Cleanup(func() { _ = st.Close() })
 	now := time.Unix(1_700_000_000, 0)
 	svc := auth.New(auth.Options{
-		DB:     st.DB(),
-		Now:    func() time.Time { return now },
-		Params: auth.Params{Memory: 64, Time: 1, Threads: 1},
+		DB:         st.DB(),
+		Now:        func() time.Time { return now },
+		Params:     auth.Params{Memory: 64, Time: 1, Threads: 1},
+		SetupToken: testSetupToken,
 	})
 	web := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "web")

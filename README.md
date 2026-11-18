@@ -28,7 +28,8 @@ docker run -d --name nudge --restart unless-stopped \
   registrydedic.zefirlabs.net/nudge:latest
 ```
 
-Open http://localhost:8080. Or use [deploy/compose.yml](deploy/compose.yml).
+Open http://localhost:8080 and create the admin with the setup token from `docker logs nudge`.
+Or use [deploy/compose.yml](deploy/compose.yml).
 No `--privileged` is needed: the socket is all it uses. The socket gives root on the host,
 so keep nudge behind TLS: its own (`NUDGE_TLS_*`) or a reverse proxy's (see
 [docs/config/server.md](docs/config/server.md#reverse-proxy)).

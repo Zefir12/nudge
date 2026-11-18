@@ -88,8 +88,13 @@ export interface Credentials {
   password: string;
 }
 
+// SetupRequest is the first admin's credentials and the setup token from the server's log.
+export interface SetupRequest extends Credentials {
+  token: string;
+}
+
 export const getSetupStatus = () => apiFetch<{ needed: boolean }>('/setup');
-export const setup = (c: Credentials) => apiFetch<User>('/setup', post(c), { redirectOn401: false });
+export const setup = (c: SetupRequest) => apiFetch<User>('/setup', post(c), { redirectOn401: false });
 export const login = (c: Credentials) => apiFetch<User>('/auth/login', post(c), { redirectOn401: false });
 // The caller navigates to login itself, so a 401 (session already gone) must not redirect too.
 // An SSO user's logout answers with the provider's sign-out page; others get nothing.
@@ -107,9 +112,10 @@ export const getAuthMethods = () =>
 // ssoLoginUrl is where the browser goes (a navigation, not a fetch) to sign in with SSO.
 export const ssoLoginUrl = (provider: string, redirect: string) =>
   `/api/v1/auth/oidc/${encodeURIComponent(provider)}/login?redirect=${encodeURIComponent(redirect)}`;
-// changePassword changes the signed-in user's password; their other sessions end.
-export const changePassword = (current: string, next: string) =>
-  apiFetch<void>('/auth/password', post({ current, new: next }));
+// changePassword changes the signed-in user's password; their other sessions end, and
+// with revokeTokens their API tokens are deleted too.
+export const changePassword = (current: string, next: string, revokeTokens: boolean) =>
+  apiFetch<void>('/auth/password', post({ current, new: next, revoke_tokens: revokeTokens }));
 
 export const getMe = () => apiFetch<User>('/auth/me', undefined, { redirectOn401: false });
 
@@ -991,6 +997,8 @@ export interface ContainerUsage extends StatsSample {
 }
 
 export interface EnvironmentStats {
+  // time is when the collector's tick this comes from was taken; absent when sampled now.
+  time?: string;
   containers: ContainerUsage[];
   // skipped counts running containers that could not be sampled.
   skipped: number;
@@ -1540,6 +1548,8 @@ export interface DeployHook {
   // last_status is the newest run's status, '' before the first.
   last_status: DeployHookStatus | '';
   url: string;
+  // orphaned means the creator is no longer an admin: its triggers are refused.
+  orphaned: boolean;
 }
 
 // DeployHookWithSecret is a webhook with its secret, answered only on create and rotate.
