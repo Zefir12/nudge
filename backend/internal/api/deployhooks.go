@@ -470,6 +470,8 @@ func deployError(err error) string {
 		// nudge's own words.
 		errors.As(err, &se)
 		return se.msg
+	case errors.As(err, new(*composeExit)):
+		return err.Error()
 	case errors.Is(err, stacks.ErrNoCompose):
 		return "docker-compose is not installed"
 	case errors.Is(err, tunnel.ErrNoControl):

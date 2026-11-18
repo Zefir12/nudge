@@ -43,6 +43,44 @@ func SetVariables(env string, vars map[string]string) (string, map[string]string
 	return out, previous
 }
 
+// EnvValues lists the values of the variables in env, the text of a stack's .env, in
+// order, in every form compose may print them (see envValueForms): as written and as
+// compose reads them. Empty forms are left out, and a line's forms are distinct.
+func EnvValues(env string) []string {
+	var out []string
+	for line := range strings.SplitSeq(env, "\n") {
+		value, ok := rawEnvValue(line)
+		if !ok {
+			continue
+		}
+		var forms []string
+		for _, v := range envValueForms(value) {
+			if v != "" && !slices.Contains(forms, v) {
+				forms = append(forms, v)
+			}
+		}
+		out = append(out, forms...)
+	}
+	return out
+}
+
+// rawEnvValue returns the value of a variable line of a .env file as written (the text
+// after "=", trimmed, quotes and comments kept); comments and blank lines have none.
+func rawEnvValue(line string) (string, bool) {
+	s := strings.TrimSpace(line)
+	if s == "" || strings.HasPrefix(s, "#") {
+		return "", false
+	}
+	if rest, found := strings.CutPrefix(s, "export "); found {
+		s = strings.TrimSpace(rest)
+	}
+	name, value, ok := strings.Cut(s, "=")
+	if !ok || strings.TrimSpace(name) == "" {
+		return "", false
+	}
+	return strings.TrimSpace(value), true
+}
+
 // envLine parses a variable line of a .env file; comments and blank lines aren't.
 func envLine(line string) (name, value string, ok bool) {
 	s := strings.TrimSpace(line)

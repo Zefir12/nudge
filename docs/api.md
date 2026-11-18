@@ -1398,6 +1398,13 @@ even when you can't see that deployment); at most 1000 deployments.
   every 25 s while nothing happens, and finally `{"status", "run", "step", "error",
   "warnings"}`. CI passes only if the last line's `status` is `succeeded`. Leaving early
   doesn't stop the run. Steps can be skipped in the stream when the run gets ahead of it.
+- **Compose's output on failure.** When compose fails (in the run's up or its
+  rollback), the run's progress gets compose's last 20 lines (at most 4 KiB) as
+  `compose: <line>` messages, the run's `error` ends with its last line, and the server
+  log's `deployment run` / `deployment run: roll back` warnings carry them as `compose`.
+  A line that contains a value (4 bytes or longer) of the stack's .env, before or after
+  the run, is replaced by `[a line was hidden: it contains a value from the stack's
+  .env]`; the run's own variable values stay visible, as the run shows them anyway.
 
 ### Audit log
 Every `POST`, `PUT`, `PATCH` and `DELETE` that reaches a route is recorded after it is

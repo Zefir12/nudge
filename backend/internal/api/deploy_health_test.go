@@ -487,3 +487,61 @@ func TestDeployOutput(t *testing.T) {
 		t.Errorf("steps = %q, want one switch to deploying", steps)
 	}
 }
+
+func TestDeployComposeOutput(t *testing.T) {
+	t.Parallel()
+	ht := newHealthTest(t, `{}`)
+	ht.runner.code = 1
+	ht.runner.lines = []stacks.Line{
+		{Stream: "stderr", Text: " app Pulling"},
+		// app:v1 is the value the run replaces, which a deploy token doesn't see.
+		{Stream: "stdout", Text: "was running app:v1"},
+		{Stream: "stderr", Text: "Error response from daemon: pull access denied for app:v2"},
+	}
+	rec := do(t, ht.h, request{method: "POST", path: "/api/v1/deployments/shop/deploys?stream=1", body: `{"variables":{"API_IMAGE":"app:v2"}}`, headers: bearer(ht.token)})
+	var progress []string
+	var end deployEvent
+	sc := bufio.NewScanner(rec.Body)
+	for sc.Scan() {
+		if err := json.Unmarshal(sc.Bytes(), &end); err != nil {
+			t.Fatalf("line %q: %v", sc.Text(), err)
+		}
+		progress = append(progress, end.Message)
+	}
+	want := "pulling: compose exited with code 1: Error response from daemon: pull access denied for app:v2"
+	if end.Status != "failed" || end.Error != want {
+		t.Errorf("final line = %+v, want error %q", end, want)
+	}
+	got := strings.Join(progress, "\n")
+	for _, line := range []string{"compose: app Pulling", "compose: " + hiddenComposeLine, "compose: Error response from daemon: pull access denied for app:v2"} {
+		if !strings.Contains(got, line) {
+			t.Errorf("progress lacks %q:\n%s", line, got)
+		}
+	}
+	if strings.Contains(got, "app:v1") {
+		t.Errorf("progress shows the replaced value:\n%s", got)
+	}
+}
+
+func TestDeployRollbackComposeOutput(t *testing.T) {
+	t.Parallel()
+	ht := newHealthTest(t, `{"http":{"service":"app","port":8080},"rollback":true}`)
+	ht.runner.probeErr = &probe.FailedError{Msg: "answered another status than 200"}
+	ht.runner.lines = []stacks.Line{{Stream: "stderr", Text: "Error response from daemon: network web_default not found"}}
+	runs := 0
+	onRun := ht.runner.onRun
+	ht.runner.onRun = func() {
+		onRun()
+		if runs++; runs == 2 {
+			ht.runner.code = 1
+		}
+	}
+	code, run := ht.deploy(t)
+	want := "; the rollback failed too: compose exited with code 1 on the previous values: Error response from daemon: network web_default not found"
+	if code != http.StatusBadGateway || run.Status != "failed" || !strings.HasSuffix(run.Error, want) {
+		t.Errorf("deploy = %d %s %q, want the error to end with %q", code, run.Status, run.Error, want)
+	}
+	if run.Step != "rolling_back" {
+		t.Errorf("step = %q, want rolling_back", run.Step)
+	}
+}
