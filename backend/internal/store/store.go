@@ -29,17 +29,19 @@ const busyTimeoutMS = 30000
 
 // Store owns the database handle.
 type Store struct {
-	db *sql.DB
+	db   *sql.DB
+	path string
 }
 
 // Open opens (creating if needed) <dataDir>/nudge.db and applies pending migrations.
 // The data directory must already exist.
 func Open(ctx context.Context, dataDir string) (*Store, error) {
-	db, err := OpenDB(ctx, filepath.Join(dataDir, FileName), migrationsFS, migrationsDir)
+	path := filepath.Join(dataDir, FileName)
+	db, err := OpenDB(ctx, path, migrationsFS, migrationsDir)
 	if err != nil {
 		return nil, err
 	}
-	return &Store{db: db}, nil
+	return &Store{db: db, path: path}, nil
 }
 
 // OpenDB opens (creating if needed) the SQLite database at path with nudge's settings
@@ -111,8 +113,22 @@ func SchemaVersion() (int, error) {
 // Snapshot writes a consistent copy of the database to path, which must not exist:
 // VACUUM INTO reads one snapshot, so writes going on meanwhile are either all in the
 // copy or not at all, and the copy has no WAL file to go with it.
-func (s *Store) Snapshot(ctx context.Context, path string) error {
-	if _, err := s.db.ExecContext(ctx, `VACUUM INTO ?`, path); err != nil {
+//
+// It runs on a short-lived connection of its own, not the shared one: VACUUM INTO only
+// needs a read snapshot, which WAL lets run alongside the shared connection's reads and
+// writes, so a backup of a large database no longer stalls every request meanwhile.
+func (s *Store) Snapshot(ctx context.Context, path string) (err error) {
+	db, err := sql.Open("sqlite", dsn(s.path))
+	if err != nil {
+		return fmt.Errorf("snapshot database: %w", err)
+	}
+	defer func() {
+		if cerr := db.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("snapshot database: close: %w", cerr)
+		}
+	}()
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(ctx, `VACUUM INTO ?`, path); err != nil {
 		return fmt.Errorf("snapshot database: %w", err)
 	}
 	return nil
