@@ -166,10 +166,15 @@ type Revoked struct {
 	Username string
 	Sessions int64
 	Tokens   int64
+	// Webhooks and DeployTokens are the deploy webhooks and deploy tokens they created,
+	// which act in their name without a session.
+	Webhooks     int64
+	DeployTokens int64
 }
 
-// RevokeSSO ends every session and deletes every API token of the SSO user with this
-// issuer and subject, as when the provider takes their role away. The user itself stays,
+// RevokeSSO ends every session and deletes every API token, deploy webhook and deploy
+// token of the SSO user with this issuer and subject, as when the provider takes their
+// role away. The user itself stays,
 // so a later login with a role signs them in again. A user that doesn't exist yet
 // revokes nothing.
 func (s *Service) RevokeSSO(ctx context.Context, issuer, subject string) (Revoked, error) {
@@ -204,6 +209,9 @@ func (s *Service) RevokeSSO(ctx context.Context, issuer, subject string) (Revoke
 	if r.Tokens, err = res.RowsAffected(); err != nil {
 		return Revoked{}, fmt.Errorf("revoke sso tokens: %w", err)
 	}
+	if r.Webhooks, r.DeployTokens, err = revokeDeployCredentials(ctx, tx, id, ""); err != nil {
+		return Revoked{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return Revoked{}, fmt.Errorf("revoke sso user: %w", err)
 	}
@@ -212,13 +220,15 @@ func (s *Service) RevokeSSO(ctx context.Context, issuer, subject string) (Revoke
 
 // IssuerRevoked is what RevokeIssuer took from an issuer's users.
 type IssuerRevoked struct {
-	Sessions int64
-	Tokens   int64
+	Sessions     int64
+	Tokens       int64
+	Webhooks     int64
+	DeployTokens int64
 }
 
-// RevokeIssuer ends every session and deletes every API token of the SSO users of issuer,
-// in tx, when their provider is taken away. The users themselves stay, so bringing the
-// issuer back signs them in again.
+// RevokeIssuer ends every session and deletes every API token, deploy webhook and deploy
+// token of the SSO users of issuer, in tx, when their provider is taken away. The users
+// themselves stay, so bringing the issuer back signs them in again.
 func RevokeIssuer(ctx context.Context, tx *sql.Tx, issuer string) (IssuerRevoked, error) {
 	if issuer == "" {
 		return IssuerRevoked{}, errors.New("revoke issuer: missing issuer")
@@ -237,7 +247,34 @@ func RevokeIssuer(ctx context.Context, tx *sql.Tx, issuer string) (IssuerRevoked
 	if r.Tokens, err = res.RowsAffected(); err != nil {
 		return IssuerRevoked{}, fmt.Errorf("revoke issuer tokens: %w", err)
 	}
+	if r.Webhooks, r.DeployTokens, err = revokeDeployCredentials(ctx, tx, 0, issuer); err != nil {
+		return IssuerRevoked{}, err
+	}
 	return r, nil
+}
+
+// revokedUsers selects user ?1, or with ?1 = 0 the SSO users of issuer ?2.
+const revokedUsers = `SELECT id FROM users WHERE (?1 <> 0 AND id = ?1) OR (?1 = 0 AND ?2 <> '' AND oidc_issuer = ?2)`
+
+// revokeDeployCredentials deletes, in tx, the deploy webhooks and deploy tokens created
+// by user id, or with id 0 by every SSO user of issuer.
+// Both act in their creator's name without a session, so a user who loses access at
+// the provider must lose them too.
+func revokeDeployCredentials(ctx context.Context, tx *sql.Tx, id int64, issuer string) (hooks, tokens int64, err error) {
+	res, err := tx.ExecContext(ctx, `DELETE FROM deploy_hooks WHERE created_by IN (`+revokedUsers+`)`, id, issuer)
+	if err != nil {
+		return 0, 0, fmt.Errorf("revoke deploy webhooks: %w", err)
+	}
+	if hooks, err = res.RowsAffected(); err != nil {
+		return 0, 0, fmt.Errorf("revoke deploy webhooks: %w", err)
+	}
+	if res, err = tx.ExecContext(ctx, `DELETE FROM deployment_tokens WHERE created_by IN (`+revokedUsers+`)`, id, issuer); err != nil {
+		return 0, 0, fmt.Errorf("revoke deploy tokens: %w", err)
+	}
+	if tokens, err = res.RowsAffected(); err != nil {
+		return 0, 0, fmt.Errorf("revoke deploy tokens: %w", err)
+	}
+	return hooks, tokens, nil
 }
 
 // AdminCanSignIn reports whether an enabled admin can still sign in, in tx, with only

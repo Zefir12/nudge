@@ -24,7 +24,8 @@ var errDeltaHeader = errors.New("unreadable delta header")
 // pack, go-git reads every object into memory, however little of the pack it takes up.
 type checkedStorage struct {
 	*filesystem.Storage
-	maxObject int64
+	maxObject  int64
+	maxObjects uint32
 }
 
 // PackfileWriter is the Storage's PackfileWriter, checking what it is given.
@@ -33,7 +34,7 @@ func (s *checkedStorage) PackfileWriter() (io.WriteCloser, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newPackChecker(w, s.maxObject), nil
+	return newPackChecker(w, s.maxObject, s.maxObjects), nil
 }
 
 // packChecker passes a pack on to go-git while checking it, without keeping it in memory.
@@ -48,11 +49,11 @@ type packChecker struct {
 	failed bool
 }
 
-func newPackChecker(next io.WriteCloser, maxObject int64) *packChecker {
+func newPackChecker(next io.WriteCloser, maxObject int64, maxObjects uint32) *packChecker {
 	r, w := io.Pipe()
 	c := &packChecker{next: next, pipe: w, result: make(chan error, 1)}
 	go func() {
-		err := checkPack(r, maxObject)
+		err := checkPack(r, maxObject, maxObjects)
 		if err == nil {
 			_, err = io.Copy(io.Discard, r) // the checksum
 		}
@@ -93,13 +94,18 @@ func (c *packChecker) Close() error {
 	return err
 }
 
-// checkPack reads a pack and fails if an object inflates to more than maxObject. A delta's
-// inflated size is its own target's, which a few bytes of instructions can make far larger.
-func checkPack(r io.Reader, maxObject int64) error {
+// checkPack reads a pack and fails if it has more than maxObjects objects or an object
+// inflates to more than maxObject. go-git keeps about half a KiB per object while indexing,
+// so a pack of many tiny objects costs memory no object's size shows. A delta's inflated
+// size is its own target's, which a few bytes of instructions can make far larger.
+func checkPack(r io.Reader, maxObject int64, maxObjects uint32) error {
 	scanner := packfile.NewScanner(r)
 	_, count, err := scanner.Header()
 	if err != nil {
 		return err
+	}
+	if count > maxObjects {
+		return errTooManyObjects
 	}
 	for i := uint32(0); i < count; i++ {
 		h, err := scanner.NextObjectHeader()

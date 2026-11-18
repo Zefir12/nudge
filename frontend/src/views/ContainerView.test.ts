@@ -147,7 +147,8 @@ describe('ContainerView', () => {
       `/api/v1/environments/1/containers/${detail.id}`,
       expect.objectContaining({ method: 'DELETE' }),
     );
-    expect(router.currentRoute.value.fullPath).toBe('/env/1/containers');
+    // The list view's chunk loads first.
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/env/1/containers'));
   });
 
   it('recreates the container with a pull and opens the new one', async () => {
@@ -169,7 +170,7 @@ describe('ContainerView', () => {
     await flushPromises();
     const call = fetch.mock.calls.find(([url]) => String(url).endsWith('/recreate'));
     expect(JSON.parse(String(call?.[1]?.body))).toEqual({ pull: true });
-    expect(router.currentRoute.value.fullPath).toBe('/env/1/containers/new1');
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/env/1/containers/new1'));
     expect(wrapper.findAll('a').map((a) => a.attributes('href'))).toContain('/env/1/containers/new1/edit');
   });
 
@@ -205,7 +206,7 @@ describe('ContainerView', () => {
     expect(fetch.mock.calls.some(([url]) => String(url).endsWith(`/containers/${detail.id}/update`))).toBe(
       true,
     );
-    expect(router.currentRoute.value.fullPath).toBe('/env/1/containers/new1');
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/env/1/containers/new1'));
     // The new container runs the new image: no update left.
     expect(wrapper.findAll('button').some((b) => b.text() === 'Update')).toBe(false);
   });

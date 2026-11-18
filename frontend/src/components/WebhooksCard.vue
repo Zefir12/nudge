@@ -247,6 +247,12 @@ function onDone() {
                 <td>
                   {{ h.name }}
                   <span class="muted"> by {{ h.created_by }}</span>
+                  <span
+                    v-if="h.orphaned"
+                    class="badge bad"
+                    title="Its creator is no longer an admin: triggers are refused. Delete it, or create a new one."
+                    >orphaned</span
+                  >
                 </td>
                 <td>
                   <code v-if="h.tag_filter">{{ h.tag_filter }}</code>

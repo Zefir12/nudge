@@ -46,6 +46,12 @@ type credentials struct {
 	Password string `json:"password"`
 }
 
+// setupRequest is the first admin's credentials and the setup token from the server's log.
+type setupRequest struct {
+	credentials
+	Token string `json:"token"`
+}
+
 type setupStatusResponse struct {
 	Needed bool `json:"needed"`
 }
@@ -64,17 +70,24 @@ func (s *server) setupStatus(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, setupStatusResponse{Needed: needed})
 }
 
-// setup creates the admin and logs them in.
+// setup creates the admin and logs them in. It needs the setup token the server logs at
+// start, so that whoever reaches the port first can't take the host.
 func (s *server) setup(w http.ResponseWriter, r *http.Request) {
 	if s.sso.AnyEnabled() {
 		s.writeError(w, http.StatusForbidden, "setup is off: users sign in with single sign-on")
 		return
 	}
-	var c credentials
-	if !s.decodeJSON(w, r, &c) {
+	var req setupRequest
+	if !s.decodeJSON(w, r, &req) {
 		return
 	}
+	c := req.credentials
 	auditTarget(r, c.Username)
+	if !s.auth.ValidSetupToken(req.Token) {
+		s.log.Warn("setup with a wrong token", "ip", clientIP(r))
+		s.writeError(w, http.StatusForbidden, "wrong setup token: the server logs it at start")
+		return
+	}
 	_, err := s.auth.CreateFirstUser(r.Context(), c.Username, c.Password)
 	var inputErr *auth.InputError
 	switch {
@@ -125,7 +138,7 @@ func (s *server) startSession(w http.ResponseWriter, r *http.Request, c credenti
 }
 
 // changePassword changes the logged-in user's own password and ends their other
-// sessions; this one stays.
+// sessions; this one stays. With revoke_tokens it deletes their API tokens too.
 func (s *server) changePassword(w http.ResponseWriter, r *http.Request) {
 	u, ok := userFrom(r.Context())
 	if !ok {
@@ -135,12 +148,14 @@ func (s *server) changePassword(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Current string `json:"current"`
 		New     string `json:"new"`
+		// RevokeTokens also deletes the user's API tokens; scripts using them stop.
+		RevokeTokens bool `json:"revoke_tokens"`
 	}
 	if !s.decodeJSON(w, r, &req) {
 		return
 	}
 	ip := clientIP(r)
-	err := s.auth.ChangePassword(r.Context(), u.ID, sessionToken(r), req.Current, req.New)
+	err := s.auth.ChangePassword(r.Context(), u.ID, sessionToken(r), req.Current, req.New, req.RevokeTokens)
 	var inputErr *auth.InputError
 	switch {
 	case errors.As(err, &inputErr):

@@ -15,8 +15,9 @@ import (
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 )
 
-// MaxConcurrentStats bounds the one-shot stats calls a sampling of one environment runs
-// at once; each takes about a second on the daemon (it waits for a second reading).
+// MaxConcurrentStats bounds the stats calls a sampling of one environment runs at once.
+// One with a previous reading takes about a second on the daemon (it waits for a second
+// reading); a one-shot call answers at once.
 const MaxConcurrentStats = 8
 
 // Sample is one container's usage, computed from the daemon's raw counters. CPU is a
@@ -98,21 +99,46 @@ func memoryWithoutCache(m container.MemoryStats) uint64 {
 	return m.Usage
 }
 
-// SampleOne asks the daemon for a sample with a previous reading, so the CPU percentage
-// can be computed.
-func SampleOne(ctx context.Context, c docker.Client, id string) (Sample, error) {
-	stats, err := c.ContainerStats(ctx, id, client.ContainerStatsOptions{IncludePreviousSample: true})
+// toSampleSince computes a sample of cur, a one-shot reading, with prev, an earlier
+// reading of the same container, as its previous one: the CPU percentage covers the time
+// between them. ok is false as ToSample's, and when the container's CPU counter went
+// back (it restarted since prev).
+func toSampleSince(prev, cur container.StatsResponse) (Sample, bool) {
+	if cur.CPUStats.CPUUsage.TotalUsage < prev.CPUStats.CPUUsage.TotalUsage {
+		return Sample{}, false
+	}
+	cur.PreRead, cur.PreCPUStats = prev.Read, prev.CPUStats
+	return ToSample(cur)
+}
+
+// readStats reads one stats response of container id; previous asks the daemon for a
+// previous reading too, which costs it a second.
+func readStats(ctx context.Context, c docker.Client, id string, previous bool) (container.StatsResponse, error) {
+	stats, err := c.ContainerStats(ctx, id, client.ContainerStatsOptions{IncludePreviousSample: previous})
 	if err != nil {
-		return Sample{}, err
+		return container.StatsResponse{}, err
 	}
 	defer func() { _ = stats.Body.Close() }()
 	var raw container.StatsResponse
 	if err := json.NewDecoder(stats.Body).Decode(&raw); err != nil {
+		return container.StatsResponse{}, err
+	}
+	return raw, nil
+}
+
+// errNoPrevious is a sample without a previous CPU reading to compute it from.
+var errNoPrevious = errors.New("no previous CPU reading")
+
+// SampleOne asks the daemon for a sample with a previous reading, so the CPU percentage
+// can be computed.
+func SampleOne(ctx context.Context, c docker.Client, id string) (Sample, error) {
+	raw, err := readStats(ctx, c, id, true)
+	if err != nil {
 		return Sample{}, err
 	}
 	sample, ok := ToSample(raw)
 	if !ok {
-		return Sample{}, errors.New("no previous CPU reading")
+		return Sample{}, errNoPrevious
 	}
 	return sample, nil
 }
@@ -124,35 +150,48 @@ type Container struct {
 	Sample
 }
 
+// newContainer is item's sample.
+func newContainer(item container.Summary, s Sample) Container {
+	u := Container{ID: item.ID, Sample: s}
+	if len(item.Names) > 0 {
+		u.Name = strings.TrimPrefix(item.Names[0], "/")
+	}
+	return u
+}
+
+// eachContainer calls fn with each of items and its index, MaxConcurrentStats at once,
+// and returns when they are done; once ctx ends it starts no more.
+func eachContainer(ctx context.Context, items []container.Summary, fn func(i int, item container.Summary)) {
+	sem := make(chan struct{}, MaxConcurrentStats)
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	for i, item := range items {
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			return
+		}
+		wg.Go(func() {
+			defer func() { <-sem }()
+			fn(i, item)
+		})
+	}
+}
+
 // SampleContainers takes one sample of each of items, MaxConcurrentStats at once, in
 // the order listed; skipped counts those that could not be sampled (they stopped
 // meanwhile, or ctx ended).
 func SampleContainers(ctx context.Context, c docker.Client, items []container.Summary, log *slog.Logger) (sampled []Container, skipped int) {
 	out := make([]*Container, len(items))
-	sem := make(chan struct{}, MaxConcurrentStats)
-	var wg sync.WaitGroup
-sample:
-	for i, item := range items {
-		select {
-		case sem <- struct{}{}:
-		case <-ctx.Done():
-			break sample
+	eachContainer(ctx, items, func(i int, item container.Summary) {
+		sample, err := SampleOne(ctx, c, item.ID)
+		if err != nil {
+			log.Debug("container stats", "container", item.ID, "err", err)
+			return
 		}
-		wg.Go(func() {
-			defer func() { <-sem }()
-			sample, err := SampleOne(ctx, c, item.ID)
-			if err != nil {
-				log.Debug("container stats", "container", item.ID, "err", err)
-				return
-			}
-			u := Container{ID: item.ID, Sample: sample}
-			if len(item.Names) > 0 {
-				u.Name = strings.TrimPrefix(item.Names[0], "/")
-			}
-			out[i] = &u
-		})
-	}
-	wg.Wait()
+		u := newContainer(item, sample)
+		out[i] = &u
+	})
 	sampled = []Container{}
 	for _, u := range out {
 		if u == nil {
@@ -162,4 +201,89 @@ sample:
 		sampled = append(sampled, *u)
 	}
 	return sampled, skipped
+}
+
+// statsReadings are a collector's previous CPU readings of each container it sampled: of
+// the last tick, which a live tick's CPU is measured from, and of the last stored tick,
+// which a stored tick's is (like hostReadings). With one, a container is read one-shot,
+// without the daemon's second's wait. Both hold only the containers of their tick, so
+// they are bounded by what runs.
+type statsReadings struct {
+	last, saved map[string]container.StatsResponse
+}
+
+// cpuReading keeps of raw what a later CPU percentage is computed from.
+func cpuReading(raw container.StatsResponse) container.StatsResponse {
+	cpu := raw.CPUStats
+	cpu.CPUUsage.PercpuUsage = nil
+	return container.StatsResponse{Read: raw.Read, CPUStats: cpu}
+}
+
+// sampledTick is a collector's sampling of the listed containers: live and, when it is
+// stored, stored hold the same containers in the order listed; stored's CPU covers the
+// time since the last stored tick.
+type sampledTick struct {
+	live, stored []Container
+	skipped      int
+	// readings are the new CPU readings, by container ID.
+	readings map[string]container.StatsResponse
+}
+
+// sampleTick samples each of items for a collector tick. A container with a reading in
+// prev.last is read one-shot and its CPU measured from that reading; one without, or
+// whose reading is of no use, is read with the daemon's previous reading. When save is
+// set, stored has the CPU since prev.saved where there is one, else the live figure.
+func sampleTick(ctx context.Context, c docker.Client, items []container.Summary, prev *statsReadings, save bool, log *slog.Logger) sampledTick {
+	type result struct {
+		live, stored Sample
+		raw          container.StatsResponse
+	}
+	out := make([]*result, len(items))
+	eachContainer(ctx, items, func(i int, item container.Summary) {
+		var (
+			raw    container.StatsResponse
+			sample Sample
+			ok     bool
+			err    error
+		)
+		if p, seen := prev.last[item.ID]; seen {
+			if raw, err = readStats(ctx, c, item.ID, false); err == nil {
+				sample, ok = toSampleSince(p, raw)
+			}
+		}
+		if !ok && err == nil {
+			if raw, err = readStats(ctx, c, item.ID, true); err == nil {
+				if sample, ok = ToSample(raw); !ok {
+					err = errNoPrevious
+				}
+			}
+		}
+		if err != nil {
+			log.Debug("container stats", "container", item.ID, "err", err)
+			return
+		}
+		r := &result{live: sample, stored: sample, raw: raw}
+		if p, seen := prev.saved[item.ID]; save && seen {
+			if s, ok := toSampleSince(p, raw); ok {
+				r.stored = s
+			}
+		}
+		out[i] = r
+	})
+	t := sampledTick{live: []Container{}, readings: map[string]container.StatsResponse{}}
+	if save {
+		t.stored = []Container{}
+	}
+	for i, r := range out {
+		if r == nil {
+			t.skipped++
+			continue
+		}
+		t.live = append(t.live, newContainer(items[i], r.live))
+		if save {
+			t.stored = append(t.stored, newContainer(items[i], r.stored))
+		}
+		t.readings[items[i].ID] = cpuReading(r.raw)
+	}
+	return t
 }

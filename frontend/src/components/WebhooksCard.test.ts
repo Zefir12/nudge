@@ -16,6 +16,7 @@ const hook = (over: Partial<DeployHook> = {}): DeployHook => ({
   last_triggered_at: '2026-10-25T12:00:00Z',
   last_status: 'updated',
   url: 'https://nudge.example.com/api/v1/hooks/K3abc',
+  orphaned: false,
   ...over,
 });
 
@@ -50,7 +51,14 @@ describe('WebhooksCard', () => {
       [listPath]: {
         body: [
           hook(),
-          hook({ id: 'K3def', name: 'forgejo', tag_filter: '', last_triggered_at: null, last_status: '' }),
+          hook({
+            id: 'K3def',
+            name: 'forgejo',
+            tag_filter: '',
+            last_triggered_at: null,
+            last_status: '',
+            orphaned: true,
+          }),
         ],
       },
     });
@@ -60,6 +68,8 @@ describe('WebhooksCard', () => {
     expect(rows[0]?.text()).toContain('ci');
     expect(rows[0]?.text()).toContain('1.*');
     expect(rows[0]?.find('.badge.good').text()).toBe('updated');
+    expect(rows[0]?.text()).not.toContain('orphaned');
+    expect(rows[1]?.find('.badge.bad').text()).toBe('orphaned');
     expect(rows[1]?.text()).toContain('any');
     expect(rows[1]?.text()).toContain('none');
     expect(rows[1]?.text()).toContain('never');

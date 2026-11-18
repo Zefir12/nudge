@@ -642,13 +642,32 @@ func (s *server) internalError(w http.ResponseWriter, msg string, err error) {
 	s.writeError(w, http.StatusInternalServerError, "internal error")
 }
 
-// maxBodyBytes bounds JSON request bodies.
-const maxBodyBytes = 64 << 10
+const (
+	// maxBodyBytes bounds JSON request bodies.
+	maxBodyBytes = 64 << 10
+	// bodyReadTimeout bounds reading a request body, so a slow sender can't hold a
+	// connection open; public routes (login, setup, enroll) read bodies too. The server
+	// has no global ReadTimeout because of WebSockets and long pulls.
+	bodyReadTimeout = 30 * time.Second
+)
+
+// readDeadline sets a read deadline of bodyReadTimeout on w's connection and returns the
+// func that clears it, to call once the body is in: net/http's read that notices a client
+// going away would hit the deadline and cancel a long-running request. Not every writer
+// supports deadlines; then both are no-ops.
+func readDeadline(w http.ResponseWriter) (clearDeadline func()) {
+	rc := http.NewResponseController(w)
+	_ = rc.SetReadDeadline(time.Now().Add(bodyReadTimeout))
+	return func() { _ = rc.SetReadDeadline(time.Time{}) }
+}
 
 // decodeJSON reads r's body into v, answering 400 itself when it fails.
 func (s *server) decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
+	clearDeadline := readDeadline(w)
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
-	if err := dec.Decode(v); err != nil {
+	err := dec.Decode(v)
+	clearDeadline()
+	if err != nil {
 		s.writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON body: %s", jsonErrorKind(err)))
 		return false
 	}

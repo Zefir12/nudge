@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"git.zefirlabs.net/zefir/nudge/backend/internal/auth"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/oidcproviders"
 )
 
@@ -122,7 +123,7 @@ func (s *server) updateOIDCProvider(w http.ResponseWriter, r *http.Request) {
 	s.auditRevoked(r, c)
 	s.log.Info("sso provider updated", "provider", id, "issuer", c.Provider.Issuer, "enabled", c.Provider.Enabled,
 		"secret_changed", req.ClientSecret != nil, "sessions_revoked", c.Revoked.Sessions, "tokens_revoked", c.Revoked.Tokens,
-		"username", s.username(r), "ip", clientIP(r))
+		"webhooks_revoked", c.Revoked.Webhooks, "deploy_tokens_revoked", c.Revoked.DeployTokens, "username", s.username(r), "ip", clientIP(r))
 	s.writeJSON(w, http.StatusOK, toOIDCProviderResponse(c.Provider))
 }
 
@@ -135,14 +136,16 @@ func (s *server) deleteOIDCProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	s.auditRevoked(r, c)
 	s.log.Info("sso provider deleted", "provider", id, "issuer", c.Provider.Issuer, "sessions_revoked", c.Revoked.Sessions,
-		"tokens_revoked", c.Revoked.Tokens, "username", s.username(r), "ip", clientIP(r))
+		"tokens_revoked", c.Revoked.Tokens, "webhooks_revoked", c.Revoked.Webhooks, "deploy_tokens_revoked", c.Revoked.DeployTokens,
+		"username", s.username(r), "ip", clientIP(r))
 	w.WriteHeader(http.StatusNoContent)
 }
 
 // auditRevoked names what taking a provider away cost its users in the audit entry.
 func (s *server) auditRevoked(r *http.Request, c oidcproviders.Change) {
-	if c.Revoked.Sessions > 0 || c.Revoked.Tokens > 0 {
-		auditTarget(r, fmt.Sprintf("%s; revoked %d sessions, %d API tokens", c.Provider.ID, c.Revoked.Sessions, c.Revoked.Tokens))
+	if c.Revoked != (auth.IssuerRevoked{}) {
+		auditTarget(r, fmt.Sprintf("%s; revoked %d sessions, %d API tokens, %d webhooks, %d deploy tokens", c.Provider.ID,
+			c.Revoked.Sessions, c.Revoked.Tokens, c.Revoked.Webhooks, c.Revoked.DeployTokens))
 	}
 }
 

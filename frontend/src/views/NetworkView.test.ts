@@ -49,6 +49,7 @@ describe('NetworkView', () => {
     confirm.mockReturnValue(true);
     await remove.trigger('click');
     await flushPromises();
-    expect(router.currentRoute.value.name).toBe('networks');
+    // The list view's chunk loads first.
+    await vi.waitFor(() => expect(router.currentRoute.value.name).toBe('networks'));
   });
 });
