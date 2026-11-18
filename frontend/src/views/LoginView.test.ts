@@ -41,14 +41,14 @@ describe('LoginView', () => {
     const call = fetch.mock.calls.find(([url]) => url === '/api/v1/auth/login');
     expect(JSON.parse(String(call?.[1]?.body))).toEqual({ username: 'admin', password: 'longenough' });
     expect(currentUser.value).toEqual(admin);
-    expect(router.currentRoute.value.fullPath).toBe('/tokens');
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/tokens'));
   });
 
   it('ignores a redirect to another site', async () => {
     stubApi({ 'GET /setup': { body: { needed: false } }, 'POST /auth/login': { body: admin } });
     const { router, wrapper } = await mountAt('/login?redirect=//evil.example');
     await submit(wrapper, 'admin', 'longenough');
-    expect(router.currentRoute.value.fullPath).toBe('/');
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/'));
   });
 
   it('shows a wrong password without redirecting', async () => {
@@ -61,7 +61,7 @@ describe('LoginView', () => {
     const { router, wrapper } = await mountAt('/login');
     await submit(wrapper, 'admin', 'wrong-password');
     expect(wrapper.find('[role=alert]').text()).toBe('invalid username or password');
-    expect(router.currentRoute.value.name).toBe('login');
+    await vi.waitFor(() => expect(router.currentRoute.value.name).toBe('login'));
     expect(onUnauthorized).not.toHaveBeenCalled();
     setUnauthorizedHandler(null);
   });

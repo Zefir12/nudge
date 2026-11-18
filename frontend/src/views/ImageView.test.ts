@@ -67,7 +67,8 @@ describe('ImageView', () => {
       `/api/v1/environments/1/images/${encodeURIComponent(detail.id)}`,
       expect.objectContaining({ method: 'DELETE' }),
     );
-    expect(router.currentRoute.value.fullPath).toBe('/env/1/images');
+    // The list view's chunk loads first.
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/env/1/images'));
   });
 
   it('removes with force and shows a conflict', async () => {
@@ -85,7 +86,7 @@ describe('ImageView', () => {
     await flushPromises();
     expect(fetch.mock.calls.some(([url]) => String(url).endsWith('?force=true'))).toBe(true);
     expect(wrapper.find('[role=alert]').text()).toBe('the image is in use');
-    expect(router.currentRoute.value.fullPath).toBe(`/env/1/images/${detail.id}`);
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe(`/env/1/images/${detail.id}`));
   });
 
   it('does nothing without confirmation', async () => {

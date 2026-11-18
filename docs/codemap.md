@@ -63,7 +63,7 @@ lets patterns in `publicRoutes` through without either credential, refuses token
 | Path | What |
 |---|---|
 | `main.ts`, `App.vue` | app setup, layout (top bar with `AppBreadcrumbs`, `AppSidebar`, `RouterView`; public routes render without it); look and layout in docs/design.md |
-| `router.ts` | routes (add one per view; `meta.public` for no-login pages, `meta.users` for pages open to non-admin users (their environment's overview, containers, volumes, networks, events and the tenant form), else App shows them "Not allowed"; a user's `/` goes to deployments), `createAppRouter` with the auth guard, `redirectOnUnauthorized` |
+| `router.ts` | routes (add one per view; `meta.public` for no-login pages, `meta.users` for pages open to non-admin users (their environment's overview, containers, volumes, networks, events and the tenant form), else App shows them "Not allowed"; a user's `/` goes to deployments), `createAppRouter` with the auth guard and a one-time page reload when a view's chunk is gone after an update, `redirectOnUnauthorized`; views load lazily (`() => import(...)`) except login, setup and not-found |
 | `session.ts` | `currentUser`, `loadUser`, `safeRedirect`, `apiError` (the guard couldn't reach the API) |
 | `reconnect.ts` | waiting for a restarting server: `waitForServerRestart` (self-update, drives `RestartOverlay`), `waitForServer` (the unreachable screen polls and reloads) |
 | `environments.ts` | `environments`, `loadEnvironments`, last used environment (localStorage), `defaultEnvironment` |
@@ -85,9 +85,10 @@ lets patterns in `publicRoutes` through without either credential, refuses token
   (`internal/api/containers.go`), row in the `routes` table (admin-only unless added to
   `userRoutes`, and then the handler checks the object), table test next to it with
   `httptest`, row in docs/api.md, typed function in `frontend/src/api/client.ts`.
-- **New view:** `frontend/src/views/FooView.vue`, route in `router.ts` (environment pages
+- **New view:** `frontend/src/views/FooView.vue`, route in `router.ts` as `component: () => import('./views/FooView.vue')` (environment pages
   under `/env/:env/...`, loading with `useLoad` + `LoadState`), nav link in `AppSidebar.vue` (per-environment `sections` or `globalItems`) and a crumb in `AppBreadcrumbs.vue`, `FooView.test.ts` stubbing the API with `stubApi`; views that use the
-  router mount with `createAppRouter(createMemoryHistory())` as a plugin.
+  router mount with `createAppRouter(createMemoryHistory())` as a plugin; assert a navigation
+  to another view with `await vi.waitFor(...)`, since its chunk loads first.
 - **Preview the UI (looks, layout):** `make web-mock MOCK_ADDR=<address>` (run it in the
   background) serves the dev server with hot reload on `<address>:5173` and answers the API
   from fake data in `frontend/mock/api.ts` (no nudge server, no Docker). Logged in as admin;
