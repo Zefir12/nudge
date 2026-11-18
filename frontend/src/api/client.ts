@@ -112,9 +112,10 @@ export const getAuthMethods = () =>
 // ssoLoginUrl is where the browser goes (a navigation, not a fetch) to sign in with SSO.
 export const ssoLoginUrl = (provider: string, redirect: string) =>
   `/api/v1/auth/oidc/${encodeURIComponent(provider)}/login?redirect=${encodeURIComponent(redirect)}`;
-// changePassword changes the signed-in user's password; their other sessions end.
-export const changePassword = (current: string, next: string) =>
-  apiFetch<void>('/auth/password', post({ current, new: next }));
+// changePassword changes the signed-in user's password; their other sessions end, and
+// with revokeTokens their API tokens are deleted too.
+export const changePassword = (current: string, next: string, revokeTokens: boolean) =>
+  apiFetch<void>('/auth/password', post({ current, new: next, revoke_tokens: revokeTokens }));
 
 export const getMe = () => apiFetch<User>('/auth/me', undefined, { redirectOn401: false });
 
@@ -1545,6 +1546,8 @@ export interface DeployHook {
   // last_status is the newest run's status, '' before the first.
   last_status: DeployHookStatus | '';
   url: string;
+  // orphaned means the creator is no longer an admin: its triggers are refused.
+  orphaned: boolean;
 }
 
 // DeployHookWithSecret is a webhook with its secret, answered only on create and rotate.

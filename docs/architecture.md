@@ -105,8 +105,8 @@ refuses `ws://` unless `NUDGE_INSECURE=1`.
   the others are in `oidc_providers`, their client secret sealed with secretbox and bound to
   the provider's id and issuer, so a database edit can't send it elsewhere, and an API
   change of issuer or client ID must give it again. Taking a provider away (disable, delete,
-  new issuer) revokes its users' sessions and API tokens in the transaction of the change,
-  and is refused if no admin could sign in afterwards; `oidcproviders.Service.Complete`
+  new issuer) revokes its users' sessions, API tokens, deploy webhooks and deploy tokens
+  in the transaction of the change, and is refused if no admin could sign in afterwards; `oidcproviders.Service.Complete`
   holds a read lock across session creation so a login can't slip past that. nudge is a
   confidential client (authorization code + PKCE S256, `client_secret_basic`). Discovery, JWKS and ID
   token checks are go-oidc's (RS256 only, issuer, audience, expiry against the injected
@@ -124,7 +124,9 @@ refuses `ws://` unless `NUDGE_INSECURE=1`.
   credential is the webhook's own secret, as a bearer token or as the key of an
   HMAC-SHA256 body signature (Forgejo, Gitea, GitHub headers), compared in constant time.
   The secret is sealed with the secretbox key (not hashed: a signature check needs its
-  value). A webhook can do one thing, update its one target, and runs as its creator;
+  value). A webhook can do one thing, update its one target, and runs as its creator,
+  so a trigger is refused once the creator is no longer an admin (like a deploy token's
+  re-check of its creator's role);
   failed checks count against the credential limit per IP, and each webhook takes 10 triggers
   a minute. This is the credential to put in CI instead of an API token, which is its user
   on every route.

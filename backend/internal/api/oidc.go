@@ -176,9 +176,9 @@ func (s *server) auditSSO(r *http.Request, username, target string, status int) 
 	}
 }
 
-// revokeSSO ends the sessions and deletes the API tokens of a user the provider no longer
-// gives a role, so losing it at the provider ends their access at their next sign-in
-// attempt instead of at session expiry. It returns the audit entry's username (the nudge
+// revokeSSO ends the sessions and deletes the API tokens, deploy webhooks and deploy
+// tokens of a user the provider no longer gives a role, so losing it at the provider
+// ends their access at their next sign-in attempt instead of at session expiry. It returns the audit entry's username (the nudge
 // user's, when there is one) and target (with what was revoked).
 func (s *server) revokeSSO(r *http.Request, id oidc.Identity, name, target string) (string, string) {
 	// Not the request's context: a client that goes away mustn't stop the revocation.
@@ -193,8 +193,9 @@ func (s *server) revokeSSO(r *http.Request, id oidc.Identity, name, target strin
 		return name, target
 	}
 	s.log.Warn("sso user without a role: sessions and tokens revoked", "username", rev.Username,
-		"sessions", rev.Sessions, "tokens", rev.Tokens)
-	return rev.Username, fmt.Sprintf("%s; revoked %d sessions, %d API tokens", target, rev.Sessions, rev.Tokens)
+		"sessions", rev.Sessions, "tokens", rev.Tokens, "webhooks", rev.Webhooks, "deploy_tokens", rev.DeployTokens)
+	return rev.Username, fmt.Sprintf("%s; revoked %d sessions, %d API tokens, %d webhooks, %d deploy tokens",
+		target, rev.Sessions, rev.Tokens, rev.Webhooks, rev.DeployTokens)
 }
 
 // ssoRefusedPage answers a sign-in the provider vouched for but nudge refuses.

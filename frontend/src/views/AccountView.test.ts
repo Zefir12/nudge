@@ -31,8 +31,10 @@ describe('AccountView', () => {
     expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual({
       current: 'longenough',
       new: 'evenlonger',
+      revoke_tokens: true,
     });
     expect(wrapper.text()).toContain('Password changed.');
+    expect(wrapper.text()).toContain('API tokens are deleted');
     expect((wrapper.find('input[name=current]').element as HTMLInputElement).value).toBe('');
   });
 

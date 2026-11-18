@@ -45,7 +45,7 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | DELETE | `/api/v1/tokens/{id}` | user | revoke one of the user's tokens; `204`, or `404` |
 | GET | `/api/v1/users` | admin | every user by name; see Users |
 | POST | `/api/v1/users` | admin, session only | create a local user `{"username", "password", "role"}`; `201` |
-| PATCH | `/api/v1/users/{id}` | admin, session only | change `{"role", "disabled", "password"}` (each optional); `200` with the user |
+| PATCH | `/api/v1/users/{id}` | admin, session only | change `{"role", "disabled", "password"}` (each optional); `200` with the user; a password reset ends their sessions and deletes their API tokens |
 | DELETE | `/api/v1/users/{id}` | admin | delete a user with their sessions, tokens and webhooks; `204` |
 | POST | `/api/v1/users/{id}/relink` | admin, session only | re-link SSO identity: merge `{"duplicate": <id>}` into this SSO user; `200` with the user (see Users) |
 | GET | `/api/v1/users/{id}/environments` | admin | the environments a user may use `{"environments": [1, 3]}`; see Ownership |
@@ -163,8 +163,9 @@ With OpenID Connect providers configured (docs/config/server.md, Single sign-on)
   `/login?error=sso`; a valid sign-in without the admin or user role (or without `mfa` in `amr`
   when MFA is required) answers a `403` page. Both are audited under the route with
   the subject as target. A sign-in refused for having
-  no role also ends every session and deletes every API token of that SSO user (if they
-  signed in before); its audit entry names the nudge user and says how many were revoked.
+  no role also ends every session and deletes every API token, deploy webhook and deploy
+  token of that SSO user (if they signed in before); its audit entry names the nudge user
+  and says how many were revoked.
   Every attempt counts against the per-IP credential limit until it succeeds.
 - `GET /api/v1/auth/oidc/login` and `GET /api/v1/auth/oidc/callback` do the same for the
   `NUDGE_OIDC_*` provider.
@@ -235,9 +236,11 @@ single sign-on and has no password in nudge. Setup creates an admin.
 - When too many logins wait for a password check, login answers `503` with
   `Retry-After: 1`.
 
-`POST /api/v1/auth/password` with `{"current": "...", "new": "..."}` changes the
-signed-in user's own password and answers `204`. It ends the user's other sessions; the one
-that asked stays, and API tokens keep working. Session only: an API token gets `403`, so a
+`POST /api/v1/auth/password` with `{"current": "...", "new": "...", "revoke_tokens": true}`
+changes the signed-in user's own password and answers `204`. It ends the user's other
+sessions; the one that asked stays. With `"revoke_tokens": true` it also deletes the user's
+API tokens (a stolen session could have minted one); without it they keep working. The web
+UI sends `true` unless the user unticks it. Session only: an API token gets `403`, so a
 leaked token can't take over the account. A wrong current password is
 `403 {"error":"the current password is wrong"}` and, like a failed login, blocks nobody; a new password that breaks the rules above, or an
 SSO user (no password in nudge), is `400`; `409` if an admin reset the password while it
@@ -1263,6 +1266,8 @@ request, like the agent join command).
   webhook and rotating its secret are session-only (an API token gets `403`), as the
   secret outlives the token's revocation; API tokens can list, delete and read the runs.
 - `last_status` is the newest run's `status` (below), `""` before the first run.
+- `orphaned` is `true` when the creator is no longer an admin (demoted or disabled): its
+  triggers are refused until an admin deletes it or the creator is an admin again.
 - `GET .../webhooks/{id}/runs` lists the runs, newest first, at most 50 per webhook:
   `{"id": 7, "trigger": "signature", "status": "updated", "queued_at": "...",
   "started_at": "...", "finished_at": "...", "image_before": "sha256:…",
@@ -1286,12 +1291,14 @@ read). The body is then read, at most 1 MiB (`413`, refused up front when
 `Content-Length` says more) within 30 seconds (`400` if it can't be read), and never
 echoed. An unknown webhook, a missing and a wrong credential all answer
 `401 {"error":"authentication required"}` and count as failed attempts, as do refused
-bodies. A webhook accepts 10 triggers a minute (`429` beyond).
+bodies. The right credential of a webhook whose creator is no longer an admin answers
+`403 {"error":"the webhook's creator is no longer an admin"}`, audited in the creator's
+name like a run. A webhook accepts 10 triggers a minute (`429` beyond).
 
 - The update is the one `POST .../containers/{id}/update` or `.../stacks/{name}/update`
   makes, run as the webhook's creator: it goes into the update history under their name,
   and the audit log records `POST /api/v1/hooks/{id}` with their user and the token
-  `hook:<name>`. Refused triggers aren't recorded.
+  `hook:<name>`. Refused triggers aren't recorded, except the `403` above.
 - It runs in the background: `202 {"run_id": 7, "status": "queued"}`. With `?wait=1` the
   answer waits for the run (up to 5 minutes, then `202` with the run still going): `200`
   with the run, or `502` with it when it failed, so `curl -f` fails the CI step.

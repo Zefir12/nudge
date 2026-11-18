@@ -291,10 +291,12 @@ func (s *Service) Login(ctx context.Context, username, password string) (Session
 var ErrPasswordChanged = errors.New("the password was changed meanwhile")
 
 // ChangePassword sets user id's password to next if current is their password, and ends
-// their other sessions (keep is the session token that asked, which stays). A wrong
+// their other sessions (keep is the session token that asked, which stays); with
+// revokeTokens it also deletes their API tokens, which a stolen session could have
+// minted. A wrong
 // current password is ErrInvalidCredentials, and like a failed login blocks nobody; an SSO
 // user has no password to change (InputError).
-func (s *Service) ChangePassword(ctx context.Context, id int64, keep, current, next string) error {
+func (s *Service) ChangePassword(ctx context.Context, id int64, keep, current, next string, revokeTokens bool) error {
 	if err := validPassword(next); err != nil {
 		return err
 	}
@@ -341,6 +343,11 @@ func (s *Service) ChangePassword(ctx context.Context, id int64, keep, current, n
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ? AND id_hash <> ?`, id, tokenHash(keep)); err != nil {
 		return fmt.Errorf("end other sessions: %w", err)
+	}
+	if revokeTokens {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM api_tokens WHERE user_id = ?`, id); err != nil {
+			return fmt.Errorf("revoke api tokens: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("change password: %w", err)

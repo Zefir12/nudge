@@ -45,6 +45,8 @@ type deployHookJSON struct {
 	LastStatus string `json:"last_status"`
 	// URL is the trigger URL; not a secret on its own.
 	URL string `json:"url"`
+	// Orphaned means the creator is no longer an admin: triggers are refused (403).
+	Orphaned bool `json:"orphaned"`
 }
 
 // deployHookSecretJSON is a webhook with its secret, answered only on create and rotate.
@@ -71,6 +73,7 @@ func (s *server) toDeployHookJSON(r *http.Request, h deployhooks.Hook) deployHoo
 		CreatedBy: h.Owner, CreatedAt: h.CreatedAt, LastTriggeredAt: h.LastTriggeredAt,
 		LastStatus: string(h.LastStatus),
 		URL:        s.serverURL(r) + "/api/v1/hooks/" + h.ID,
+		Orphaned:   h.Orphaned,
 	}
 }
 
@@ -303,6 +306,15 @@ func (s *server) triggerDeployHook(w http.ResponseWriter, r *http.Request) {
 	if errors.Is(err, deployhooks.ErrUnauthorized) {
 		s.log.Warn("webhook trigger refused", "ip", ip)
 		s.writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	if errors.Is(err, deployhooks.ErrOrphaned) {
+		// The secret was right: the refusal is the creator's role, recorded in their name.
+		succeeded()
+		auditUser(r, auth.User{ID: h.CreatedBy, Username: h.Owner, Token: "hook:" + h.Name})
+		auditEnvironment(r, strconv.FormatInt(h.Environment, 10))
+		s.log.Warn("webhook trigger refused: creator is no longer an admin", "hook", h.ID, "owner", h.Owner, "ip", ip)
+		s.writeError(w, http.StatusForbidden, "the webhook's creator is no longer an admin")
 		return
 	}
 	if err != nil {

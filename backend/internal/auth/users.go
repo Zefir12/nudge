@@ -178,6 +178,13 @@ func (s *Service) UpdateUser(ctx context.Context, id int64, c Change) (Account, 
 			return Account{}, fmt.Errorf("end sessions: %w", err)
 		}
 	}
+	// A reset is for an account that may be in someone else's hands: an API token they
+	// minted with a stolen session mustn't outlive it.
+	if c.Password != nil {
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM api_tokens WHERE user_id = ?`, id); err != nil {
+			return Account{}, fmt.Errorf("revoke api tokens: %w", err)
+		}
+	}
 	return a, nil
 }
 
