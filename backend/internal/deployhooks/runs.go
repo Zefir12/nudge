@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"path"
 	"time"
+
+	"git.zefirlabs.net/zefir/nudge/backend/internal/runqueue"
 )
 
 const (
@@ -27,7 +29,7 @@ var (
 	// ErrRateLimited means the webhook was triggered TriggerLimit times this window.
 	ErrRateLimited = errors.New("the webhook was triggered too often")
 	// ErrClosed means the Service is shutting down.
-	ErrClosed = errors.New("shutting down")
+	ErrClosed = runqueue.ErrClosed
 )
 
 // Status is where a run is.
@@ -90,18 +92,19 @@ type active struct {
 	trigger Trigger
 }
 
-// slot is a webhook's runs and trigger rate.
-type slot struct {
-	running *active
-	// next is the follow-up queued during running; later triggers merge into it.
-	next        *active
+// keepQueued is the webhooks' runqueue.Combine: a trigger while a run is queued merges
+// into that run.
+func keepQueued(queued, _ *active) *active { return queued }
+
+// rate is a webhook's trigger count in its current window.
+type rate struct {
 	windowStart time.Time
 	count       int
 }
 
-// idle reports whether the slot holds nothing worth keeping at now.
-func (sl *slot) idle(now time.Time) bool {
-	return sl.running == nil && !now.Before(sl.windowStart.Add(TriggerWindow))
+// idle reports whether the window is over at now, so the rate holds nothing worth keeping.
+func (r *rate) idle(now time.Time) bool {
+	return !now.Before(r.windowStart.Add(TriggerWindow))
 }
 
 // Ticket is a trigger's run: the one it started or the queued one it merged into.
@@ -113,37 +116,34 @@ type Ticket struct {
 // Done is closed when the run is over.
 func (t Ticket) Done() <-chan struct{} { return t.done }
 
-// allowLocked counts a trigger of hook id, unless it reached TriggerLimit this window;
-// it returns the webhook's slot. The caller holds mu.
-func (s *Service) allowLocked(id string, now time.Time) (*slot, time.Duration, bool) {
-	sl := s.slotLocked(id, now)
-	if !now.Before(sl.windowStart.Add(TriggerWindow)) {
-		sl.windowStart, sl.count = now, 0
-	}
-	if sl.count >= TriggerLimit {
-		return sl, sl.windowStart.Add(TriggerWindow).Sub(now), false
-	}
-	sl.count++
-	return sl, 0, true
-}
-
-// slotLocked returns webhook id's slot, making one if it has none. The caller holds mu.
-func (s *Service) slotLocked(id string, now time.Time) *slot {
-	sl, ok := s.slots[id]
+// allow counts a trigger of hook id, unless it reached TriggerLimit this window; if it
+// did, it returns the time until the next trigger is accepted.
+func (s *Service) allow(id string, now time.Time) (time.Duration, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.rates[id]
 	if !ok {
-		sl = &slot{windowStart: now}
+		r = &rate{windowStart: now}
 		s.pruneLocked(now)
-		s.slots[id] = sl
+		s.rates[id] = r
 	}
-	return sl
+	if r.idle(now) {
+		r.windowStart, r.count = now, 0
+	}
+	if r.count >= TriggerLimit {
+		return r.windowStart.Add(TriggerWindow).Sub(now), false
+	}
+	r.count++
+	return 0, true
 }
 
-// pruneLocked drops idle slots. Slots exist only for authenticated webhooks, which the
-// database bounds, so this only keeps the map from growing with deleted ones.
+// pruneLocked drops idle rates. Rates exist only for authenticated webhooks, which the
+// database bounds, so this only keeps the map from growing with deleted ones. The
+// caller holds mu.
 func (s *Service) pruneLocked(now time.Time) {
-	for id, sl := range s.slots {
-		if sl.idle(now) {
-			delete(s.slots, id)
+	for id, r := range s.rates {
+		if r.idle(now) {
+			delete(s.rates, id)
 		}
 	}
 }
@@ -159,54 +159,27 @@ func (e *RateLimitedError) Unwrap() error { return ErrRateLimited }
 // the bookkeeping.
 func (s *Service) Trigger(ctx context.Context, h Hook, trigger Trigger, deploy DeployFunc) (Ticket, error) {
 	now := s.clock.Now()
-	s.mu.Lock()
-	if s.closed || s.ctx.Err() != nil {
-		s.mu.Unlock()
+	if s.runs.Closed() {
 		return Ticket{}, ErrClosed
 	}
-	sl, wait, ok := s.allowLocked(h.ID, now)
-	var merged *active
-	if ok {
-		merged = sl.next
-	}
-	s.mu.Unlock()
-	if !ok {
+	if wait, ok := s.allow(h.ID, now); !ok {
 		return Ticket{}, &RateLimitedError{RetryAfter: wait}
 	}
-	// The database is written without mu, so a slow write doesn't hold up every
-	// webhook; the slot is looked at again after.
 	s.touch(ctx, h.ID, now)
-	if merged != nil {
-		return Ticket{RunID: merged.id, done: merged.done}, nil
+	if q, ok := s.runs.Queued(h.ID); ok {
+		return Ticket{RunID: q.id, done: q.done}, nil
 	}
+	// The row is written outside the queue's lock, so a slow write doesn't hold up every
+	// webhook; Submit looks at the queue again after.
 	id, err := s.insertRun(ctx, h.ID, trigger, StatusQueued, now)
 	if err != nil {
 		return Ticket{}, err
 	}
-
-	s.mu.Lock()
-	// The slot may have gone idle and been dropped meanwhile.
-	sl = s.slotLocked(h.ID, now)
-	var t Ticket
-	switch {
-	case s.closed || s.ctx.Err() != nil:
-		err = ErrClosed
-	case sl.next != nil:
-		// Another trigger queued a follow-up meanwhile: merge into it.
-		t = Ticket{RunID: sl.next.id, done: sl.next.done}
-	default:
-		a := &active{id: id, hook: h, deploy: deploy, done: make(chan struct{}), trigger: trigger}
-		t = Ticket{RunID: id, done: a.done}
-		if sl.running != nil {
-			sl.next = a
-		} else {
-			sl.running = a
-			s.wg.Go(func() { s.loop(sl, a) })
-		}
-	}
-	s.mu.Unlock()
-	if t.RunID != id {
-		// The row isn't needed.
+	a := &active{id: id, hook: h, deploy: deploy, done: make(chan struct{}), trigger: trigger}
+	kept, _, err := s.runs.Submit(h.ID, a, keepQueued)
+	if kept != a {
+		// Another trigger queued a follow-up meanwhile and this one merged into it, or
+		// nudge is shutting down: the row isn't needed.
 		if _, derr := s.db.ExecContext(context.WithoutCancel(ctx), `DELETE FROM deploy_hook_runs WHERE id = ?`, id); derr != nil {
 			s.log.Warn("drop merged webhook run", "hook", h.ID, "run", id, "err", derr)
 		}
@@ -214,20 +187,16 @@ func (s *Service) Trigger(ctx context.Context, h Hook, trigger Trigger, deploy D
 	if err != nil {
 		return Ticket{}, err
 	}
-	return t, nil
+	return Ticket{RunID: kept.id, done: kept.done}, nil
 }
 
 // Skip records a trigger of h that the tag filter let pass by.
 func (s *Service) Skip(ctx context.Context, h Hook, trigger Trigger) (Run, error) {
-	s.mu.Lock()
-	if s.closed || s.ctx.Err() != nil {
-		s.mu.Unlock()
+	if s.runs.Closed() {
 		return Run{}, ErrClosed
 	}
 	now := s.clock.Now()
-	_, wait, ok := s.allowLocked(h.ID, now)
-	s.mu.Unlock()
-	if !ok {
+	if wait, ok := s.allow(h.ID, now); !ok {
 		return Run{}, &RateLimitedError{RetryAfter: wait}
 	}
 	s.touch(ctx, h.ID, now)
@@ -242,17 +211,6 @@ func (s *Service) Skip(ctx context.Context, h Hook, trigger Trigger) (Run, error
 func (s *Service) touch(ctx context.Context, id string, now time.Time) {
 	if _, err := s.db.ExecContext(ctx, `UPDATE deploy_hooks SET last_triggered_at = ? WHERE id = ?`, now.UnixMilli(), id); err != nil {
 		s.log.Warn("webhook last trigger", "hook", id, "err", err)
-	}
-}
-
-// loop runs a and then the follow-ups queued meanwhile, until none is left.
-func (s *Service) loop(sl *slot, a *active) {
-	for a != nil {
-		s.execute(a)
-		s.mu.Lock()
-		a, sl.next = sl.next, nil
-		sl.running = a
-		s.mu.Unlock()
 	}
 }
 
@@ -421,11 +379,8 @@ func (s *Service) FailStale(ctx context.Context) error {
 // Close stops the runs: the running deploys see their context end, queued ones fail
 // without starting. It waits for them and refuses new triggers.
 func (s *Service) Close() {
-	s.mu.Lock()
-	s.closed = true
-	s.mu.Unlock()
 	s.cancel()
-	s.wg.Wait()
+	s.runs.Close()
 }
 
 // Skipped reports whether a trigger is passed by because of h's tag filter: only a

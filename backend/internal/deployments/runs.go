@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"slices"
 	"time"
+
+	"git.zefirlabs.net/zefir/nudge/backend/internal/runqueue"
 )
 
 const (
@@ -27,7 +29,7 @@ const (
 )
 
 // ErrClosed means the Service is shutting down.
-var ErrClosed = errors.New("shutting down")
+var ErrClosed = runqueue.ErrClosed
 
 // Status is where a run is.
 type Status string
@@ -141,12 +143,6 @@ type active struct {
 	followers map[chan Progress]struct{}
 }
 
-// slot is a deployment's run under way and the one queued after it.
-type slot struct {
-	running *active
-	next    *active
-}
-
 // Ticket is a request's run.
 type Ticket struct {
 	RunID int64
@@ -183,10 +179,7 @@ func (s *Service) Deploy(ctx context.Context, d Deployment, req Request, deploy 
 	if err := validVariables(d, req.Variables); err != nil {
 		return Ticket{}, err
 	}
-	s.mu.Lock()
-	closed := s.closed || s.ctx.Err() != nil
-	s.mu.Unlock()
-	if closed {
+	if s.runs.Closed() {
 		return Ticket{}, ErrClosed
 	}
 	now := s.clock.Now()
@@ -198,36 +191,15 @@ func (s *Service) Deploy(ctx context.Context, d Deployment, req Request, deploy 
 	run.ID = id
 	a := &active{run: run, d: d, deploy: deploy, done: make(chan struct{}), followers: map[chan Progress]struct{}{}}
 
-	s.mu.Lock()
-	if s.closed || s.ctx.Err() != nil {
-		s.mu.Unlock()
+	_, replaced, err := s.runs.Submit(d.ID, a, supersede)
+	if err != nil {
 		s.finish(context.WithoutCancel(ctx), a, Outcome{Status: StatusFailed, Error: "nudge shut down before the run started"})
 		s.end(a)
-		return Ticket{}, ErrClosed
+		return Ticket{}, err
 	}
-	sl := s.slots[d.ID]
-	if sl == nil {
-		sl = &slot{}
-		s.slots[d.ID] = sl
-	}
-	var replaced *active
-	if sl.running == nil {
-		sl.running = a
-		s.wg.Go(func() { s.loop(d.ID, sl, a) })
-	} else {
-		replaced, sl.next = sl.next, a
-		if replaced != nil {
-			// The replaced request's values still land, unless this one sets them too.
-			merged := maps.Clone(replaced.run.Variables)
-			maps.Copy(merged, a.run.Variables)
-			a.run.Variables = merged
-		}
-	}
-	vars := a.run.Variables
-	s.mu.Unlock()
 	if replaced != nil {
 		bg := context.WithoutCancel(ctx)
-		if b, err := json.Marshal(vars); err == nil {
+		if b, err := json.Marshal(a.run.Variables); err == nil {
 			if _, err := s.db.ExecContext(bg, `UPDATE deployment_runs SET variables = ? WHERE id = ?`, string(b), id); err != nil {
 				s.log.Error("deployment run: merge variables", "deployment", d.ID, "run", id, "err", err)
 			}
@@ -236,6 +208,15 @@ func (s *Service) Deploy(ctx context.Context, d Deployment, req Request, deploy 
 		s.end(replaced)
 	}
 	return Ticket{RunID: id, done: a.done, a: a}, nil
+}
+
+// supersede is the deployments' runqueue.Combine: a newer request replaces the queued
+// one, and the replaced request's values still land, unless the newer one sets them too.
+func supersede(queued, incoming *active) *active {
+	merged := maps.Clone(queued.run.Variables)
+	maps.Copy(merged, incoming.run.Variables)
+	incoming.run.Variables = merged
+	return incoming
 }
 
 // end closes a's followers and marks it done, in one step under mu, so a Follow sees
@@ -302,20 +283,6 @@ func (s *Service) report(a *active, p Progress) {
 		if _, err := s.db.ExecContext(context.WithoutCancel(s.ctx), `UPDATE deployment_runs SET step = ? WHERE id = ?`, string(p.Step), a.run.ID); err != nil {
 			s.log.Error("deployment run step", "deployment", a.d.ID, "run", a.run.ID, "err", err)
 		}
-	}
-}
-
-// loop runs a and then the run queued meanwhile, until none is left.
-func (s *Service) loop(id int64, sl *slot, a *active) {
-	for a != nil {
-		s.execute(a)
-		s.mu.Lock()
-		a, sl.next = sl.next, nil
-		sl.running = a
-		if a == nil {
-			delete(s.slots, id)
-		}
-		s.mu.Unlock()
 	}
 }
 
@@ -511,9 +478,6 @@ func (s *Service) FailStale(ctx context.Context) error {
 // Close stops the runs: the running deploys see their context end, queued ones fail
 // without starting. It waits for them and refuses new deploys.
 func (s *Service) Close() {
-	s.mu.Lock()
-	s.closed = true
-	s.mu.Unlock()
 	s.cancel()
-	s.wg.Wait()
+	s.runs.Close()
 }
