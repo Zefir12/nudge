@@ -695,3 +695,32 @@ func TestMergeEnvThenRunVariables(t *testing.T) {
 		t.Fatalf("env = %q, want %q", got, want)
 	}
 }
+
+func TestEnvValues(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, env string
+		want      []string
+	}{
+		{"plain", "# A=x\nA=1\nC=\n\n", []string{"1"}},
+		{"export, double quotes", "export B=\"two words\"\n", []string{`"two words"`, "two words"}},
+		{"single quotes", "D='q'\n", []string{"'q'", "q"}},
+		{"inline comment", "KEY=abc # c\n", []string{"abc # c", "abc"}},
+		{"hash without space", "KEY=abc#c\n", []string{"abc#c"}},
+		{"quoted, then comment", "KEY=\"abc\" # c\n", []string{`"abc" # c`, "abc"}},
+		{"single quoted, then comment", "KEY='a\\b' # c\n", []string{`'a\b' # c`, `a\b`}},
+		{"escapes", `KEY="a\"b\\c\nd"`, []string{`"a\"b\\c\nd"`, `a\"b\\c\nd`, "a\"b\\c\nd"}},
+		{"unterminated double", `KEY="abc`, []string{`"abc`, "abc"}},
+		{"unterminated single", `KEY='abc`, []string{`'abc`, "abc"}},
+		{"empty quotes", `KEY=""`, []string{`""`}},
+		{"no name", "=abc\nnovalue\n", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := EnvValues(tt.env); !slices.Equal(got, tt.want) {
+				t.Errorf("EnvValues(%q) = %q, want %q", tt.env, got, tt.want)
+			}
+		})
+	}
+}

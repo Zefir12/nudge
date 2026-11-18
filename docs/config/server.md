@@ -117,14 +117,20 @@ stack fails with `409`: before `up`, nudge reads the project with `docker-compos
 and inspects its own container, and refuses a bind source (or `file:` secret or config
 a service uses) under the stacks directory unless that path is bind-mounted into nudge
 from the same path on the host. Running outside a container, nothing is checked; if the
-check itself fails (compose or the daemon errs), nudge logs a warning and deploys. compose gets only
+check itself fails (compose or the daemon errs), nudge logs a warning and deploys; when
+compose fails the warning carries its error output (the first 1 KiB, with the stack's
+`.env` values of 4 or more characters masked). compose gets only
 `DOCKER_HOST`, `HOME` and `PATH`, none of nudge's own environment. Stacks of agent
 environments are deployed by the agent on its host (docs/config/agent.md, Stacks); the
 server keeps the source files here either way.
 
 ## First user
 With no user in the database the web UI asks for an admin username and password
-(`POST /api/v1/setup`); until then only health, setup and login answer. To skip that
+(`POST /api/v1/setup`); until then only health, setup and login answer. Setup also needs
+the setup token nudge logs at start while no user exists (`setup_token` in the warning
+"no user yet", e.g. `docker compose logs nudge`), so whoever reaches the port first can't
+make themselves admin. The token is random, new at each start, and useless once a user
+exists. To skip that
 step, set `NUDGE_ADMIN_PASSWORD`: at start, if no user exists, nudge creates `admin` with
 it (at least 8 characters, else the server refuses to start). Once a user exists the
 variable is ignored, so changing it later does not change the password. It has no flag,
@@ -295,8 +301,9 @@ In what follows, `NUDGE_OIDC_*` settings correspond to a UI provider's own field
   taken away keeps their session (as an admin) until `NUDGE_OIDC_SESSION_TTL` ends it or
   they log in again, and API tokens they created keep working until then. The next SSO
   login without either role is refused and ends all of that user's sessions and deletes
-  their API tokens (audited); a login refused only for a missing second factor revokes
-  nothing. Deploy tokens and deploy webhooks they created are not touched. Disabling the
+  their API tokens, deploy webhooks and deploy tokens (audited); a login refused only for
+  a missing second factor revokes nothing. Taking a provider away does the same for its
+  users. A deploy webhook stops working as soon as its creator is no longer an admin. Disabling the
   user in nudge (Users page) ends their sessions and stops their tokens at once.
 - **Disabling or deleting a provider** in the UI (or moving it to another issuer) signs its
   users out and deletes their API tokens at once, in one transaction, since nobody can vouch

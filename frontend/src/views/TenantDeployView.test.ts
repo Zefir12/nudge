@@ -140,7 +140,7 @@ describe('TenantDeployView', () => {
       networks: ['u2-front'],
       start: true,
     });
-    expect(router.currentRoute.value.fullPath).toBe('/env/1/containers/c1');
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/env/1/containers/c1'));
   });
 
   it('reuses a volume it created when the deploy is retried', async () => {
@@ -224,6 +224,6 @@ describe('TenantDeployView', () => {
     await wrapper.find('form').trigger('submit');
     await flushPromises();
     expect(body(fetch, '/user-containers/c1/recreate')).toEqual({ ...spec, healthcheck: health });
-    expect(router.currentRoute.value.fullPath).toBe('/env/1/containers/c2');
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/env/1/containers/c2'));
   });
 });

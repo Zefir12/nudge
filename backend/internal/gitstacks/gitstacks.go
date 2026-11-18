@@ -108,9 +108,11 @@ type Options struct {
 	Now func() time.Time
 	// AllowFile accepts file:// repositories: tests only, a user must not read the server's disk.
 	AllowFile bool
-	// MaxCloneBytes, MaxObjectBytes and FetchTimeout override the bounds of a clone (tests).
+	// MaxCloneBytes, MaxObjectBytes, MaxObjects and FetchTimeout override the bounds of a
+	// clone (tests).
 	MaxCloneBytes  int64
 	MaxObjectBytes int64
+	MaxObjects     uint32
 	FetchTimeout   time.Duration
 }
 
@@ -125,6 +127,7 @@ type Service struct {
 	allowFile bool
 	maxClone  int64
 	maxObject int64
+	maxObjs   uint32
 	timeout   time.Duration
 	pollOnce  sync.Once
 	// deploy is set once, by StartPolling, before any poll.
@@ -135,7 +138,7 @@ type Service struct {
 func New(o Options) *Service {
 	s := &Service{
 		db: o.DB, box: o.Box, tempDir: o.TempDir, ctx: o.Context, log: o.Log, now: o.Now,
-		allowFile: o.AllowFile, maxClone: o.MaxCloneBytes, maxObject: o.MaxObjectBytes, timeout: o.FetchTimeout,
+		allowFile: o.AllowFile, maxClone: o.MaxCloneBytes, maxObject: o.MaxObjectBytes, maxObjs: o.MaxObjects, timeout: o.FetchTimeout,
 	}
 	if s.now == nil {
 		s.now = time.Now
@@ -148,6 +151,9 @@ func New(o Options) *Service {
 	}
 	if s.maxObject == 0 {
 		s.maxObject = DefaultMaxObjectBytes
+	}
+	if s.maxObjs == 0 {
+		s.maxObjs = DefaultMaxObjects
 	}
 	if s.timeout == 0 {
 		s.timeout = DefaultFetchTimeout

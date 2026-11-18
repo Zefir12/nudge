@@ -245,6 +245,36 @@ func TestFetchRefusesACompressionBomb(t *testing.T) {
 	}
 }
 
+func TestFetchRefusesTooManyObjects(t *testing.T) {
+	t.Parallel()
+	repo := gitstackstest.New(t)
+	repo.Commit(map[string]string{"compose.yaml": composeText, "a": "a", "b": "b"})
+	tests := []struct {
+		name string
+		max  uint32
+		ok   bool
+	}{
+		// A commit, its tree and three blobs.
+		{name: "at the bound", max: 5, ok: true},
+		{name: "past the bound", max: 4},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t, func(o *gitstacks.Options) { o.MaxObjects = tt.max })
+			src := f.prepare(t, gitstacks.Input{RepoURL: repo.URL, ComposePath: "compose.yaml"})
+			_, err := f.svc.Fetch(context.Background(), src)
+			var ge *gitstacks.Error
+			switch {
+			case tt.ok && err != nil:
+				t.Fatalf("err = %v", err)
+			case !tt.ok && (!errors.As(err, &ge) || !strings.Contains(ge.Msg, "too many files")):
+				t.Fatalf("err = %v", err)
+			}
+		})
+	}
+}
+
 func TestFetchTakesAnObjectUpToTheBound(t *testing.T) {
 	t.Parallel()
 	repo := gitstackstest.New(t)

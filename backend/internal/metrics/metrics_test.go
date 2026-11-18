@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/docker/dockertest"
@@ -272,7 +274,7 @@ func newMetricsTest(t *testing.T) metricsTest {
 	envs := &fakeEnvs{fakes: map[int64]*dockertest.Fake{1: fake, 2: fake}}
 	envs.setList(1)
 	clock := &fakeClock{now: t0}
-	owners := func(_ context.Context, _ docker.Client, items []container.Summary) (map[string]string, error) {
+	owners := func(_ context.Context, _ docker.Client, items []container.Summary, _ map[string]bool) (map[string]string, error) {
 		out := map[string]string{}
 		for _, it := range items {
 			if k := it.Labels["owner"]; k != "" {
@@ -623,4 +625,133 @@ func TestRunOff(t *testing.T) {
 	if n := mt.count(t, `SELECT COUNT(*) FROM environment_samples`); n != 0 {
 		t.Errorf("rows = %d, want none", n)
 	}
+}
+
+// busyStats is linuxStats(sec) with the container's CPU counter at busy seconds of CPU,
+// as a one-shot reading answers it (no previous reading).
+func busyStats(sec int, busy float64) container.StatsResponse {
+	s := linuxStats(sec)
+	s.CPUStats.CPUUsage.TotalUsage = uint64(busy * 1e9)
+	s.PreRead, s.PreCPUStats = time.Time{}, container.CPUStats{}
+	return s
+}
+
+// A collector reads a container it has seen before one-shot and measures its CPU from
+// its own previous reading: a live tick's since the last tick, a stored tick's since
+// the last stored one. A first sighting, or a counter that went back (a restart), asks
+// the daemon for its previous reading instead.
+func TestCollectOneShot(t *testing.T) {
+	t.Parallel()
+	mt := newMetricsTest(t)
+	_, unregister := mt.svc.live.register(1)
+	defer unregister()
+	env := environments.Environment{ID: 1}
+	prev := newCollectorState()
+	tick := func(save bool, stats container.StatsResponse) []client.ContainerStatsOptions {
+		t.Helper()
+		mt.fake.Stats["w1"], mt.fake.Stats["d1"] = []container.StatsResponse{stats}, []container.StatsResponse{stats}
+		before := len(mt.fake.StatsOptions())
+		if err := mt.svc.collect(t.Context(), env, save, prev); err != nil {
+			t.Fatal(err)
+		}
+		return mt.fake.StatsOptions()[before:]
+	}
+	oneShot := []client.ContainerStatsOptions{{}, {}}
+	withPrevious := []client.ContainerStatsOptions{{IncludePreviousSample: true}, {IncludePreviousSample: true}}
+	liveCPU := func() float64 {
+		t.Helper()
+		l, ok := mt.svc.LatestTick(1, Scope{All: true})
+		if !ok || len(l.Containers) != 2 {
+			t.Fatalf("latest tick = %+v, %v", l, ok)
+		}
+		return l.Containers[0].CPUPercent
+	}
+	storedCPU := func(at time.Time) float64 {
+		t.Helper()
+		var cpu float64
+		if err := mt.db.QueryRow(`SELECT cpu FROM container_samples WHERE container_id = 'w1' AND time = ?`, at.Unix()).Scan(&cpu); err != nil {
+			t.Fatal(err)
+		}
+		return cpu
+	}
+
+	// First sighting: 100% over the daemon's second.
+	if got := tick(true, linuxStats(1)); !slices.Equal(got, withPrevious) {
+		t.Errorf("first tick's options = %+v, want a previous reading", got)
+	}
+	if cpu := storedCPU(t0); cpu != 100 {
+		t.Errorf("first stored cpu = %v, want 100", cpu)
+	}
+	// A live tick 10 s later: 5 s of CPU since, 50%.
+	mt.clock.set(t0.Add(10 * time.Second))
+	if got := tick(false, busyStats(11, 6)); !slices.Equal(got, oneShot) {
+		t.Errorf("live tick's options = %+v, want one-shot", got)
+	}
+	if cpu := liveCPU(); cpu != 50 {
+		t.Errorf("live cpu = %v, want 50", cpu)
+	}
+	// A stored tick 10 s after that: 10 s of CPU since the live tick (100%), 15 s since
+	// the stored one (75%).
+	mt.clock.set(t0.Add(20 * time.Second))
+	if got := tick(true, busyStats(21, 16)); !slices.Equal(got, oneShot) {
+		t.Errorf("stored tick's options = %+v, want one-shot", got)
+	}
+	if cpu := liveCPU(); cpu != 100 {
+		t.Errorf("live cpu = %v, want 100", cpu)
+	}
+	if cpu := storedCPU(t0.Add(20 * time.Second)); cpu != 75 {
+		t.Errorf("stored cpu = %v, want 75 over the interval", cpu)
+	}
+	// Restarted: the counter went back, so the daemon's previous reading is asked for.
+	mt.clock.set(t0.Add(30 * time.Second))
+	// The two containers' calls interleave: compare them sorted, one-shot first.
+	got := tick(true, linuxStats(1))
+	slices.SortFunc(got, func(a, b client.ContainerStatsOptions) int {
+		return cmp.Compare(btoi(a.IncludePreviousSample), btoi(b.IncludePreviousSample))
+	})
+	if !slices.Equal(got, append(oneShot, withPrevious...)) {
+		t.Errorf("tick after a restart's options = %+v, want one-shot then a previous reading", got)
+	}
+	if cpu := storedCPU(t0.Add(30 * time.Second)); cpu != 100 {
+		t.Errorf("stored cpu after a restart = %v, want the daemon's 100", cpu)
+	}
+	if len(prev.stats.last) != 2 || len(prev.stats.saved) != 2 {
+		t.Errorf("readings = %d last, %d saved, want only the 2 sampled", len(prev.stats.last), len(prev.stats.saved))
+	}
+}
+
+// A collector hands the owners its image cache from tick to tick and starts it over
+// when full.
+func TestCollectImageCache(t *testing.T) {
+	t.Parallel()
+	mt := newMetricsTest(t)
+	var seen []int
+	mt.svc.owners = func(_ context.Context, _ docker.Client, _ []container.Summary, images map[string]bool) (map[string]string, error) {
+		seen = append(seen, len(images))
+		images[fmt.Sprint(len(seen))] = true
+		return map[string]string{}, nil
+	}
+	env := environments.Environment{ID: 1}
+	prev := newCollectorState()
+	for range 2 {
+		if err := mt.svc.collect(t.Context(), env, false, prev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := range maxImageCache {
+		prev.images[fmt.Sprint("full", i)] = true
+	}
+	if err := mt.svc.collect(t.Context(), env, false, prev); err != nil {
+		t.Fatal(err)
+	}
+	if want := []int{0, 1, 0}; !slices.Equal(seen, want) {
+		t.Errorf("cache sizes = %v, want %v", seen, want)
+	}
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

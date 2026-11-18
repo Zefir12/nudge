@@ -11,9 +11,12 @@ const minLength = 8;
 const current = ref('');
 const next = ref('');
 const repeat = ref('');
+// A stolen session could have minted an API token, so they go too unless unticked.
+const revokeTokens = ref(true);
 const busy = ref(false);
 const error = ref('');
 const done = ref(false);
+const revokedTokens = ref(false);
 
 const mismatch = computed(() => repeat.value !== '' && repeat.value !== next.value);
 const ready = computed(
@@ -25,8 +28,9 @@ async function onChange() {
   error.value = '';
   done.value = false;
   try {
-    await changePassword(current.value, next.value);
+    await changePassword(current.value, next.value, revokeTokens.value);
     done.value = true;
+    revokedTokens.value = revokeTokens.value;
     current.value = '';
     next.value = '';
     repeat.value = '';
@@ -50,7 +54,7 @@ async function onChange() {
       You sign in through single sign-on: your password is managed by your identity provider.
     </p>
     <template v-else>
-      <p>Changing it signs you out everywhere else. API tokens keep working.</p>
+      <p>Changing it signs you out everywhere else.</p>
       <form class="password" @submit.prevent="onChange">
         <label>
           Current password
@@ -71,12 +75,20 @@ async function onChange() {
           Repeat it
           <input v-model="repeat" name="repeat" type="password" autocomplete="new-password" required />
         </label>
+        <label class="check">
+          <input v-model="revokeTokens" name="revoke_tokens" type="checkbox" />
+          Also delete my API tokens
+        </label>
         <button type="submit" class="primary" :disabled="!ready">Change password</button>
       </form>
       <p class="muted">At least {{ minLength }} characters.</p>
       <p v-if="mismatch" class="error">The new passwords differ.</p>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
-      <p v-if="done" aria-live="polite">Password changed. Your other sessions have ended.</p>
+      <p v-if="done" aria-live="polite">
+        Password changed. Your other sessions have ended{{
+          revokedTokens ? ' and your API tokens are deleted' : ''
+        }}.
+      </p>
     </template>
   </FoldCard>
 </template>
@@ -94,5 +106,11 @@ async function onChange() {
   flex-direction: column;
   gap: 0.25rem;
   font-weight: 500;
+}
+
+.password label.check {
+  flex-direction: row;
+  align-items: center;
+  font-weight: normal;
 }
 </style>

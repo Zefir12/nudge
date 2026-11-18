@@ -53,7 +53,7 @@ describe('ContainerFormView', () => {
     await wrapper.find('form').trigger('submit');
     await flushPromises();
     expect(body(fetch, '/containers')).toEqual({ ...spec, start: true });
-    expect(router.currentRoute.value.fullPath).toBe('/env/1/containers/c1');
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/env/1/containers/c1'));
   });
 
   it('shows field errors from the API', async () => {
@@ -69,7 +69,7 @@ describe('ContainerFormView', () => {
     await flushPromises();
     expect(wrapper.find('[role=alert]').text()).toBe('invalid container settings');
     expect(wrapper.find('label .error').text()).toBe('2 or more letters');
-    expect(router.currentRoute.value.name).toBe('container-new');
+    await vi.waitFor(() => expect(router.currentRoute.value.name).toBe('container-new'));
   });
 
   it('edits a container by recreating it with the changed settings', async () => {
@@ -86,6 +86,6 @@ describe('ContainerFormView', () => {
     await wrapper.find('form').trigger('submit');
     await flushPromises();
     expect(body(fetch, '/recreate')).toEqual({ pull: false, spec: { ...spec, image: 'nginx:1.30' } });
-    expect(router.currentRoute.value.fullPath).toBe('/env/1/containers/new1');
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/env/1/containers/new1'));
   });
 });

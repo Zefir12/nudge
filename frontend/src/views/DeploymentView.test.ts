@@ -292,6 +292,7 @@ describe('DeploymentView', () => {
     const { wrapper, router } = await mountView();
     await button(wrapper, 'Delete deployment')?.trigger('click');
     await flushPromises();
-    expect(router.currentRoute.value.name).toBe('deployments');
+    // The list view's chunk loads first.
+    await vi.waitFor(() => expect(router.currentRoute.value.name).toBe('deployments'));
   });
 });

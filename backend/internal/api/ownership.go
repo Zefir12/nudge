@@ -94,19 +94,27 @@ func (sc scope) ownsContainer(ctx context.Context, c docker.Client, labels map[s
 	if !sc.owns(labels) {
 		return false, nil
 	}
+	leaves, _, err := imageLeavesOwner(ctx, c, image)
+	return leaves, err
+}
+
+// imageLeavesOwner reports whether image (an ID) sets no owner label of its own, which
+// leaves the owner label to its containers. found is false when the image is gone; it
+// then leaves nothing, as it can't be checked.
+func imageLeavesOwner(ctx context.Context, c docker.Client, image string) (leaves, found bool, err error) {
 	res, err := c.ImageInspect(ctx, image)
 	if docker.NotFound(err) {
-		return false, nil
+		return false, false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("inspect image: %w", err)
+		return false, false, fmt.Errorf("inspect image: %w", err)
 	}
 	if res.Config != nil {
 		if _, ok := res.Config.Labels[ownerLabel]; ok {
-			return false, nil
+			return false, true, nil
 		}
 	}
-	return true, nil
+	return true, true, nil
 }
 
 // ownedContainers keeps the listed containers the scope owns.
@@ -293,11 +301,15 @@ func (oc *ownerCache) event(ctx context.Context, typ, id string, attrs map[strin
 
 // ContainerOwners returns the owner key of each of items a user owns, by container ID:
 // the owner label, unless the container's image sets one too (see ownsContainer). The
-// metrics collector files each container's samples under it.
-func ContainerOwners(ctx context.Context, c docker.Client, items []container.Summary) (map[string]string, error) {
+// metrics collector files each container's samples under it. images caches, by image
+// ID, whether the image leaves the owner label to its containers; an image's labels
+// never change, so the collector keeps it from tick to tick and inspects each image
+// once. A missing image is not cached. nil caches for this call only.
+func ContainerOwners(ctx context.Context, c docker.Client, items []container.Summary, images map[string]bool) (map[string]string, error) {
 	owners := map[string]string{}
-	// By image: whether it leaves the owner label to its containers.
-	images := map[string]bool{}
+	if images == nil {
+		images = map[string]bool{}
+	}
 	for _, item := range items {
 		key := item.Labels[ownerLabel]
 		if key == "" {
@@ -305,11 +317,14 @@ func ContainerOwners(ctx context.Context, c docker.Client, items []container.Sum
 		}
 		ok, seen := images[item.ImageID]
 		if !seen {
+			found := false
 			var err error
-			if ok, err = (scope{key: key}).ownsContainer(ctx, c, item.Labels, item.ImageID); err != nil {
+			if ok, found, err = imageLeavesOwner(ctx, c, item.ImageID); err != nil {
 				return nil, err
 			}
-			images[item.ImageID] = ok
+			if found {
+				images[item.ImageID] = ok
+			}
 		}
 		if ok {
 			owners[item.ID] = key

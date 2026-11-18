@@ -171,10 +171,35 @@ func (s *Service) SubscribeLive(env int64, sc Scope) (*LiveSubscription, error) 
 	}
 	sub := &LiveSubscription{hub: h, env: env, scope: sc, c: make(chan Live, liveBuffer)}
 	subs[sub] = true
-	if t := h.last[env]; t != nil && s.clock.Now().Sub(t.time) <= staleTicks*s.interval {
+	if t := s.recentTick(env); t != nil {
 		sub.c <- t.view(sc)
 	}
 	return sub, nil
+}
+
+// recentTick is env's latest tick if it is from the last staleTicks intervals, else
+// nil. The caller holds s.live.mu.
+func (s *Service) recentTick(env int64) *tick {
+	if t := s.live.last[env]; t != nil && s.clock.Now().Sub(t.time) <= staleTicks*s.interval {
+		return t
+	}
+	return nil
+}
+
+// LatestTick answers env's latest collected tick within sc, the one a new live
+// subscriber gets first; ok is false when there is none from the last few intervals
+// (collection is off, it hasn't run yet, or the environment is offline).
+func (s *Service) LatestTick(env int64, sc Scope) (l Live, ok bool) {
+	if s.interval <= 0 {
+		return Live{}, false
+	}
+	s.live.mu.Lock()
+	defer s.live.mu.Unlock()
+	t := s.recentTick(env)
+	if t == nil {
+		return Live{}, false
+	}
+	return t.view(sc), true
 }
 
 // C delivers the ticks; it is closed when the subscription ends.

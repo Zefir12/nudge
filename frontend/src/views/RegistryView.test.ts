@@ -88,7 +88,7 @@ describe('RegistryView', () => {
     await wrapper.find('input[name=open]').setValue(' library/nginx ');
     await wrapper.find('form').trigger('submit');
     await flushPromises();
-    expect(router.currentRoute.value.name).toBe('registry-repository');
+    await vi.waitFor(() => expect(router.currentRoute.value.name).toBe('registry-repository'));
     expect(router.currentRoute.value.query).toEqual({ name: 'library/nginx' });
   });
 

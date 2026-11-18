@@ -91,7 +91,7 @@ func newServer(t *testing.T) *httptest.Server {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	// Cheap argon2id costs: DefaultParams is very slow under -race on a loaded runner.
-	authSvc := auth.New(auth.Options{DB: st.DB(), Params: auth.Params{Memory: 64, Time: 1, Threads: 1}})
+	authSvc := auth.New(auth.Options{DB: st.DB(), Params: auth.Params{Memory: 64, Time: 1, Threads: 1}, SetupToken: e2eSetupToken})
 	connect, err := environments.LocalConnect("unix://" + filepath.Join(dir, "no-docker.sock"))
 	if err != nil {
 		t.Fatal(err)
@@ -107,6 +107,9 @@ func newServer(t *testing.T) *httptest.Server {
 	return srv
 }
 
+// e2eSetupToken is the setup token of the server under test.
+const e2eSetupToken = "e2e-setup-token"
+
 // user is an API client logged in through setup.
 type user struct {
 	t    *testing.T
@@ -121,7 +124,7 @@ func setup(t *testing.T, base string) *user {
 		t.Fatal(err)
 	}
 	u := &user{t: t, base: base, http: &http.Client{Jar: jar, Timeout: 10 * time.Second}}
-	u.do(http.MethodPost, "/api/v1/setup", map[string]string{"username": "admin", "password": "correct horse"}, http.StatusCreated, nil)
+	u.do(http.MethodPost, "/api/v1/setup", map[string]string{"username": "admin", "password": "correct horse", "token": e2eSetupToken}, http.StatusCreated, nil)
 	return u
 }
 

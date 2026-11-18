@@ -269,6 +269,19 @@ func TestDeployHookOwnership(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &bobHook); rec.Code != http.StatusOK || err != nil {
 		t.Fatalf("admin rotates bob's = %d %s", rec.Code, rec.Body)
 	}
+	// A demoted creator's webhook is refused, and listed as orphaned.
+	if rec := trigger(t, h, bobHook.ID, "", "", bearer(bobHook.Secret)); rec.Code != http.StatusForbidden {
+		t.Errorf("trigger of a demoted admin's webhook = %d %s, want 403", rec.Code, rec.Body)
+	}
+	var listed []deployHookJSON
+	if err := json.Unmarshal(as(adminToken, "GET", path, "").Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range listed {
+		if want := l.ID == bobHook.ID; l.Orphaned != want {
+			t.Errorf("webhook %s orphaned = %v, want %v", l.Name, l.Orphaned, want)
+		}
+	}
 	// A disabled creator's webhook can't be triggered.
 	if _, err := db.ExecContext(ctx, `UPDATE users SET disabled = 1 WHERE id = ?`, bobID); err != nil {
 		t.Fatal(err)
