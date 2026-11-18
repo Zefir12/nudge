@@ -60,27 +60,99 @@ func TestBindSources(t *testing.T) {
 	}
 }
 
-// configExec answers `compose config` with config and exit code configCode, and records
-// the subcommand of every run.
+// configExec answers `compose config` with config, configStderr and exit code
+// configCode, and records the subcommand and command of every run.
 type configExec struct {
-	config     string
-	configCode int
-	configErr  error
-	calls      []string
+	config       string
+	configStderr string
+	configCode   int
+	configErr    error
+	calls        []string
+	cmds         []Command
 }
 
 func (e *configExec) exec(_ context.Context, cmd Command) (int, error) {
 	i := slices.Index(cmd.Args, "plain")
 	sub := cmd.Args[i+1]
 	e.calls = append(e.calls, sub)
+	e.cmds = append(e.cmds, cmd)
 	if sub == "config" {
-		if !slices.Equal(cmd.Args[i+1:], []string{"config", "--format", "json"}) {
+		if !slices.Equal(cmd.Args[i+1:], []string{"config", "--format", "json", "--no-env-resolution"}) {
 			return 0, fmt.Errorf("config args %q", cmd.Args[i+1:])
 		}
 		_, _ = cmd.Stdout.Write([]byte(e.config))
+		_, _ = cmd.Stderr.Write([]byte(e.configStderr))
 		return e.configCode, e.configErr
 	}
 	return 0, nil
+}
+
+// TestLocalBindCheckCommandLine: compose config reads the stack as up does: same binary,
+// project name, directory, compose file, .env (from the project directory, which is the
+// working directory) and environment.
+func TestLocalBindCheckCommandLine(t *testing.T) {
+	t.Parallel()
+	d := NewDir(t.TempDir())
+	if err := d.Create("web", Files{Compose: "services: {}\n", Env: "TAG=1.2\n"}); err != nil {
+		t.Fatal(err)
+	}
+	ex := &configExec{config: `{"services":{}}`}
+	l := NewLocal(LocalOptions{Dir: d, Exec: ex.exec, Compose: "/bin/compose", DockerHost: "unix:///d.sock",
+		Mounts: func(context.Context) ([]Mount, bool, error) { return nil, true, nil }})
+	if _, err := l.Up(context.Background(), "web", UpOptions{Pull: true}, func(Line) {}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(ex.calls, []string{"config", "up"}) {
+		t.Fatalf("compose runs = %q, want config, up", ex.calls)
+	}
+	config, up := ex.cmds[0], ex.cmds[1]
+	global := func(c Command) []string { return c.Args[:slices.Index(c.Args, "plain")+1] }
+	dir := d.Path("web")
+	wantGlobal := []string{"--project-name", "web", "--project-directory", dir, "--file", dir + "/compose.yaml",
+		"--ansi", "never", "--progress", "plain"}
+	for _, c := range []Command{config, up} {
+		if c.Path != "/bin/compose" || c.Dir != dir || !slices.Equal(global(c), wantGlobal) {
+			t.Errorf("command %q in %s, want /bin/compose %q in %s", append([]string{c.Path}, c.Args...), c.Dir, wantGlobal, dir)
+		}
+	}
+	if !slices.Equal(config.Env, up.Env) {
+		t.Errorf("config env = %q, up env = %q; want the same", config.Env, up.Env)
+	}
+}
+
+func TestEnvValues(t *testing.T) {
+	t.Parallel()
+	env := "# comment\nexport TOKEN='abc def'\nPASSWORD=\"s3cret\"\nSHORT=yes\nEMPTY=\n  URL = postgres://u:pw@db/x \nnot a pair\nKEY=s3cret\nINLINE=hunter2secret # prod\nQUOTED=\"abc123\" # c\n"
+	want := []string{"hunter2secret # prod", "postgres://u:pw@db/x", "hunter2secret", "\"abc123\" # c", "'abc def'", "\"s3cret\"", "abc def", "abc123", "s3cret"}
+	if got := envValues(env); !slices.Equal(got, want) {
+		t.Errorf("envValues = %q, want %q", got, want)
+	}
+}
+
+func TestEnvValueForms(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		value string
+		want  []string
+	}{
+		{value: "", want: []string{""}},
+		{value: "abc123", want: []string{"abc123"}},
+		{value: "abc123 # c", want: []string{"abc123 # c", "abc123"}},
+		{value: "abc def\t# c", want: []string{"abc def\t# c", "abc def"}},
+		{value: "abc#123", want: []string{"abc#123"}},
+		{value: `"abc123"`, want: []string{`"abc123"`, "abc123"}},
+		{value: `"abc123" # c`, want: []string{`"abc123" # c`, "abc123"}},
+		{value: `'abc123' # c`, want: []string{`'abc123' # c`, "abc123"}},
+		{value: `'a\'bc'`, want: []string{`'a\'bc'`, `a\`}},
+		{value: `"a\"b # c" # d`, want: []string{`"a\"b # c" # d`, `a\"b # c`, `a"b # c`}},
+		{value: `"x\ny\\z"`, want: []string{`"x\ny\\z"`, `x\ny\\z`, "x\ny\\z"}},
+		{value: `"unterminated`, want: []string{`"unterminated`, "unterminated"}},
+	}
+	for _, tt := range tests {
+		if got := envValueForms(tt.value); !slices.Equal(got, tt.want) {
+			t.Errorf("envValueForms(%q) = %q, want %q", tt.value, got, tt.want)
+		}
+	}
 }
 
 func TestLocalChecksBinds(t *testing.T) {
@@ -219,6 +291,53 @@ func TestLocalBindCheckFailures(t *testing.T) {
 			}
 			if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "stack=web") {
 				t.Errorf("logs = %q, want a warning", logs.String())
+			}
+		})
+	}
+}
+
+func TestLocalBindCheckLogsStderr(t *testing.T) {
+	t.Parallel()
+	d := NewDir(t.TempDir())
+	if err := d.Create("web", Files{Compose: "services: {}\n", Env: "DB_PASSWORD=hunter2hunter2\nDEBUG=1\n"}); err != nil {
+		t.Fatal(err)
+	}
+	volume := func(context.Context) ([]Mount, bool, error) {
+		return []Mount{{Type: "volume", Name: "v", Destination: "/"}}, true, nil
+	}
+	tests := []struct {
+		name      string
+		stderr    string
+		configErr error
+		want      []string
+		notWant   []string
+	}{
+		{name: "redacted", stderr: "env file .env: line 1: unexpected character in hunter2hunter2\n",
+			want:    []string{"compose config failed", "exit_code=1", `stderr="env file .env: line 1: unexpected character in ********"`},
+			notWant: []string{"hunter2"}},
+		{name: "capped", stderr: strings.Repeat("x", maxConfigStderr*2),
+			want: []string{`stderr=` + strings.Repeat("x", maxLoggedStderr) + `...`}, notWant: []string{strings.Repeat("x", maxLoggedStderr+1)}},
+		{name: "did not run", stderr: "partial", configErr: errors.New("killed"),
+			want: []string{"compose config did not run", "stderr=partial"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var logs bytes.Buffer
+			ex := &configExec{config: `{}`, configStderr: tt.stderr, configCode: 1, configErr: tt.configErr}
+			l := NewLocal(LocalOptions{Dir: d, Exec: ex.exec, Mounts: volume, Log: slog.New(slog.NewTextHandler(&logs, nil))})
+			if _, err := l.Up(context.Background(), "web", UpOptions{}, func(Line) {}); err != nil {
+				t.Fatalf("Up = %v, want the deploy to go on", err)
+			}
+			for _, w := range tt.want {
+				if !strings.Contains(logs.String(), w) {
+					t.Errorf("logs = %q, want %q", logs.String(), w)
+				}
+			}
+			for _, w := range tt.notWant {
+				if strings.Contains(logs.String(), w) {
+					t.Errorf("logs = %q, want no %q", logs.String(), w)
+				}
 			}
 		})
 	}
