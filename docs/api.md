@@ -647,7 +647,8 @@ upgrade is refused (`403`) unless its `Origin` matches the `Host`. Query options
 (default `all`), `timestamps=true` adds the daemon's time to each line.
 
 Errors before the upgrade are ordinary JSON errors: `400` invalid option, `404` unknown
-environment or container, `503`/`504`/`502` as for other Docker calls. Then each line is a
+environment or container, `429` too many streams open (see Stream limit), `503`/`504`/`502`
+as for other Docker calls. Then each line is a
 text frame `{"stream": "stdout"|"stderr", "time": "2026-10-01T12:00:00.5Z", "line": "..."}`
 (`time` only with `timestamps`; a container with a TTY has no stderr, all its output is
 `stdout`; lines over 16 KiB are split). The last frame is `{"done": true}` when the stream
@@ -670,7 +671,8 @@ split on whitespace, without shell quoting (default `/bin/sh`, at most 1024 char
 process gets `TERM=xterm-256color`.
 
 Errors before the upgrade are JSON errors: `400` invalid option, `404` unknown
-environment or container, `409` container not running, `503`/`504`/`502` as for other
+environment or container, `409` container not running, `429` too many streams open (see
+Stream limit; checked before the process is created), `503`/`504`/`502` as for other
 Docker calls. Every session is recorded in the audit log when it opens (status `101`), or
 with the status it was refused with.
 
@@ -682,6 +684,12 @@ reports it) or `{"error": "..."}`, then closes the socket normally. Closing the 
 closes the process's terminal, which ends a shell. The server pings every 30 s and ends a
 session whose client doesn't answer. Like a log stream, the session is checked again every minute and
 closed with code 1008 when its credential or access is gone.
+
+### Stream limit
+Log, container stats and exec streams, and running `GET .../stats` requests, count against a
+limit per user and environment: 32 open at once (an admin 128). Over it the request is
+refused with `429` `{"error": "too many log, stats and exec streams open in this
+environment"}` before the upgrade; closing a stream frees its slot.
 
 ### Stats
 Usage is computed on the server from the daemon's counters. A sample:
@@ -695,8 +703,8 @@ from two samples.
 
 `GET /api/v1/environments/{env}/containers/{id}/stats` upgrades to a WebSocket like the
 log stream (same authentication, `Origin` check, pings and close behaviour). Before the
-upgrade: `404` unknown environment or container, `409` container is not running, and the
-usual Docker errors. Then each sample is a text frame (the daemon's first reading, which
+upgrade: `404` unknown environment or container, `409` container is not running, `429`
+too many streams open (see Stream limit), and the usual Docker errors. Then each sample is a text frame (the daemon's first reading, which
 has no previous one to compute CPU from, is skipped); the last frame is `{"done": true}`
 when the container stopped or `{"error": "..."}`.
 
@@ -708,6 +716,7 @@ intervals, and `time` is when that tick was taken; it then asks the daemon nothi
 it samples now and leaves `time` out: that takes about a second (the daemon waits for a
 second reading) and samples 8 containers at a time, for at most a minute. A container that
 stops meanwhile, or isn't sampled in time, is left out and counted in `skipped`.
+While it samples it holds a stream slot (`429` when none is free, see Stream limit).
 
 `GET /api/v1/environments/{env}/stats/summary` answers `{"sampled_at": "...", "cpu_percent":
 200, "memory_usage": 536870912, "containers": 2, "host": {"cpu_percent": 23.5,

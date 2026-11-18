@@ -82,6 +82,12 @@ func (s *server) containerExec(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Take the slot before the exec is created: each one leaves a process behind.
+	release, ok := s.takeStream(w, r, env.ID)
+	if !ok {
+		return
+	}
+	defer release()
 	ctx, cancel := context.WithTimeout(r.Context(), dockerTimeout)
 	ct, ref, err := s.ownedContainer(ctx, c, id)
 	var execID string

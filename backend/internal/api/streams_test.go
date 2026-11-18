@@ -152,3 +152,50 @@ func mustDo(t *testing.T, h http.Handler, req request) {
 		t.Fatalf("%s %s = %d %s", req.method, req.path, rec.Code, rec.Body)
 	}
 }
+
+// A stream the recheck ends gives its slot back: once bob has the environment again he
+// can open a stream though he may hold only one.
+func TestRevokedStreamReleasesSlot(t *testing.T) {
+	t.Parallel()
+	ot := newOwnTestOpts(t, func(o *Options) {
+		shortRecheck(o)
+		o.MaxStreams = 1
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	logs := ot.path(ot.local, "/containers/mine/logs?follow=true")
+	header := http.Header{}
+	header.Set("Cookie", ot.bob.String())
+	ws := dialWith(ctx, t, ot.srv.URL, logs, header)
+	if _, _, err := ws.Read(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if rec := do(t, ot.h, request{method: "GET", path: logs, cookie: ot.bob}); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("second stream = %d %s, want 429", rec.Code, rec.Body)
+	}
+
+	grant := func(envs string) {
+		mustDo(t, ot.h, request{method: "PUT", path: fmt.Sprintf("/api/v1/users/%d/environments", ot.bobID), cookie: ot.admin,
+			body: `{"environments":[` + envs + `]}`})
+	}
+	grant("")
+	if got := closedWith(ctx, ws); got != websocket.StatusPolicyViolation {
+		t.Fatalf("close status = %v, want %v", got, websocket.StatusPolicyViolation)
+	}
+	grant(fmt.Sprint(ot.local))
+	// The slot is given back as the handler returns, just after the close frame.
+	for {
+		ws, resp, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(ot.srv.URL, "http")+logs, &websocket.DialOptions{HTTPHeader: header})
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		if err == nil {
+			_ = ws.CloseNow()
+			return
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("the revoked stream's slot was not freed: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
