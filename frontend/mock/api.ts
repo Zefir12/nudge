@@ -319,7 +319,8 @@ function stacks(env: number) {
             repo_url: `https://git.example.com/me/${name}.git`,
             ref: 'main',
             compose_path: 'compose.yaml',
-            env_path: '.env.example',
+            env_path: '',
+            env_example_path: '.env.example',
             auth: 'token',
             username: '',
             known_hosts: '',
@@ -927,16 +928,16 @@ const routes: Route[] = [
     'GET',
     new RegExp(`^${envRe}/stacks/([^/]+)/git/env-example$`),
     withEnv((env, m) => {
-      // A git stack without env_path reads the repository's .env.example instead.
+      // env_example_path, or else env_path, or else the repository's .env.example.
       const s = found(
         stacks(env).find((s) => s.name === m[2] && s.git),
         'stack',
       );
       return {
-        path: s.git!.env_path || '.env.example',
+        path: s.git!.env_example_path || s.git!.env_path || '.env.example',
         commit: s.git!.commit,
         content: envExample,
-        kind: s.git!.env_path ? 'env' : 'example',
+        kind: !s.git!.env_example_path && s.git!.env_path ? 'env' : 'example',
       };
     }),
   ],

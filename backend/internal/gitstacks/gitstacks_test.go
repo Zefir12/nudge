@@ -127,17 +127,22 @@ func TestFetchExample(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	tests := []struct {
-		name    string
-		files   map[string]string
-		envPath string
-		path    string
-		want    string
+		name        string
+		files       map[string]string
+		envPath     string
+		examplePath string
+		path        string
+		want        string
+		wantErr     string
 	}{
-		{"next to the compose file", map[string]string{"deploy/.env.example": "A=1\n", ".env.example": "B=2\n"}, "", "deploy/.env.example", "A=1\n"},
-		{"at the root", map[string]string{".env.example": "B=2\n"}, "", ".env.example", "B=2\n"},
-		{"none", map[string]string{}, "", "", ""},
-		{"a directory is no example", map[string]string{"deploy/.env.example/x": "A=1\n"}, "", "", ""},
-		{"an env file comes instead", map[string]string{".env.example": "B=2\n", "deploy/env": "C=3\n"}, "deploy/env", "", ""},
+		{"next to the compose file", map[string]string{"deploy/.env.example": "A=1\n", ".env.example": "B=2\n"}, "", "", "deploy/.env.example", "A=1\n", ""},
+		{"at the root", map[string]string{".env.example": "B=2\n"}, "", "", ".env.example", "B=2\n", ""},
+		{"none", map[string]string{}, "", "", "", "", ""},
+		{"a directory is no example", map[string]string{"deploy/.env.example/x": "A=1\n"}, "", "", "", "", ""},
+		{"an env file comes instead", map[string]string{".env.example": "B=2\n", "deploy/env": "C=3\n"}, "deploy/env", "", "", "", ""},
+		{"a named example", map[string]string{"deploy/.env.example": "A=1\n", "deploy/env.example": "E=\n"}, "", "deploy/env.example", "deploy/env.example", "E=\n", ""},
+		{"a named example with an env file", map[string]string{"deploy/env": "C=3\n", "deploy/env.example": "E=\n"}, "deploy/env", "deploy/env.example", "deploy/env.example", "E=\n", ""},
+		{"a missing named example", map[string]string{".env.example": "B=2\n"}, "", "deploy/env.example", "", "", "deploy/env.example is not in the repository"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -148,13 +153,20 @@ func TestFetchExample(t *testing.T) {
 				files[k] = v
 			}
 			repo.Commit(files)
-			src := f.prepare(t, gitstacks.Input{RepoURL: repo.URL, ComposePath: "deploy/compose.yaml", EnvPath: tt.envPath})
+			src := f.prepare(t, gitstacks.Input{RepoURL: repo.URL, ComposePath: "deploy/compose.yaml", EnvPath: tt.envPath, EnvExamplePath: tt.examplePath})
+			if src.EnvExamplePath != tt.examplePath {
+				t.Fatalf("source example path = %q", src.EnvExamplePath)
+			}
+			// A named example that can't be read never fails the fetch.
 			res, err := f.svc.Fetch(context.Background(), src)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if res.ExamplePath != tt.path || res.Example != tt.want {
 				t.Fatalf("example = %q %q, want %q %q", res.ExamplePath, res.Example, tt.path, tt.want)
+			}
+			if gotErr := fmt.Sprint(res.ExampleErr); (tt.wantErr == "") != (res.ExampleErr == nil) || !strings.Contains(gotErr, tt.wantErr) {
+				t.Fatalf("example error = %v, want %q", res.ExampleErr, tt.wantErr)
 			}
 		})
 	}
@@ -328,6 +340,7 @@ func TestPrepareValidates(t *testing.T) {
 		{"absolute compose", ok(func(i *gitstacks.Input) { i.ComposePath = "/etc/passwd" }), "compose path"},
 		{"unclean compose", ok(func(i *gitstacks.Input) { i.ComposePath = "a/../b" }), "compose path"},
 		{"escaping env", ok(func(i *gitstacks.Input) { i.EnvPath = "../x" }), "env path"},
+		{"escaping env example", ok(func(i *gitstacks.Input) { i.EnvExamplePath = "/etc/x" }), "env example path"},
 		{"poll too fast", ok(func(i *gitstacks.Input) { i.Poll = time.Second }), "poll interval"},
 		{"poll too slow", ok(func(i *gitstacks.Input) { i.Poll = 25 * time.Hour }), "poll interval"},
 	}

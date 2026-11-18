@@ -523,3 +523,76 @@ func TestDeploymentKeepsSecretsAgainstExampleEnvFile(t *testing.T) {
 		}
 	}
 }
+
+// embrExample is shaped like embr's deploy/staging/env.example: names only, empty values,
+// commented-out optional variables.
+const embrExample = "# Staging env: copy to .env next to compose.yaml.\n\n" +
+	"# Image to run\nEMBR_IMAGE=\n# Npgsql format\nConnectionStrings__Default=\n\n" +
+	"# Optional: behind a proxy\n# ForwardedHeaders__KnownProxies__0=\n" +
+	"Auth__BootstrapAdminEmail=\nAuth__BootstrapAdminPassword=\n"
+
+// TestStackEnvExamplePath reads a stack's env_example_path as an example, alone or next
+// to env_path, and a pull never sets its values, empty or not, in the .env.
+func TestStackEnvExamplePath(t *testing.T) {
+	t.Parallel()
+	gt := newGitStackTest(t)
+	next := gt.repo.Commit(map[string]string{
+		"compose.yaml": gitCompose, "app.env": "FROM_REPO=2\nNEW=3\n",
+		"deploy/env.example": embrExample + "FROM_EXAMPLE=1\n", ".env.example": "OTHER=1\n",
+	})
+	tests := []struct {
+		name, git, env string
+		// wantEnv is the .env after a pull.
+		wantEnv string
+	}{
+		{"example only", `"env_example_path":"deploy/env.example"`, "EMBR_IMAGE=app:v1\nConnectionStrings__Default=Host=db\n", "EMBR_IMAGE=app:v1\nConnectionStrings__Default=Host=db\n"},
+		{"example and env file", `"env_path":"app.env","env_example_path":"deploy/env.example"`, "EMBR_IMAGE=app:v1\n", "EMBR_IMAGE=app:v1\nFROM_REPO=2\nNEW=3\n"},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			name := fmt.Sprintf("ex%d", i)
+			body := fmt.Sprintf(`{"name":%q,"env":%q,"git":{"repo_url":%q,"compose_path":"compose.yaml",%s}}`, name, tt.env, gt.repo.URL, tt.git)
+			if c, out := gt.do(t, "POST", "local", "", body); c != http.StatusCreated {
+				t.Fatalf("create = %d %s", c, out)
+			}
+			c, out := gt.do(t, "GET", "local", "/"+name+"/git/env-example", "")
+			var got stackEnvExampleResponse
+			if c != http.StatusOK || json.Unmarshal([]byte(out), &got) != nil {
+				t.Fatalf("get = %d %s", c, out)
+			}
+			want := stackEnvExampleResponse{Path: "deploy/env.example", Commit: next, Content: embrExample + "FROM_EXAMPLE=1\n", Kind: "example"}
+			if got != want {
+				t.Fatalf("example = %+v, want %+v", got, want)
+			}
+			if c, out := gt.do(t, "POST", "local", "/"+name+"/git/pull", ""); c != http.StatusOK || !strings.Contains(out, `"exit_code":0`) {
+				t.Fatalf("pull = %d %s", c, out)
+			}
+			c, out = gt.do(t, "GET", "local", "/"+name, "")
+			var s stackResponse
+			if c != http.StatusOK || json.Unmarshal([]byte(out), &s) != nil {
+				t.Fatalf("stack = %d %s", c, out)
+			}
+			if s.Env != tt.wantEnv {
+				t.Fatalf(".env after pull = %q, want %q", s.Env, tt.wantEnv)
+			}
+			if s.Git == nil || s.Git.EnvExamplePath != "deploy/env.example" {
+				t.Fatalf("git = %+v", s.Git)
+			}
+		})
+	}
+
+	// A named example that is missing fails neither creating nor pulling, only reading it.
+	body := fmt.Sprintf(`{"name":"gone","env":"A=1\n","git":{"repo_url":%q,"compose_path":"compose.yaml","env_example_path":"nope.example"}}`, gt.repo.URL)
+	if c, out := gt.do(t, "POST", "local", "", body); c != http.StatusCreated {
+		t.Fatalf("create = %d %s", c, out)
+	}
+	if c, out := gt.do(t, "POST", "local", "/gone/git/pull", ""); c != http.StatusOK || !strings.Contains(out, `"exit_code":0`) {
+		t.Fatalf("pull = %d %s", c, out)
+	}
+	if c, out := gt.do(t, "GET", "local", "/gone/git/env-example", ""); c != http.StatusBadGateway || !strings.Contains(out, "nope.example is not in the repository") {
+		t.Fatalf("get = %d %s", c, out)
+	}
+	if c, out := gt.do(t, "PUT", "local", "/gone/git", fmt.Sprintf(`{"repo_url":%q,"compose_path":"compose.yaml","env_example_path":"../x"}`, gt.repo.URL)); c != http.StatusBadRequest || !strings.Contains(out, "env example path") {
+		t.Fatalf("bad path = %d %s", c, out)
+	}
+}

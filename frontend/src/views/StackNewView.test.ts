@@ -51,6 +51,7 @@ describe('StackNewView', () => {
         ref: 'develop',
         compose_path: 'compose.yaml',
         env_path: '',
+        env_example_path: '',
         auth: 'token',
         username: '',
         secret: 'tok',

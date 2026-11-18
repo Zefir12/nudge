@@ -167,6 +167,7 @@ function editGit() {
         ref: g.ref,
         compose_path: g.compose_path,
         env_path: g.env_path,
+        env_example_path: g.env_example_path,
         auth: g.auth,
         username: g.username,
         secret: '',
@@ -214,8 +215,9 @@ async function onDetachGit() {
 }
 
 const editor = ref<InstanceType<typeof StackEditor> | null>(null);
-// loadEnvExample reads the repository's env file (env_path, or else a .env.example) for
-// the .env form editor; null if a stack without env_path has no .env.example.
+// loadEnvExample reads the repository's env example (env_example_path), or else its env
+// file (env_path), or else a .env.example, for the .env form editor; null if a stack
+// with neither path has no .env.example.
 const loadEnvExample = computed(() => {
   const g = stack.value?.git;
   if (!g) return undefined;
@@ -223,7 +225,7 @@ const loadEnvExample = computed(() => {
     try {
       return await getStackEnvExample(env.value, id.value);
     } catch (e) {
-      if (!g.env_path && e instanceof ApiError && e.status === 404) return null;
+      if (!g.env_path && !g.env_example_path && e instanceof ApiError && e.status === 404) return null;
       throw e;
     }
   };
@@ -357,6 +359,12 @@ function onRevert() {
               <dt>Env file</dt>
               <dd class="break">
                 <code>{{ stack.git.env_path }}</code>
+              </dd>
+            </template>
+            <template v-if="stack.git.env_example_path">
+              <dt>Env example</dt>
+              <dd class="break">
+                <code>{{ stack.git.env_example_path }}</code>
               </dd>
             </template>
             <dt>Commit</dt>

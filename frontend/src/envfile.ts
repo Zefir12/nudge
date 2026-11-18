@@ -23,6 +23,9 @@ export interface EnvVar {
   // option): line is the comment as written, original the value it shows, and value
   // starts empty. Given a value it is written as KEY=value; left empty, it stays as is.
   commented?: boolean;
+  // notes are an example's comments for a .env variable that has none of its own
+  // (formWithHints): shown with the field, never written.
+  notes?: string[];
 }
 
 // EnvText is lines that belong to no variable: blank lines, comments followed by a blank
@@ -325,21 +328,30 @@ export function formFromEnv(env: string): EnvForm {
 }
 
 // formWithHints is the form for a .env with a .env.example whose values are only hints:
-// the .env's own variables, in place as in formFromEnv, then every variable of the
-// example the .env doesn't set (commented-out ones included), empty, with its comments
-// and its example value as original. build appends those given a value after the .env,
+// the .env's own variables, in place as in formFromEnv (one without comments of its own
+// gets the example's as notes), then every variable of the example the .env doesn't set
+// (commented-out ones included), empty, with its comments and its example value as
+// original. build appends those given a value after the .env,
 // each with its comments; the rest stay unset.
 export function formWithHints(env: string, example: string): EnvForm {
   const own = formFromEnv(env);
   const set = new Set([...own.fields, ...own.unset].map((v) => v.name));
   const unset: EnvVar[] = [...own.unset];
   const added: EnvVar[] = [];
+  const notes = new Map<string, string[]>();
   for (const it of parseEnv(example, { commented: true }).items) {
-    if (it.kind !== 'var' || set.has(it.name)) continue;
+    if (it.kind !== 'var') continue;
+    if (!notes.has(it.name)) notes.set(it.name, it.comments);
+    if (set.has(it.name)) continue;
     set.add(it.name);
     const v = { ...clone(it), value: '' };
     unset.push(v);
     added.push(v);
+  }
+  // A .env variable the example has is shown with the example's comments if it has none.
+  for (const v of [...own.fields, ...own.unset]) {
+    const n = notes.get(v.name);
+    if (!v.comments.length && n?.length) v.notes = [...n];
   }
   return {
     ...own,
@@ -358,7 +370,8 @@ export function formWithHints(env: string, example: string): EnvForm {
 // (its last line for a name, see dropped) or else the example; then the current .env's
 // own variables and lines that aren't the example's (a variable's or a block's lines the
 // example has as written are not repeated). A name the example sets twice is one field,
-// at its first place.
+// at its first place. A field the .env didn't have that is left empty is not written,
+// nor its comments: Apply never adds an empty variable.
 export function formFromExample(env: string, example: string): EnvForm {
   const ex = parseEnv(example);
   const cur = parseEnv(env);
@@ -367,6 +380,8 @@ export function formFromExample(env: string, example: string): EnvForm {
 
   const fields: EnvVar[] = [];
   const exampleNames = new Set<string>();
+  // added are the fields the .env doesn't set.
+  const added = new Set<EnvVar>();
   const top: EnvItem[] = ex.items.map((it): EnvItem => {
     if (it.kind === 'text') return { ...it, lines: [...it.lines] };
     // A repeated name keeps only its comments: a second line would override the field.
@@ -375,6 +390,7 @@ export function formFromExample(env: string, example: string): EnvForm {
     const have = current.get(it.name);
     // The current line keeps its formatting; the example's comments are shown.
     const f = have ? { ...clone(have), comments: [...it.comments] } : clone(it);
+    if (!have) added.add(f);
     fields.push(f);
     return f;
   });
@@ -414,7 +430,8 @@ export function formFromExample(env: string, example: string): EnvForm {
     dropped: [...dropped],
     unset: [],
     build: () => {
-      let text = serializeEnv({ items: top, newline: true });
+      const items = top.filter((it) => !(it.kind === 'var' && added.has(it) && it.value === ''));
+      let text = serializeEnv({ items, newline: true });
       if (text === '\n') text = '';
       const tail = serializeEnv({ items: rest, newline: true });
       if (tail) text += (text ? '\n' : '') + tail;
