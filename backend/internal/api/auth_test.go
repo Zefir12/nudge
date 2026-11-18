@@ -50,7 +50,10 @@ func sessionCookieOf(t *testing.T, rec *httptest.ResponseRecorder) *http.Cookie 
 	return nil
 }
 
-const adminCreds = `{"username":"admin","password":"longenough"}`
+// testSetupToken is the setup token of newTestHandler's auth service.
+const testSetupToken = "test-setup-token"
+
+const adminCreds = `{"username":"admin","password":"longenough","token":"` + testSetupToken + `"}`
 
 func TestSetupAndLogin(t *testing.T) {
 	t.Parallel()
@@ -65,7 +68,9 @@ func TestSetupAndLogin(t *testing.T) {
 		{name: "malformed", body: `{`, wantCode: 400, wantErr: "invalid JSON body: malformed"},
 		{name: "wrong type", body: `{"username":1}`, wantCode: 400, wantErr: "has the wrong type"},
 		{name: "too large", body: `{"username":"` + strings.Repeat("a", maxBodyBytes) + `"}`, wantCode: 400, wantErr: "invalid JSON body: too large"},
-		{name: "short password", body: `{"username":"admin","password":"short"}`, wantCode: 400, wantErr: "password must be"},
+		{name: "short password", body: `{"username":"admin","password":"short","token":"` + testSetupToken + `"}`, wantCode: 400, wantErr: "password must be"},
+		{name: "no token", body: `{"username":"admin","password":"longenough"}`, wantCode: 403, wantErr: "wrong setup token"},
+		{name: "wrong token", body: `{"username":"admin","password":"longenough","token":"guess"}`, wantCode: 403, wantErr: "wrong setup token"},
 	}
 	for _, tt := range tests {
 		rec := do(t, h, request{method: "POST", path: "/api/v1/setup", body: tt.body})
@@ -87,7 +92,7 @@ func TestSetupAndLogin(t *testing.T) {
 		t.Errorf("cookie = %+v", cookie)
 	}
 
-	rec = do(t, h, request{method: "POST", path: "/api/v1/setup", body: `{"username":"evil","password":"longenough"}`})
+	rec = do(t, h, request{method: "POST", path: "/api/v1/setup", body: `{"username":"evil","password":"longenough","token":"` + testSetupToken + `"}`})
 	if rec.Code != http.StatusConflict {
 		t.Errorf("second setup: %d %s", rec.Code, rec.Body)
 	}

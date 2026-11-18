@@ -120,13 +120,16 @@ func TestServeCreatesDatabase(t *testing.T) {
 func TestServeAdminPassword(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name     string
-		password string
-		wantCode int
-		wantLog  string
+		name      string
+		password  string
+		wantCode  int
+		wantLog   string
+		wantNoLog string
 	}{
-		{name: "creates admin", password: "longenough", wantCode: 0, wantLog: "created admin user"},
+		{name: "creates admin", password: "longenough", wantCode: 0, wantLog: "created admin user", wantNoLog: "setup_token"},
 		{name: "too short", password: "short", wantCode: 1, wantLog: "NUDGE_ADMIN_PASSWORD: create admin: password must be"},
+		// No user yet: only someone who can read the log may run setup.
+		{name: "none logs setup token", wantCode: 0, wantLog: "setup_token", wantNoLog: "created admin user"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -148,8 +151,11 @@ func TestServeAdminPassword(t *testing.T) {
 			if !strings.Contains(stderr.String(), tt.wantLog) {
 				t.Errorf("stderr %q does not contain %q", stderr.String(), tt.wantLog)
 			}
-			if strings.Contains(stderr.String(), tt.password) {
+			if tt.password != "" && strings.Contains(stderr.String(), tt.password) {
 				t.Error("password logged")
+			}
+			if tt.wantNoLog != "" && strings.Contains(stderr.String(), tt.wantNoLog) {
+				t.Errorf("stderr %q contains %q", stderr.String(), tt.wantNoLog)
 			}
 		})
 	}

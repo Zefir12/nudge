@@ -42,7 +42,7 @@ func TestChangePassword(t *testing.T) {
 		{"unknown user", 999, "old-password", "new-password", func(err error) bool { return errors.Is(err, ErrUserNotFound) }},
 	}
 	for _, tt := range tests {
-		if err := s.ChangePassword(ctx, tt.id, mine.Token, tt.current, tt.next); !tt.check(err) {
+		if err := s.ChangePassword(ctx, tt.id, mine.Token, tt.current, tt.next, false); !tt.check(err) {
 			t.Errorf("%s: err = %v", tt.name, err)
 		}
 	}
@@ -50,8 +50,15 @@ func TestChangePassword(t *testing.T) {
 		t.Fatalf("a refused change ended a session: %v", err)
 	}
 
-	if err := s.ChangePassword(ctx, u.ID, mine.Token, "old-password", "new-password"); err != nil {
+	_, token, err := s.CreateToken(ctx, u.ID, "ci")
+	if err != nil {
 		t.Fatal(err)
+	}
+	if err := s.ChangePassword(ctx, u.ID, mine.Token, "old-password", "new-password", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.TokenUser(ctx, token); err != nil {
+		t.Errorf("an API token went without revokeTokens: %v", err)
 	}
 	if _, err := s.SessionUser(ctx, mine.Token); err != nil {
 		t.Errorf("the session that changed the password ended: %v", err)
@@ -65,6 +72,17 @@ func TestChangePassword(t *testing.T) {
 	if _, err := s.Login(ctx, "admin", "new-password"); err != nil {
 		t.Errorf("new password: %v", err)
 	}
+
+	// With revokeTokens the API tokens go too; the session that asked stays.
+	if err := s.ChangePassword(ctx, u.ID, mine.Token, "new-password", "newer-password", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.TokenUser(ctx, token); err == nil {
+		t.Error("an API token survived a change with revokeTokens")
+	}
+	if _, err := s.SessionUser(ctx, mine.Token); err != nil {
+		t.Errorf("the session that changed the password ended: %v", err)
+	}
 }
 
 func TestChangePasswordWrongGuessesBlockNobody(t *testing.T) {
@@ -76,14 +94,14 @@ func TestChangePasswordWrongGuessesBlockNobody(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := range 30 {
-		if err := s.ChangePassword(ctx, u.ID, "", "wrong-guess", "new-password"); !errors.Is(err, ErrInvalidCredentials) {
+		if err := s.ChangePassword(ctx, u.ID, "", "wrong-guess", "new-password", false); !errors.Is(err, ErrInvalidCredentials) {
 			t.Fatalf("guess %d: %v", i, err)
 		}
 	}
 	if _, err := s.Login(ctx, "admin", "old-password"); err != nil {
 		t.Errorf("login after the guesses: %v", err)
 	}
-	if err := s.ChangePassword(ctx, u.ID, "", "old-password", "new-password"); err != nil {
+	if err := s.ChangePassword(ctx, u.ID, "", "old-password", "new-password", false); err != nil {
 		t.Errorf("right password after the guesses: %v", err)
 	}
 }

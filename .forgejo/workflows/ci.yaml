@@ -1,6 +1,11 @@
 # Runs the same checks as `make test lint` (backend/ and frontend/). The Makefile wraps the
 # tools in `docker run`, which the runner can't use (no Docker socket), so the jobs run
 # them directly in the same images the Makefile uses.
+# Go modules, Go's build cache and npm's download cache are kept in the runner's cache
+# (actions/cache), keyed on the lock files. Entries are scoped to the PR that saved them,
+# and ci doesn't run on develop, so a PR's first run starts cold and its later pushes reuse
+# them. An entry isn't updated once saved: the build cache holds the dependencies, which
+# is where most of the compile time goes, and our own packages are rebuilt each run.
 name: ci
 
 # Pull requests, plus pushes to main as the release check.
@@ -33,12 +38,19 @@ jobs:
       - name: Checkout
         uses: https://data.forgejo.org/actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
+      - name: Go cache
+        uses: https://data.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            /go/pkg/mod
+            /root/.cache/go-build
+          key: go-test-${{ hashFiles('backend/go.sum') }}
+
       - name: Download modules
         run: go mod download
 
-      - name: Build
-        run: go build ./...
-
+      # No separate `go build ./...`: go test compiles every package (each one is either
+      # tested or imported by a test), and lint type-checks them all.
       - name: Tests
         run: go test -race ./...
 
@@ -62,6 +74,15 @@ jobs:
       - name: Checkout
         uses: https://data.forgejo.org/actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
+      - name: Go and lint cache
+        uses: https://data.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            /go/pkg/mod
+            /root/.cache/go-build
+            /root/.cache/golangci-lint
+          key: go-lint-${{ hashFiles('backend/go.sum', 'backend/.golangci.yml') }}
+
       - name: Lint
         run: golangci-lint run ./...
 
@@ -77,6 +98,13 @@ jobs:
     steps:
       - name: Checkout
         uses: https://data.forgejo.org/actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      # npm's download cache only; npm ci still installs node_modules from scratch.
+      - name: npm cache
+        uses: https://data.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: /root/.npm
+          key: npm-${{ hashFiles('frontend/package-lock.json') }}
 
       - name: Install
         run: npm ci --no-audit --no-fund --ignore-scripts

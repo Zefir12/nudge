@@ -37,7 +37,7 @@ describe('EnvSwitcher', () => {
     expect(options).toEqual(['local', 'nas (offline)']);
     await wrapper.find('select').setValue('4');
     await flushPromises();
-    expect(router.currentRoute.value.fullPath).toBe(want);
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe(want));
     expect(localStorage.getItem('nudge.lastEnvironment')).toBe('4');
   });
 });

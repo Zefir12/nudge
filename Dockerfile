@@ -13,10 +13,13 @@ COPY frontend/package.json frontend/package-lock.json ./
 # prebuilt optional packages), and they would run next to the registry credentials.
 RUN npm ci --no-audit --no-fund --ignore-scripts
 COPY frontend/ ./
-RUN npm run build
+# `vp build` alone: `npm run build` would run vue-tsc again, which ci.yaml already does.
+RUN npx vp build
 
 # The static docker-compose v2 binary that deploys stacks (docs/architecture.md, Stacks).
-FROM docker/compose-bin:v2.39.1@sha256:188597f211538184689408557d186c03c8bcaa15f29407c723ce10a1150d5007 AS compose
+# govulncheck can't see this copied binary: check Compose's security advisories when
+# bumping it, and bump it when one lands (v2.40.2 fixed CVE-2025-62725).
+FROM docker/compose-bin:v2.40.3@sha256:e39da8206cc48c6e2c99ce371935eef9d7eff7db600a993fd357de8b75621edf AS compose
 
 FROM golang:1.27.4@sha256:205c7636d74e0ffbe3d007162df7d74f859f5a8c8322dfb9f907977686c126cf AS gobase
 

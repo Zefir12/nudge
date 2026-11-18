@@ -105,8 +105,8 @@ refuses `ws://` unless `NUDGE_INSECURE=1`.
   the others are in `oidc_providers`, their client secret sealed with secretbox and bound to
   the provider's id and issuer, so a database edit can't send it elsewhere, and an API
   change of issuer or client ID must give it again. Taking a provider away (disable, delete,
-  new issuer) revokes its users' sessions and API tokens in the transaction of the change,
-  and is refused if no admin could sign in afterwards; `oidcproviders.Service.Complete`
+  new issuer) revokes its users' sessions, API tokens, deploy webhooks and deploy tokens
+  in the transaction of the change, and is refused if no admin could sign in afterwards; `oidcproviders.Service.Complete`
   holds a read lock across session creation so a login can't slip past that. nudge is a
   confidential client (authorization code + PKCE S256, `client_secret_basic`). Discovery, JWKS and ID
   token checks are go-oidc's (RS256 only, issuer, audience, expiry against the injected
@@ -124,7 +124,9 @@ refuses `ws://` unless `NUDGE_INSECURE=1`.
   credential is the webhook's own secret, as a bearer token or as the key of an
   HMAC-SHA256 body signature (Forgejo, Gitea, GitHub headers), compared in constant time.
   The secret is sealed with the secretbox key (not hashed: a signature check needs its
-  value). A webhook can do one thing, update its one target, and runs as its creator;
+  value). A webhook can do one thing, update its one target, and runs as its creator,
+  so a trigger is refused once the creator is no longer an admin (like a deploy token's
+  re-check of its creator's role);
   failed checks count against the credential limit per IP, and each webhook takes 10 triggers
   a minute. This is the credential to put in CI instead of an API token, which is its user
   on every route.
@@ -397,7 +399,11 @@ environment works alike and agents have no git code or credentials.
   fashion, and fails the pull if an object inflates past 128 MiB (a delta counts as its
   target). It holds back the pack's tail until the check has passed, as go-git only
   starts inflating into memory once it has every object. That leaves a clone's peak memory at a
-  few times the largest object it accepts.
+  few times the largest object it accepts. It also refuses a pack of more than 200k
+  objects (go-git keeps about half a KiB of index per object, so 1M one-byte blobs, an 18 MB
+  pack, cost 600 MiB). go-git resolves deltas after the download without looking at the
+  context; the clone's files (`limitFS`) fail reads once the context is done, and go-git
+  reads the pack back for each object, so the 2 minute bound holds there too.
 - **Credentials** are sealed with the secretbox like registry passwords, and only carry
   over on a change if they'd go to the same place. SSH host keys come only from the source's
   `known_hosts`: a wrong compose file is root on the host, so there is no trust on first use,
@@ -535,13 +541,20 @@ history.
 
 - `Service.Run` lists the environments every interval and keeps one collector goroutine
   per environment (owned by Run, cancelled when the environment goes or Run's context
-  ends). Each tick (`Collect`) lists the running containers, samples them with the one-shot
-  stats call the API's overview uses (`SampleContainers`, 8 at a time, bounded by a
-  minute) and stores every container's row and the environment's totals in one
-  transaction. A tick cut short or one that sampled nothing is dropped; an offline
-  environment simply has no ticks.
+  ends). Each tick (`Collect`) lists the running containers, samples them 8 at a time,
+  bounded by a minute (`sampleTick`), and stores every container's row and the
+  environment's totals in one transaction. A tick cut short or one that sampled nothing
+  is dropped; an offline environment simply has no ticks.
+- The collector keeps each container's last CPU reading (and the last stored tick's), so
+  a container it has seen is read one-shot (`stream=false&one-shot=true`, no wait on the
+  daemon) and its CPU measured since that reading: a stored tick's covers the whole
+  interval, a live tick's the time since the last tick. A new container, or one whose
+  counter went back (a restart), is read with the daemon's previous reading, which costs
+  the daemon a second. The readings are replaced every tick, so they hold only what runs.
 - Each container row carries its owner key, from the API's ownership rule
-  (`api.ContainerOwners`: the owner label unless the image sets one). A user's history is
+  (`api.ContainerOwners`: the owner label unless the image sets one). The collector keeps
+  what it learnt of each image by ID across ticks (an image's labels never change; at most
+  1000, then it starts over), so an image is inspected once, not every tick. A user's history is
   the sum of their rows at query time rather than kept per owner: no third copy of every
   tick, and it is exactly the rows the user may see.
 - `Cleanup` (every 10 minutes) rolls finished hours up into `*_hours` (average, maximum,

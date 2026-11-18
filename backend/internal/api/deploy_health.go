@@ -66,13 +66,14 @@ func (s *server) deployDeployment(ctx context.Context, d deployments.Deployment,
 	ctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	var previous map[string]string
-	var original string
+	var original, written string
 	// A failed write or sync puts the .env back itself, before releasing the stack.
 	// A stack from git gets its files from the repository first, so the deploy's
 	// variables apply on top of what it holds.
 	runner, pull, unlock, err := s.startStackPull(ctx, env, d.Stack, func(f stacks.Files) stacks.Files {
 		original = f.Env
 		f.Env, previous = deployments.SetVariables(f.Env, run.Variables)
+		written = f.Env
 		return f
 	})
 	if err != nil {
@@ -92,7 +93,14 @@ func (s *server) deployDeployment(ctx context.Context, d deployments.Deployment,
 		report(deployments.Progress{Step: st})
 	}
 	setStep(deployments.StepPulling)
-	sr := stackRun{env: env, c: c, runner: runner, name: d.Stack, out: deployOutput(setStep), wait: h.Wait()}
+	// Compose's output is kept to say why it failed, without the .env's values.
+	secrets := envSecrets(run.Variables, original, written)
+	tail := &composeTail{secrets: secrets}
+	follow := deployOutput(setStep)
+	sr := stackRun{env: env, c: c, runner: runner, name: d.Stack, wait: h.Wait(), out: func(l stacks.Line) {
+		follow(l)
+		tail.add(l)
+	}}
 	code, changes, err := s.pullAndDeploy(ctx, sr, user)
 	if errors.Is(err, stacks.ErrNoWait) {
 		report(deployments.Progress{Message: "the agent is too old to wait for healthy services; deployed without waiting", Warning: true})
@@ -105,13 +113,17 @@ func (s *server) deployDeployment(ctx context.Context, d deployments.Deployment,
 	var problem string
 	switch {
 	case err != nil:
-		s.log.Warn("deployment run", "deployment", d.Name, "run", run.ID, "err", err)
+		lines := s.composeOutput(tail, report)
+		s.log.Warn("deployment run", "deployment", d.Name, "run", run.ID, "err", err, "compose", lines)
 		problem = deployError(err)
 	case code != 0:
-		if step == deployments.StepPulling {
-			problem = fmt.Sprintf("compose exited with code %d", code)
-		} else {
-			problem = s.composeFailure(ctx, c, d.Stack, code, sr.wait > 0)
+		lines := s.composeOutput(tail, report)
+		s.log.Warn("deployment run", "deployment", d.Name, "run", run.ID, "step", step, "exit_code", code, "compose", lines)
+		problem = withComposeLine((&composeExit{code: code}).Error(), lines)
+		if step != deployments.StepPulling {
+			if p := s.serviceProblem(ctx, c, d.Stack, sr.wait > 0); p != "" {
+				problem = p
+			}
 		}
 	default:
 		setStep(deployments.StepChecking)
@@ -139,10 +151,18 @@ func (s *server) deployDeployment(ctx context.Context, d deployments.Deployment,
 		return out
 	}
 	setStep(deployments.StepRollingBack)
+	// The rollback's output has its own tail, and no longer moves the step.
+	rtail := &composeTail{secrets: secrets}
+	sr.out = rtail.add
 	if err := s.rollBack(ctx, sr, d, run, original, user); err != nil {
-		s.log.Warn("deployment run: roll back", "deployment", d.Name, "run", run.ID, "err", err)
-		out.Error += "; the rollback failed too: " + deployError(err)
-		report(deployments.Progress{Message: "the rollback failed: " + deployError(err)})
+		lines := s.composeOutput(rtail, report)
+		s.log.Warn("deployment run: roll back", "deployment", d.Name, "run", run.ID, "err", err, "compose", lines)
+		msg := deployError(err)
+		if ce := (*composeExit)(nil); errors.As(err, &ce) {
+			msg = withComposeLine(msg+" on the previous values", lines)
+		}
+		out.Error += "; the rollback failed too: " + msg
+		report(deployments.Progress{Message: "the rollback failed: " + msg})
 		return out
 	}
 	out.Status = deployments.StatusRolledBack
@@ -216,9 +236,6 @@ func finishedOneOff(info container.InspectResponse) bool {
 	return info.HostConfig == nil || info.HostConfig.RestartPolicy.IsNone()
 }
 
-// errRollbackExit is a rollback whose compose up failed.
-var errRollbackExit = &statusError{code: http.StatusBadGateway, msg: "compose failed on the previous values"}
-
 // rollBack puts the .env a run replaced back and brings the stack up on it; the caller
 // holds the stack.
 func (s *server) rollBack(ctx context.Context, sr stackRun, d deployments.Deployment, run deployments.Run, original string, user string) error {
@@ -235,26 +252,32 @@ func (s *server) rollBack(ctx context.Context, sr stackRun, d deployments.Deploy
 		return err
 	}
 	if code != 0 {
-		return errRollbackExit
+		return &composeExit{code: code}
 	}
 	return nil
 }
 
-// composeFailure says why compose up failed, naming the first service in trouble when
-// one is (with waiting, compose fails on an unhealthy or exited service).
-func (s *server) composeFailure(ctx context.Context, c docker.Client, stack string, code int, waited bool) string {
-	msg := fmt.Sprintf("compose exited with code %d", code)
+// serviceProblem names the first service in trouble after a failed compose up, or ""
+// (with waiting, compose fails on an unhealthy or exited service).
+func (s *server) serviceProblem(ctx context.Context, c docker.Client, stack string, waited bool) string {
 	if !waited {
-		return msg
+		return ""
 	}
 	states, err := s.serviceStates(ctx, c, stack)
 	if err != nil {
-		return msg
+		return ""
 	}
-	if p := states.problem(); p != "" {
-		return p
+	return states.problem()
+}
+
+// composeOutput reports the last lines of a failed compose run, with lines holding a
+// .env value hidden, and returns them for the log.
+func (s *server) composeOutput(t *composeTail, report deployments.Report) []string {
+	lines := t.kept()
+	for _, l := range lines {
+		report(deployments.Progress{Message: "compose: " + l})
 	}
-	return msg
+	return lines
 }
 
 // checkDeployment runs d's checks after compose up: every service's containers keep

@@ -2,7 +2,8 @@
 
 Base path `/api/v1`. JSON in and out; errors are `{"error": "message"}` with a matching
 status code. Unknown paths and wrong methods under `/api/` return a JSON 404 to a
-logged-in client and a JSON 401 otherwise.
+logged-in client and a JSON 401 otherwise. A JSON request body must arrive within
+30 seconds (at most 64 KiB); a slower one is cut off with `400`.
 Streams (logs, exec, events, agent tunnel) use WebSocket.
 
 Auth: the `nudge_session` cookie set by login or setup, or `Authorization: Bearer <token>`
@@ -45,7 +46,7 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | DELETE | `/api/v1/tokens/{id}` | user | revoke one of the user's tokens; `204`, or `404` |
 | GET | `/api/v1/users` | admin | every user by name; see Users |
 | POST | `/api/v1/users` | admin, session only | create a local user `{"username", "password", "role"}`; `201` |
-| PATCH | `/api/v1/users/{id}` | admin, session only | change `{"role", "disabled", "password"}` (each optional); `200` with the user |
+| PATCH | `/api/v1/users/{id}` | admin, session only | change `{"role", "disabled", "password"}` (each optional); `200` with the user; a password reset ends their sessions and deletes their API tokens |
 | DELETE | `/api/v1/users/{id}` | admin | delete a user with their sessions, tokens and webhooks; `204` |
 | POST | `/api/v1/users/{id}/relink` | admin, session only | re-link SSO identity: merge `{"duplicate": <id>}` into this SSO user; `200` with the user (see Users) |
 | GET | `/api/v1/users/{id}/environments` | admin | the environments a user may use `{"environments": [1, 3]}`; see Ownership |
@@ -163,8 +164,9 @@ With OpenID Connect providers configured (docs/config/server.md, Single sign-on)
   `/login?error=sso`; a valid sign-in without the admin or user role (or without `mfa` in `amr`
   when MFA is required) answers a `403` page. Both are audited under the route with
   the subject as target. A sign-in refused for having
-  no role also ends every session and deletes every API token of that SSO user (if they
-  signed in before); its audit entry names the nudge user and says how many were revoked.
+  no role also ends every session and deletes every API token, deploy webhook and deploy
+  token of that SSO user (if they signed in before); its audit entry names the nudge user
+  and says how many were revoked.
   Every attempt counts against the per-IP credential limit until it succeeds.
 - `GET /api/v1/auth/oidc/login` and `GET /api/v1/auth/oidc/callback` do the same for the
   `NUDGE_OIDC_*` provider.
@@ -206,7 +208,7 @@ provider is out of use until a `PUT` gives the secret again.
 
 ### Setup and login
 `POST /api/v1/setup` and `POST /api/v1/auth/login` take
-`{"username": "admin", "password": "..."}` and answer with the user
+`{"username": "admin", "password": "..."}` (setup also `"token"`, see below) and answer with the user
 `{"id": 1, "username": "admin", "created_at": "2026-10-24T12:00:00Z", "role": "admin", "admin": true, "sso": false}`
 (`201` for setup,
 `200` for login) plus the session cookie: `HttpOnly`, `SameSite=Strict`, `Path=/`,
@@ -218,6 +220,9 @@ whether the user may use the admin routes (`role` is `admin`); the web UI hides
 admin-only pages and actions when it is false. `sso` says the user signs in through
 single sign-on and has no password in nudge. Setup creates an admin.
 
+- Setup needs `"token"`: the setup token the server logs at start while no user exists
+  (docs/config/server.md, First user). A missing or wrong token is
+  `403 {"error":"wrong setup token: the server logs it at start"}`, checked before anything else.
 - Setup works only while no user exists, else `409`. The username is 1 to 64 bytes
   without control characters or surrounding spaces; the password at least 8 characters
   (at most 1024 bytes). Invalid input is `400` with the reason.
@@ -232,9 +237,11 @@ single sign-on and has no password in nudge. Setup creates an admin.
 - When too many logins wait for a password check, login answers `503` with
   `Retry-After: 1`.
 
-`POST /api/v1/auth/password` with `{"current": "...", "new": "..."}` changes the
-signed-in user's own password and answers `204`. It ends the user's other sessions; the one
-that asked stays, and API tokens keep working. Session only: an API token gets `403`, so a
+`POST /api/v1/auth/password` with `{"current": "...", "new": "...", "revoke_tokens": true}`
+changes the signed-in user's own password and answers `204`. It ends the user's other
+sessions; the one that asked stays. With `"revoke_tokens": true` it also deletes the user's
+API tokens (a stolen session could have minted one); without it they keep working. The web
+UI sends `true` unless the user unticks it. Session only: an API token gets `403`, so a
 leaked token can't take over the account. A wrong current password is
 `403 {"error":"the current password is wrong"}` and, like a failed login, blocks nobody; a new password that breaks the rules above, or an
 SSO user (no password in nudge), is `400`; `409` if an admin reset the password while it
@@ -687,11 +694,14 @@ usual Docker errors. Then each sample is a text frame (the daemon's first readin
 has no previous one to compute CPU from, is skipped); the last frame is `{"done": true}`
 when the container stopped or `{"error": "..."}`.
 
-`GET /api/v1/environments/{env}/stats` answers `{"containers": [{"id", "name", ...sample}],
-"skipped": 0, "total": {"cpu_percent", "memory_usage", "network_rx", "network_tx", "block_read",
-"block_write"}}`, sorted by name. It takes about a second (the daemon waits for a second
-reading) and samples 8 containers at a time, for at most a minute; a container that stops
-meanwhile, or isn't sampled in time, is left out and counted in `skipped`.
+`GET /api/v1/environments/{env}/stats` answers `{"time": "...", "containers": [{"id", "name",
+...sample}], "skipped": 0, "total": {"cpu_percent", "memory_usage", "network_rx", "network_tx",
+"block_read", "block_write"}}`, sorted by name. While usage is collected it is the metrics
+collector's latest tick (see Metrics) when there is one from the last three collection
+intervals, and `time` is when that tick was taken; it then asks the daemon nothing. Else
+it samples now and leaves `time` out: that takes about a second (the daemon waits for a
+second reading) and samples 8 containers at a time, for at most a minute. A container that
+stops meanwhile, or isn't sampled in time, is left out and counted in `skipped`.
 
 `GET /api/v1/environments/{env}/stats/summary` answers `{"sampled_at": "...", "cpu_percent":
 200, "memory_usage": 536870912, "containers": 2, "host": {"cpu_percent": 23.5,
@@ -973,7 +983,7 @@ stack, as on any stack (`./config` next to the compose file is not there).
   - `poll_seconds`: 0 (off, default), or 60 to 86400. See below.
 
   `400` for a refused source; `502` with nudge's own words if the repository can't be read
-  or lacks the file (a clone may take 256 MiB and 2 minutes, and no object in it may inflate past 128 MiB). The remote's words are only logged.
+  or lacks the file (a clone may take 256 MiB and 2 minutes, and no object in it may inflate past 128 MiB; it may hold at most 200k objects). The remote's words are only logged.
 - `GET .../stacks/{name}` adds `git`: the fields above without `secret`, plus `commit`,
   `last_error`, `checked_at` and `pulled_at`. `commit` is the commit of the stack's files.
 - `PUT .../stacks/{name}` on such a stack answers `409` if `compose` differs; `env` can
@@ -1260,6 +1270,8 @@ request, like the agent join command).
   webhook and rotating its secret are session-only (an API token gets `403`), as the
   secret outlives the token's revocation; API tokens can list, delete and read the runs.
 - `last_status` is the newest run's `status` (below), `""` before the first run.
+- `orphaned` is `true` when the creator is no longer an admin (demoted or disabled): its
+  triggers are refused until an admin deletes it or the creator is an admin again.
 - `GET .../webhooks/{id}/runs` lists the runs, newest first, at most 50 per webhook:
   `{"id": 7, "trigger": "signature", "status": "updated", "queued_at": "...",
   "started_at": "...", "finished_at": "...", "image_before": "sha256:…",
@@ -1283,12 +1295,14 @@ read). The body is then read, at most 1 MiB (`413`, refused up front when
 `Content-Length` says more) within 30 seconds (`400` if it can't be read), and never
 echoed. An unknown webhook, a missing and a wrong credential all answer
 `401 {"error":"authentication required"}` and count as failed attempts, as do refused
-bodies. A webhook accepts 10 triggers a minute (`429` beyond).
+bodies. The right credential of a webhook whose creator is no longer an admin answers
+`403 {"error":"the webhook's creator is no longer an admin"}`, audited in the creator's
+name like a run. A webhook accepts 10 triggers a minute (`429` beyond).
 
 - The update is the one `POST .../containers/{id}/update` or `.../stacks/{name}/update`
   makes, run as the webhook's creator: it goes into the update history under their name,
   and the audit log records `POST /api/v1/hooks/{id}` with their user and the token
-  `hook:<name>`. Refused triggers aren't recorded.
+  `hook:<name>`. Refused triggers aren't recorded, except the `403` above.
 - It runs in the background: `202 {"run_id": 7, "status": "queued"}`. With `?wait=1` the
   answer waits for the run (up to 5 minutes, then `202` with the run still going): `200`
   with the run, or `502` with it when it failed, so `curl -f` fails the CI step.
@@ -1395,6 +1409,13 @@ even when you can't see that deployment); at most 1000 deployments.
   every 25 s while nothing happens, and finally `{"status", "run", "step", "error",
   "warnings"}`. CI passes only if the last line's `status` is `succeeded`. Leaving early
   doesn't stop the run. Steps can be skipped in the stream when the run gets ahead of it.
+- **Compose's output on failure.** When compose fails (in the run's up or its
+  rollback), the run's progress gets compose's last 20 lines (at most 4 KiB) as
+  `compose: <line>` messages, the run's `error` ends with its last line, and the server
+  log's `deployment run` / `deployment run: roll back` warnings carry them as `compose`.
+  A line that contains a value (4 bytes or longer) of the stack's .env, before or after
+  the run, is replaced by `[a line was hidden: it contains a value from the stack's
+  .env]`; the run's own variable values stay visible, as the run shows them anyway.
 
 ### Audit log
 Every `POST`, `PUT`, `PATCH` and `DELETE` that reaches a route is recorded after it is

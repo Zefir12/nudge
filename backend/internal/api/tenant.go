@@ -124,12 +124,14 @@ func (e *fieldsError) Error() string { return "invalid container settings" }
 // decodeStrict decodes a JSON body into v, refusing fields v doesn't have; on false it
 // has answered.
 func (s *server) decodeStrict(w http.ResponseWriter, r *http.Request, v any) bool {
+	clearDeadline := readDeadline(w)
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	dec.DisallowUnknownFields()
 	err := dec.Decode(v)
 	if err == nil && dec.Decode(&struct{}{}) != io.EOF {
 		err = errors.New("trailing data")
 	}
+	clearDeadline()
 	if err == nil {
 		return true
 	}

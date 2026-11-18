@@ -58,7 +58,7 @@ describe('StackNewView', () => {
         poll_seconds: 0,
       },
     });
-    expect(router.currentRoute.value.fullPath).toBe('/env/1/stacks/web');
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/env/1/stacks/web'));
   });
 
   it('checks the files, creates the stack and opens it', async () => {
@@ -80,7 +80,7 @@ describe('StackNewView', () => {
       compose: 'services:\n  app:\n    image: nginx:alpine\n    restart: unless-stopped\n',
       env: 'TAG=1\n',
     });
-    expect(router.currentRoute.value.fullPath).toBe('/env/1/stacks/web');
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/env/1/stacks/web'));
   });
 
   it('does not create a stack with YAML errors', async () => {

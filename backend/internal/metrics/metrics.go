@@ -42,9 +42,12 @@ const (
 	DefaultInterval = time.Minute
 	// DefaultRetention is the configuration's default retention of hourly rollups.
 	DefaultRetention = 30 * 24 * time.Hour
-	// collectTimeout bounds one tick's sampling: at MaxConcurrentStats a second, enough
-	// for a few hundred containers.
+	// collectTimeout bounds one tick's sampling: enough for a few hundred containers
+	// read with a previous reading (MaxConcurrentStats a second), the first tick, and many
+	// more read one-shot.
 	collectTimeout = time.Minute
+	// maxImageCache bounds a collector's cache of images; when full it starts over.
+	maxImageCache = 1000
 	// cleanupEvery is how often hours are rolled up and old rows dropped.
 	cleanupEvery = 10 * time.Minute
 	// staleTicks is how many intervals old the latest sample may be and still count as
@@ -67,8 +70,10 @@ type Envs interface {
 }
 
 // OwnersFunc returns the owner key of each of items a user owns, by container ID; the
-// API's ownership rule (the owner label, unless the image sets one too).
-type OwnersFunc func(ctx context.Context, c docker.Client, items []container.Summary) (map[string]string, error)
+// API's ownership rule (the owner label, unless the image sets one too). images is the
+// caller's cache of what it learnt of each image by ID (an image's labels never
+// change); the function reads and fills it, and the caller bounds it.
+type OwnersFunc func(ctx context.Context, c docker.Client, items []container.Summary, images map[string]bool) (map[string]string, error)
 
 // HostFunc reads the host of an environment (hostload.Read locally, hostload.Remote
 // for an agent).
@@ -217,14 +222,13 @@ func (s *Service) collectLoop(ctx context.Context, env environments.Environment)
 	defer unregister()
 	// nextSave is when the next stored tick is due; last is when the last tick started.
 	var nextSave, last time.Time
-	// The host's CPU is the change since a previous reading.
-	var prev hostReadings
+	prev := newCollectorState()
 	for {
 		now := s.clock.Now()
 		save := !now.Before(nextSave)
 		watched := s.live.watched(env.ID)
 		if save || watched && !now.Before(last.Add(s.liveInterval)) {
-			s.logCollect(ctx, env, s.collect(ctx, env, save, &prev))
+			s.logCollect(ctx, env, s.collect(ctx, env, save, prev))
 			last = now
 			if save {
 				nextSave = now.Add(s.interval)
@@ -259,7 +263,19 @@ func (s *Service) logCollect(ctx context.Context, env environments.Environment, 
 //
 // Without a previous reading of the host, the tick leaves the host's load out.
 func (s *Service) Collect(ctx context.Context, env environments.Environment) error {
-	return s.collect(ctx, env, true, &hostReadings{})
+	return s.collect(ctx, env, true, newCollectorState())
+}
+
+// collectorState is what a collector keeps from tick to tick: the previous readings of
+// its host and containers (CPU is the change since one) and what it learnt of images.
+type collectorState struct {
+	host   hostReadings
+	stats  statsReadings
+	images map[string]bool
+}
+
+func newCollectorState() *collectorState {
+	return &collectorState{images: map[string]bool{}}
 }
 
 // hostReadTimeout bounds a tick's read of its host, apart from the containers' budget:
@@ -314,14 +330,14 @@ func (s *Service) readHost(ctx context.Context, env environments.Environment, pr
 }
 
 // collect takes one tick of env, hands it to env's live subscribers, and stores it if
-// save is set; prev are the previous readings of env's host.
-func (s *Service) collect(ctx context.Context, env environments.Environment, save bool, prev *hostReadings) error {
+// save is set; prev is what env's collector kept from earlier ticks, updated here.
+func (s *Service) collect(ctx context.Context, env environments.Environment, save bool, prev *collectorState) error {
 	c, err := s.envs.Client(env)
 	if err != nil {
 		return fmt.Errorf("collect environment %d: %w", env.ID, err)
 	}
 	now := s.clock.Now()
-	liveHost, storedHost := s.readHost(ctx, env, prev, save)
+	liveHost, storedHost := s.readHost(ctx, env, &prev.host, save)
 	tctx, cancel := context.WithTimeout(ctx, collectTimeout)
 	defer cancel()
 	list, err := c.ContainerList(tctx, client.ContainerListOptions{})
@@ -330,24 +346,29 @@ func (s *Service) collect(ctx context.Context, env environments.Environment, sav
 	}
 	owners := map[string]string{}
 	if s.owners != nil {
-		if owners, err = s.owners(tctx, c, list.Items); err != nil {
+		if len(prev.images) >= maxImageCache {
+			clear(prev.images)
+		}
+		if owners, err = s.owners(tctx, c, list.Items, prev.images); err != nil {
 			return fmt.Errorf("collect environment %d: owners: %w", env.ID, err)
 		}
 	}
-	sampled, skipped := SampleContainers(tctx, c, list.Items, s.log)
+	t := sampleTick(tctx, c, list.Items, &prev.stats, save, s.log)
 	if err := tctx.Err(); err != nil {
 		return fmt.Errorf("collect environment %d: %w", env.ID, err)
 	}
-	if len(sampled) == 0 && skipped > 0 {
+	if len(t.live) == 0 && t.skipped > 0 {
 		return fmt.Errorf("collect environment %d: %w", env.ID, errNoneSampled)
 	}
-	s.live.publish(env.ID, newTick(now, list.Items, sampled, owners, liveHost))
+	prev.stats.last = t.readings
+	s.live.publish(env.ID, newTick(now, list.Items, t.live, owners, liveHost))
 	if !save {
 		return nil
 	}
-	if err := s.save(ctx, env.ID, now, sampled, owners, storedHost); err != nil {
+	if err := s.save(ctx, env.ID, now, t.stored, owners, storedHost); err != nil {
 		return fmt.Errorf("save metrics of environment %d: %w", env.ID, err)
 	}
+	prev.stats.saved = t.readings
 	return nil
 }
 
