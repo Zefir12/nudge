@@ -112,7 +112,7 @@ Cross-origin writes are refused with `403`: a `POST`/`PUT`/`PATCH`/`DELETE` must
 | PUT | `/api/v1/environments/{env}/stacks/{name}/git` | session | take the compose file from a repository and read it now; see Stacks from git |
 | DELETE | `/api/v1/environments/{env}/stacks/{name}/git` | session | detach from the repository, keeping the files; `204` |
 | POST | `/api/v1/environments/{env}/stacks/{name}/git/pull` | session | get the files from the repository and deploy them, output as JSON lines |
-| GET | `/api/v1/environments/{env}/stacks/{name}/git/env-example` | session | the repository's env file (`env_path`, or else a `.env.example`) at the head of the ref, for the .env editor; see Stacks from git |
+| GET | `/api/v1/environments/{env}/stacks/{name}/git/env-example` | session | the repository's env example or env file (`env_example_path`, `env_path`, or else a `.env.example`) at the head of the ref, for the .env editor; see Stacks from git |
 | GET | `/api/v1/environments/{env}/updates` | session | the last image update check; see Image updates |
 | POST | `/api/v1/environments/{env}/updates/check` | session | check the environment's images now |
 | GET | `/api/v1/environments/{env}/updates/history` | session | updates made through nudge, with the image each replaced |
@@ -990,6 +990,11 @@ stack, as on any stack (`./config` next to the compose file is not there).
     `NAME=` never adds or blanks anything). Added variables go at the end; `.env`'s
     comments and other lines stay. A variable dropped from the file stays in `.env`. A
     deployment run's variables are set after the pull, so they win over both.
+  - `env_example_path`: optional, a relative path like `compose_path`. The file is an
+    example (names, comments and sample values): its values are only hints for the .env
+    editor (see `git/env-example`) and a pull never sets anything from it. Use it, not
+    `env_path`, for a names-only example. A missing or unreadable example never fails a
+    pull. Left empty, a `.env.example` is looked for (below).
   - `auth`: `none` (default), `token` (HTTPS; `username` defaults to `git`) or `ssh`.
   - `secret`: the token, or an unencrypted PEM private key. Stored sealed and never
     answered. Left out on `PUT`, the stored one stays as long as `repo_url`, `auth`,
@@ -1013,15 +1018,19 @@ stack, as on any stack (`./config` next to the compose file is not there).
   deploys when it moved past the commit last seen. A commit whose deploy failed isn't retried;
   a newer one is, and so is a pull by hand. Polling skips health checks: use a deployment
   for those. Its audit entries and updates are under `git-poll`.
-- `GET .../stacks/{name}/git/env-example` reads the stack's `env_path` file at the head of
-  its ref and answers `{"path", "commit", "content", "kind": "env"}`; it changes nothing
-  (not the stack's files, nor `commit`). A stack without `env_path` gets its repository's
-  `.env.example` instead, the one next to the compose file or else at the root, with
-  `"kind": "example"`: its values are only hints, and a pull never sets them. `404` if the
-  stack has no git source, or neither file; `502` as above if the repository can't be
-  read. The web UI's .env form editor shows an `env` file's variables in its order with
-  their comments, and an `example`'s variables the .env doesn't set as empty fields
-  with the example's value as placeholder; only those filled in are added.
+- `GET .../stacks/{name}/git/env-example` reads the stack's env example at the head of
+  its ref and answers `{"path", "commit", "content", "kind"}`; it changes nothing (not the
+  stack's files, nor `commit`). It is the `env_example_path` file with `"kind":
+  "example"` (`502` if it can't be read), or else the `env_path` file with `"kind":
+  "env"`, or else the repository's `.env.example`, the one next to the compose file or
+  else at the root, with `"kind": "example"`. An example's values are only hints, and a
+  pull never sets them. `404` if the stack has no git source, or none of these files;
+  `502` as above if the repository can't be read. The web UI's .env form editor shows an
+  `env` file's variables in its order with their comments (one the .env lacks and left
+  empty is not added), and an `example`'s variables the .env doesn't set as empty fields
+  with the example's value as placeholder; only those filled in are added. In an example,
+  a commented-out `# KEY=` or `# KEY=value` line is an optional variable, offered the
+  same way; a .env variable without comments of its own shows the example's.
 - `DELETE .../stacks/{name}/git` detaches; the stack keeps its files and can be edited again.
 
 ### Registries

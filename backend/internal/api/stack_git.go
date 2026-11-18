@@ -22,8 +22,10 @@ type stackGitRequest struct {
 	Ref         string `json:"ref"`
 	ComposePath string `json:"compose_path"`
 	EnvPath     string `json:"env_path"`
-	Auth        string `json:"auth"`
-	Username    string `json:"username"`
+	// EnvExamplePath is a file whose variables are only hints for the .env editor.
+	EnvExamplePath string `json:"env_example_path"`
+	Auth           string `json:"auth"`
+	Username       string `json:"username"`
 	// Secret is the token or the SSH private key; left out, the stored one stays.
 	Secret      *string `json:"secret"`
 	KnownHosts  string  `json:"known_hosts"`
@@ -32,30 +34,33 @@ type stackGitRequest struct {
 
 func (req stackGitRequest) input() gitstacks.Input {
 	return gitstacks.Input{
-		RepoURL: req.RepoURL, Ref: req.Ref, ComposePath: req.ComposePath, EnvPath: req.EnvPath, Auth: gitstacks.AuthKind(req.Auth),
+		RepoURL: req.RepoURL, Ref: req.Ref, ComposePath: req.ComposePath, EnvPath: req.EnvPath, EnvExamplePath: req.EnvExamplePath,
+		Auth:     gitstacks.AuthKind(req.Auth),
 		Username: req.Username, Secret: req.Secret, KnownHosts: req.KnownHosts, Poll: time.Duration(req.PollSeconds) * time.Second,
 	}
 }
 
 // stackGitResponse is a stack's git source; its secret never leaves the server.
 type stackGitResponse struct {
-	RepoURL     string    `json:"repo_url"`
-	Ref         string    `json:"ref"`
-	ComposePath string    `json:"compose_path"`
-	EnvPath     string    `json:"env_path"`
-	Auth        string    `json:"auth"`
-	Username    string    `json:"username"`
-	KnownHosts  string    `json:"known_hosts"`
-	PollSeconds int64     `json:"poll_seconds"`
-	Commit      string    `json:"commit"`
-	LastError   string    `json:"last_error"`
-	CheckedAt   time.Time `json:"checked_at,omitzero"`
-	PulledAt    time.Time `json:"pulled_at,omitzero"`
+	RepoURL        string    `json:"repo_url"`
+	Ref            string    `json:"ref"`
+	ComposePath    string    `json:"compose_path"`
+	EnvPath        string    `json:"env_path"`
+	EnvExamplePath string    `json:"env_example_path"`
+	Auth           string    `json:"auth"`
+	Username       string    `json:"username"`
+	KnownHosts     string    `json:"known_hosts"`
+	PollSeconds    int64     `json:"poll_seconds"`
+	Commit         string    `json:"commit"`
+	LastError      string    `json:"last_error"`
+	CheckedAt      time.Time `json:"checked_at,omitzero"`
+	PulledAt       time.Time `json:"pulled_at,omitzero"`
 }
 
 func toStackGit(src gitstacks.Source) *stackGitResponse {
 	return &stackGitResponse{
-		RepoURL: src.RepoURL, Ref: src.Ref, ComposePath: src.ComposePath, EnvPath: src.EnvPath, Auth: string(src.Auth),
+		RepoURL: src.RepoURL, Ref: src.Ref, ComposePath: src.ComposePath, EnvPath: src.EnvPath, EnvExamplePath: src.EnvExamplePath,
+		Auth:     string(src.Auth),
 		Username: src.Username, KnownHosts: src.KnownHosts, PollSeconds: int64(src.Poll / time.Second), Commit: src.Commit,
 		LastError: src.LastError, CheckedAt: src.CheckedAt, PulledAt: src.PulledAt,
 	}
@@ -231,7 +236,8 @@ func shortCommit(c string) string {
 }
 
 // filesFromRepo is f with what a pull got: the compose file replaced, and .env filled
-// from the env file (MergeEnv: .env wins, so secrets and a deploy's variables stay).
+// from the env file (MergeEnv: .env wins, so secrets and a deploy's variables stay). An
+// env example (EnvExamplePath, or a .env.example) is never merged: its values are hints.
 func filesFromRepo(f stacks.Files, src gitstacks.Source, res gitstacks.Result) stacks.Files {
 	f.Compose = res.Compose
 	if src.EnvPath != "" {
@@ -376,13 +382,13 @@ type stackEnvExampleResponse struct {
 	Commit  string `json:"commit"`
 	Content string `json:"content"`
 	// Kind is "env" for the stack's env_path, whose values a pull sets in .env, or
-	// "example" for a .env.example, whose values are only hints.
+	// "example" for its env_example_path or a .env.example, whose values are only hints.
 	Kind string `json:"kind"`
 }
 
-// getStackEnvExample reads a git stack's env file (its env_path), or else its
-// .env.example, at the head of its ref, for the .env form editor. It changes nothing:
-// not the stack's files, nor its commit.
+// getStackEnvExample reads a git stack's env example (its env_example_path), or else its
+// env file (its env_path), or else its .env.example, at the head of its ref, for the .env
+// form editor. It changes nothing: not the stack's files, nor its commit.
 func (s *server) getStackEnvExample(w http.ResponseWriter, r *http.Request) {
 	name, ok := s.stackName(w, r)
 	if !ok {
@@ -404,6 +410,14 @@ func (s *server) getStackEnvExample(w http.ResponseWriter, r *http.Request) {
 	res, err := s.gitStacks.Fetch(r.Context(), *src)
 	if err != nil {
 		s.gitInputError(w, "read stack env example", err)
+		return
+	}
+	if src.EnvExamplePath != "" {
+		if res.ExampleErr != nil {
+			s.gitInputError(w, "read stack env example", res.ExampleErr)
+			return
+		}
+		s.writeJSON(w, http.StatusOK, stackEnvExampleResponse{Path: res.ExamplePath, Commit: res.Commit, Content: res.Example, Kind: "example"})
 		return
 	}
 	if src.EnvPath != "" {

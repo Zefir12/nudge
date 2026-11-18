@@ -60,10 +60,25 @@ const pollMinutes = computed({
           :disabled="disabled"
         />
       </label>
+      <label class="field">
+        <span>Env example <span class="muted">(optional)</span></span>
+        <input
+          v-model.trim="input.env_example_path"
+          maxlength="1024"
+          spellcheck="false"
+          placeholder="deploy/env.example"
+          :disabled="disabled"
+        />
+      </label>
     </div>
     <p v-if="input.env_path" class="muted">
       At every pull it fills the stack's .env with the variables the .env lacks or has empty. Values set in
       the .env, such as secrets, always win; empty values in the file are ignored.
+    </p>
+    <p class="muted">
+      An env example only gives hints in the .env form editor (its comments, and its values as placeholders);
+      a pull never sets anything from it. Left empty, a .env.example next to the compose file is used, if
+      there is one.
     </p>
     <div class="row">
       <label class="field">

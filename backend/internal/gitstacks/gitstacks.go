@@ -66,11 +66,14 @@ type Source struct {
 	Ref         string
 	ComposePath string
 	// EnvPath, if set, is a file whose variables are merged into the stack's .env.
-	EnvPath    string
-	Auth       AuthKind
-	Username   string
-	KnownHosts string
-	Poll       time.Duration
+	EnvPath string
+	// EnvExamplePath, if set, is a file whose variables are only hints for the .env
+	// editor; a pull never sets them. Empty looks for a .env.example (see exampleNames).
+	EnvExamplePath string
+	Auth           AuthKind
+	Username       string
+	KnownHosts     string
+	Poll           time.Duration
 	// Commit is the commit of the stack's files, SeenCommit the newest a pull got.
 	Commit     string
 	SeenCommit string
@@ -84,15 +87,16 @@ type Source struct {
 // Input sets a stack's source. A nil Secret keeps the stored one, if it still goes to the
 // same place.
 type Input struct {
-	RepoURL     string
-	Ref         string
-	ComposePath string
-	EnvPath     string
-	Auth        AuthKind
-	Username    string
-	Secret      *string
-	KnownHosts  string
-	Poll        time.Duration
+	RepoURL        string
+	Ref            string
+	ComposePath    string
+	EnvPath        string
+	EnvExamplePath string
+	Auth           AuthKind
+	Username       string
+	Secret         *string
+	KnownHosts     string
+	Poll           time.Duration
 }
 
 // Options are the Service's dependencies.
@@ -235,6 +239,9 @@ func (s *Service) validate(in Input) error {
 	if in.EnvPath != "" && !validRepoPath(in.EnvPath) {
 		return &InputError{Msg: "the env path must be a relative path inside the repository"}
 	}
+	if in.EnvExamplePath != "" && !validRepoPath(in.EnvExamplePath) {
+		return &InputError{Msg: "the env example path must be a relative path inside the repository"}
+	}
 	if len(in.Username) > maxUsername || strings.ContainsAny(in.Username, "\n\r\x00") {
 		return &InputError{Msg: "the username is invalid"}
 	}
@@ -281,7 +288,7 @@ func (s *Service) Prepare(ctx context.Context, env int64, stack string, in Input
 	}
 	src := Source{
 		Environment: env, Stack: stack, RepoURL: in.RepoURL, Ref: in.Ref, ComposePath: in.ComposePath, EnvPath: in.EnvPath,
-		Auth: in.Auth, Username: in.Username, KnownHosts: in.KnownHosts, Poll: in.Poll,
+		EnvExamplePath: in.EnvExamplePath, Auth: in.Auth, Username: in.Username, KnownHosts: in.KnownHosts, Poll: in.Poll,
 	}
 	if in.Auth != AuthSSH {
 		src.KnownHosts = ""
@@ -307,7 +314,7 @@ func (s *Service) Prepare(ctx context.Context, env int64, stack string, in Input
 }
 
 const sourceColumns = `environment_id, stack, repo_url, ref, compose_path, env_path, auth_kind, username, secret_enc,
-	known_hosts, poll_seconds, commit_hash, seen_commit, last_error, checked_at, pulled_at`
+	known_hosts, poll_seconds, commit_hash, seen_commit, last_error, checked_at, pulled_at, env_example_path`
 
 type scanner interface{ Scan(dest ...any) error }
 
@@ -315,7 +322,7 @@ func scanSource(row scanner) (Source, error) {
 	var src Source
 	var poll, checked, pulled int64
 	err := row.Scan(&src.Environment, &src.Stack, &src.RepoURL, &src.Ref, &src.ComposePath, &src.EnvPath, &src.Auth, &src.Username,
-		&src.secret, &src.KnownHosts, &poll, &src.Commit, &src.SeenCommit, &src.LastError, &checked, &pulled)
+		&src.secret, &src.KnownHosts, &poll, &src.Commit, &src.SeenCommit, &src.LastError, &checked, &pulled, &src.EnvExamplePath)
 	if err != nil {
 		return Source{}, err
 	}
@@ -345,9 +352,9 @@ func (s *Service) Get(ctx context.Context, env int64, stack string) (Source, err
 func (s *Service) Save(ctx context.Context, src Source, commit string) error {
 	now := s.now().Unix()
 	_, err := s.db.ExecContext(ctx, `INSERT OR REPLACE INTO stack_sources (`+sourceColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?)`,
 		src.Environment, src.Stack, src.RepoURL, src.Ref, src.ComposePath, src.EnvPath, string(src.Auth), src.Username, src.secret,
-		src.KnownHosts, int64(src.Poll/time.Second), commit, commit, now, now)
+		src.KnownHosts, int64(src.Poll/time.Second), commit, commit, now, now, src.EnvExamplePath)
 	if err != nil {
 		return fmt.Errorf("save stack source: %w", err)
 	}

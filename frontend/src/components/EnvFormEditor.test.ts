@@ -150,6 +150,8 @@ describe('EnvFormEditor', () => {
     expect(w.text()).toContain('nothing is set from it');
     expect(w.findAll('.name').map((n) => n.text())).toEqual(['PORT', 'SMTP_HOST', 'DEBUG']);
     expect(w.find('h3').text()).toBe('Not set yet');
+    // The .env's PORT, without comments of its own, shows the example's.
+    expect(w.find('label[for="env-0-0"]').text()).toContain('the port');
     const host = w.find('#env-2-0');
     expect((host.element as HTMLInputElement).value).toBe('');
     expect(host.attributes('placeholder')).toBe('mail.example');
