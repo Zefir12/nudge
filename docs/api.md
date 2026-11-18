@@ -2,7 +2,8 @@
 
 Base path `/api/v1`. JSON in and out; errors are `{"error": "message"}` with a matching
 status code. Unknown paths and wrong methods under `/api/` return a JSON 404 to a
-logged-in client and a JSON 401 otherwise.
+logged-in client and a JSON 401 otherwise. A JSON request body must arrive within
+30 seconds (at most 64 KiB); a slower one is cut off with `400`.
 Streams (logs, exec, events, agent tunnel) use WebSocket.
 
 Auth: the `nudge_session` cookie set by login or setup, or `Authorization: Bearer <token>`
