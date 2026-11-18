@@ -438,10 +438,7 @@ func TestDeployRuns(t *testing.T) {
 	if err != nil || len(runs) != 3 || runs[0].ID != third.RunID {
 		t.Errorf("Runs = %+v, %v; want three, newest first", runs, err)
 	}
-	dt.s.mu.Lock()
-	slots := len(dt.s.slots)
-	dt.s.mu.Unlock()
-	if slots != 0 {
+	if slots := dt.s.runs.Len(); slots != 0 {
 		t.Errorf("%d slots left after the runs, want 0", slots)
 	}
 }

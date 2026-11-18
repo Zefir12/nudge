@@ -30,6 +30,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"git.zefirlabs.net/zefir/nudge/backend/internal/runqueue"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/secretbox"
 )
 
@@ -156,13 +157,13 @@ type Service struct {
 	// ctx ends at Close or with Options.Context; runs use it.
 	ctx    context.Context
 	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	// runs runs each webhook's deploys one at a time, with one merged follow-up.
+	runs *runqueue.Queue[string, *active]
 
-	mu     sync.Mutex
-	closed bool
-	// slots holds the webhooks triggered lately: their running and queued run and the
-	// trigger rate. Only authenticated webhooks get one, and idle ones are dropped.
-	slots map[string]*slot
+	mu sync.Mutex
+	// rates holds the trigger rate of the webhooks triggered lately. Only authenticated
+	// webhooks get one, and idle ones are dropped.
+	rates map[string]*rate
 	// dummy is the key a trigger of an unknown webhook checks against, so it costs
 	// what a wrong secret does.
 	dummy []byte
@@ -177,9 +178,10 @@ func New(opts Options) *Service {
 	ctx, cancel := context.WithCancel(parent)
 	s := &Service{
 		db: opts.DB, box: opts.Box, log: opts.Log, clock: opts.Clock,
-		ctx: ctx, cancel: cancel, slots: map[string]*slot{},
+		ctx: ctx, cancel: cancel, rates: map[string]*rate{},
 		dummy: []byte(newSecret()),
 	}
+	s.runs = runqueue.New[string](ctx, s.execute)
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
 	}

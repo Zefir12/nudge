@@ -655,7 +655,12 @@ text frame `{"stream": "stdout"|"stderr", "time": "2026-10-01T12:00:00.5Z", "lin
 ended (the container stopped, or without `follow` every line was sent) or `{"error":
 "..."}`, then the server closes the socket normally. Closing the socket stops the stream
 on the Docker host. The server pings every 30 s and ends a stream whose client doesn't
-answer.
+answer. Every minute it also checks the
+stream again as when it opened (the session or API token still valid, the same role, the
+environment still the user's) and, when that fails, closes the socket with code 1008
+(policy violation, reason `access revoked`): logout, a disabled or deleted account, a
+deleted token, a role change or a withdrawn environment ends open streams within a
+minute.
 
 ### Container exec
 `GET /api/v1/environments/{env}/containers/{id}/exec` runs a command with a TTY in a
@@ -677,7 +682,8 @@ the client resizes the terminal; other text frames are ignored. When the process
 server sends a text frame `{"done": true, "exit_code": 0}` (`exit_code` when the host
 reports it) or `{"error": "..."}`, then closes the socket normally. Closing the socket
 closes the process's terminal, which ends a shell. The server pings every 30 s and ends a
-session whose client doesn't answer.
+session whose client doesn't answer. Like a log stream, the session is checked again every minute and
+closed with code 1008 when its credential or access is gone.
 
 ### Stream limit
 Log, container stats and exec streams, and running `GET .../stats` requests, count against a

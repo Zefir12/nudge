@@ -36,7 +36,7 @@ jobs:
         run: apt-get update -qq && apt-get install -y -qq --no-install-recommends nodejs
 
       - name: Checkout
-        uses: https://data.forgejo.org/actions/checkout@v6
+        uses: https://data.forgejo.org/actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Go cache
         uses: https://data.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -72,7 +72,7 @@ jobs:
         run: apt-get update -qq && apt-get install -y -qq --no-install-recommends nodejs
 
       - name: Checkout
-        uses: https://data.forgejo.org/actions/checkout@v6
+        uses: https://data.forgejo.org/actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Go and lint cache
         uses: https://data.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -97,7 +97,7 @@ jobs:
         working-directory: frontend
     steps:
       - name: Checkout
-        uses: https://data.forgejo.org/actions/checkout@v6
+        uses: https://data.forgejo.org/actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       # npm's download cache only; npm ci still installs node_modules from scratch.
       - name: npm cache
@@ -107,7 +107,7 @@ jobs:
           key: npm-${{ hashFiles('frontend/package-lock.json') }}
 
       - name: Install
-        run: npm ci --no-audit --no-fund
+        run: npm ci --no-audit --no-fund --ignore-scripts
 
       - name: Check (format, lint)
         run: npx vp check

@@ -69,7 +69,7 @@ func (s *server) containerStats(w http.ResponseWriter, r *http.Request) {
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	defer cancel()
-	wg.Go(func() { keepAlive(ctx, cancel, ws) })
+	wg.Go(func() { s.keepAlive(ctx, cancel, ws, env.ID) })
 
 	stats, err := c.ContainerStats(ctx, id, client.ContainerStatsOptions{Stream: true})
 	if err != nil {

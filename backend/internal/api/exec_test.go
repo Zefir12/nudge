@@ -30,6 +30,12 @@ type execTest struct {
 
 func newExecTest(t *testing.T) execTest {
 	t.Helper()
+	return newExecTestOpts(t, nil)
+}
+
+// newExecTestOpts is newExecTest with mod changing the API's options, if not nil.
+func newExecTestOpts(t *testing.T, mod func(*Options)) execTest {
+	t.Helper()
 	running := &container.State{Running: true}
 	fake := &dockertest.Fake{
 		Resources: dockertest.Resources{
@@ -41,14 +47,14 @@ func newExecTest(t *testing.T) execTest {
 			ExecExitCode: 3,
 		},
 	}
-	et := newEnvTest(t, map[string]*dockertest.Fake{
+	et := newEnvTestOpts(t, map[string]*dockertest.Fake{
 		"local": fake,
 		"down":  {Resources: dockertest.Resources{ResourceErr: &net.OpError{Op: "dial", Err: errors.New("connection refused")}}},
 		"broken": {Resources: dockertest.Resources{
 			ContainerDetails: map[string]container.InspectResponse{"web": {State: running}},
 			ExecErr:          errors.New("daemon: secret-detail"),
 		}},
-	})
+	}, mod)
 	srv := httptest.NewServer(et.h)
 	t.Cleanup(srv.Close)
 	return execTest{logsTest{envTest: et, srv: srv, fake: fake}}

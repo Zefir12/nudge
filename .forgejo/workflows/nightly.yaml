@@ -24,7 +24,7 @@ jobs:
         run: apt-get update -qq && apt-get install -y -qq --no-install-recommends nodejs
 
       - name: Checkout
-        uses: https://data.forgejo.org/actions/checkout@v6
+        uses: https://data.forgejo.org/actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       # Nightly job: @latest is intentional so new checks are picked up. govulncheck exits
       # non-zero when it reports a finding, which fails the job.
@@ -44,7 +44,7 @@ jobs:
         working-directory: frontend
     steps:
       - name: Checkout
-        uses: https://data.forgejo.org/actions/checkout@v6
+        uses: https://data.forgejo.org/actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       # Reads package-lock.json, so no install is needed. Production dependencies only
       # (dev tooling is noisy and isn't shipped); fails on high and critical advisories.

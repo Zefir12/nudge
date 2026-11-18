@@ -17,6 +17,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"git.zefirlabs.net/zefir/nudge/backend/internal/runqueue"
 )
 
 const (
@@ -178,12 +180,11 @@ type Service struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu     sync.Mutex
-	closed bool
-	// slots are the deployments with a run under way, so bounded by the deployments
-	// table; a slot goes when its runs end.
-	slots map[int64]*slot
-	wg    sync.WaitGroup
+	// runs runs each deployment's deploys one at a time, with one queued behind.
+	runs *runqueue.Queue[int64, *active]
+
+	// mu guards the runs' progress: their step, warnings and followers.
+	mu sync.Mutex
 }
 
 // New returns a Service.
@@ -193,7 +194,8 @@ func New(opts Options) *Service {
 		parent = context.Background()
 	}
 	ctx, cancel := context.WithCancel(parent)
-	s := &Service{db: opts.DB, log: opts.Log, clock: opts.Clock, ctx: ctx, cancel: cancel, slots: map[int64]*slot{}}
+	s := &Service{db: opts.DB, log: opts.Log, clock: opts.Clock, ctx: ctx, cancel: cancel}
+	s.runs = runqueue.New[int64](ctx, s.execute)
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
 	}
