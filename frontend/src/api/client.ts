@@ -1299,6 +1299,8 @@ export interface StackGit {
   ref: string;
   compose_path: string;
   env_path: string;
+  // env_example_path is a file whose variables are only hints for the .env editor.
+  env_example_path: string;
   auth: StackGitAuth;
   username: string;
   known_hosts: string;
@@ -1316,6 +1318,8 @@ export interface StackGitInput {
   ref: string;
   compose_path: string;
   env_path: string;
+  // env_example_path is a file whose variables are only hints for the .env editor.
+  env_example_path: string;
   auth: StackGitAuth;
   username: string;
   secret?: string;
@@ -1328,6 +1332,7 @@ export const emptyStackGit = (): StackGitInput => ({
   ref: '',
   compose_path: 'compose.yaml',
   env_path: '',
+  env_example_path: '',
   auth: 'none',
   username: '',
   secret: '',
@@ -1373,9 +1378,9 @@ export const setStackGit = (env: string, name: string, git: StackGitInput) =>
 // removeStackGit detaches a stack from its repository; it keeps its files.
 export const removeStackGit = (env: string, name: string) =>
   apiFetch<void>(envPath(env, `/stacks/${enc(name)}/git`), { method: 'DELETE' });
-// StackEnvExample is a git stack's env file at the head of its ref: its env_path, whose
-// values a pull sets in .env (kind "env"), or else its .env.example, whose values are
-// only hints (kind "example").
+// StackEnvExample is a git stack's env file at the head of its ref: its env_example_path
+// or, without one, a .env.example, whose values are only hints (kind "example"); or else
+// its env_path, whose values a pull sets in .env (kind "env").
 export interface StackEnvExample {
   path: string;
   commit: string;

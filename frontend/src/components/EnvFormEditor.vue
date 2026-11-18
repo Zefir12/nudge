@@ -78,6 +78,8 @@ const toggle = (key: string) => (shown.has(key) ? shown.delete(key) : shown.add(
 // hint is an unset variable's example or commented-out value as placeholder, unless it's
 // a secret: a placeholder is never masked, and a commented .env value can be a real one.
 const hint = (s: number, v: EnvVar) => (s === 2 && !isSecret(v.name, v.original) ? v.original : undefined);
+// comments are a field's own comment lines, or else the example's notes for it.
+const comments = (v: EnvVar) => (v.comments.length ? v.comments : (v.notes ?? []));
 const multiline = (v: EnvVar) => v.value.includes('\n');
 const shortCommit = (c: string) => c.slice(0, 12);
 
@@ -103,7 +105,7 @@ function apply() {
       </p>
       <p v-else-if="example" class="muted">
         Variables of <code>{{ example.path }}</code> at <code>{{ shortCommit(example.commit) }}</code
-        >, valued from the .env or else from the example.
+        >, valued from the .env or else from the file; empty ones the .env lacks are left out.
       </p>
       <p v-if="dropped.length" class="warning" role="note">
         The .env sets {{ dropped.join(', ') }} more than once. The form uses the last line for each; Apply
@@ -121,7 +123,7 @@ function apply() {
         </p>
         <div v-for="(v, i) in section" :key="`${s}-${i}`" class="var">
           <label :for="`env-${s}-${i}`">
-            <span v-for="(c, j) in v.comments" :key="j" class="comment">{{ commentText(c) }}</span>
+            <span v-for="(c, j) in comments(v)" :key="j" class="comment">{{ commentText(c) }}</span>
             <code class="name">{{ v.name }}</code>
           </label>
           <div class="value">

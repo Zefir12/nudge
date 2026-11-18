@@ -325,9 +325,21 @@ describe('formFromExample', () => {
       ['DEBUG', 'true', []],
     ]);
     expect(form.others).toEqual([]);
+    expect(form.build()).toBe("# App settings\n\n# the port\nPORT='80'\nDEBUG=true\n");
+  });
+
+  it('never adds an empty variable the .env lacks, but keeps an empty one it has', () => {
+    const form = formFromExample('PORT=80\n', example);
+    expect(form.build()).toBe('# App settings\n\n# the port\nPORT=80\nDEBUG=false\n');
+    form.fields.find((f) => f.name === 'DB_PASSWORD')!.value = 's3cret';
     expect(form.build()).toBe(
-      "# App settings\n\n# the port\nPORT='80'\n# db password\nDB_PASSWORD=\nDEBUG=true\n",
+      '# App settings\n\n# the port\nPORT=80\n# db password\nDB_PASSWORD=s3cret\nDEBUG=false\n',
     );
+    expect(formFromExample('DB_PASSWORD=\n', example).build()).toContain('# db password\nDB_PASSWORD=\n');
+    // A field the .env lacks emptied by hand is left out too.
+    const cleared = formFromExample('', example);
+    cleared.fields.find((f) => f.name === 'DEBUG')!.value = '';
+    expect(cleared.build()).toBe('# App settings\n\n# the port\nPORT=8080\n');
   });
 
   it('keeps variables and lines the example lacks at the bottom', () => {
@@ -340,7 +352,7 @@ describe('formFromExample', () => {
     ]);
     form.others[0]!.value = '2';
     expect(form.build()).toBe(
-      '# App settings\n\n# the port\nPORT=80\n# db password\nDB_PASSWORD=\nDEBUG=false\n\n' +
+      '# App settings\n\n# the port\nPORT=80\nDEBUG=false\n\n' +
         '# mine\nEXTRA=2\n# about port\nOTHER="a b"\n# loose note\nnot a var\n',
     );
   });
@@ -363,8 +375,7 @@ describe('formFromExample', () => {
   it('keeps an unclosed quoted value whole at the bottom', () => {
     const form = formFromExample('K="open\n\nPORT=8080\n', example);
     expect(form.build()).toBe(
-      '# App settings\n\n# the port\nPORT=8080\n# db password\nDB_PASSWORD=\nDEBUG=false\n\n' +
-        'K="open\n\nPORT=8080\n',
+      '# App settings\n\n# the port\nPORT=8080\nDEBUG=false\n\n' + 'K="open\n\nPORT=8080\n',
     );
   });
 
@@ -405,7 +416,7 @@ describe('formFromExample', () => {
   });
 
   it('writes the example alone for an empty .env and the others alone for an empty example', () => {
-    expect(formFromExample('', example).build()).toBe(example);
+    expect(formFromExample('', example).build()).toBe(example.replace('# db password\nDB_PASSWORD=\n', ''));
     expect(formFromExample('A=1\n', '').build()).toBe('A=1\n');
     expect(formFromExample('', '').build()).toBe('');
   });
@@ -425,6 +436,15 @@ describe('formWithHints', () => {
   it('leaves the .env as it is until a hint is filled in', () => {
     expect(formWithHints('PORT=80\n', example).build()).toBe('PORT=80\n');
     expect(formWithHints('', example).build()).toBe('');
+  });
+
+  it("shows the example's comments for a .env variable without its own, never writing them", () => {
+    const form = formWithHints('PORT=80\n# mine\nDB_PASSWORD=x\n# A=1\n', `${example}# about A\n# A=2\n`);
+    const by = (n: string) => [...form.fields, ...form.unset].find((v) => v.name === n)!;
+    expect(by('PORT').notes).toEqual(['# the port']);
+    expect(by('DB_PASSWORD').notes).toBeUndefined();
+    expect(by('A').notes).toEqual(['# about A']);
+    expect(form.build()).toBe('PORT=80\n# mine\nDB_PASSWORD=x\n# A=1\n');
   });
 
   it('appends the variables filled in, with their comments', () => {
