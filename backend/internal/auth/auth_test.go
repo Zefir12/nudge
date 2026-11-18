@@ -87,6 +87,30 @@ func TestPasswordHash(t *testing.T) {
 	}
 }
 
+func TestSetupToken(t *testing.T) {
+	t.Parallel()
+	a, b := New(Options{Params: testParams}), New(Options{Params: testParams})
+	if len(a.SetupToken()) < 26 || a.SetupToken() == b.SetupToken() {
+		t.Fatalf("random setup tokens %q, %q", a.SetupToken(), b.SetupToken())
+	}
+	fixed := New(Options{Params: testParams, SetupToken: "fixed-token"})
+	for _, tc := range []struct {
+		token string
+		want  bool
+	}{
+		{"fixed-token", true},
+		{" fixed-token\n", true}, // pasted from the log
+		{"", false},
+		{"fixed", false},
+		{"fixed-token-and-more", false},
+		{a.SetupToken(), false},
+	} {
+		if got := fixed.ValidSetupToken(tc.token); got != tc.want {
+			t.Errorf("ValidSetupToken(%q) = %v, want %v", tc.token, got, tc.want)
+		}
+	}
+}
+
 func TestCreateFirstUser(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

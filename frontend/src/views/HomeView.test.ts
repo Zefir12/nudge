@@ -72,7 +72,7 @@ describe('HomeView', () => {
       'GET /environments/1': { body: { ...envs[0], docker } },
     });
     const { wrapper, router } = await mountHome();
-    expect(router.currentRoute.value.fullPath).toBe('/');
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/'));
     expect(wrapper.text()).toContain('2 hosts · 1 online');
     const tiles = wrapper.findAll('.tile');
     expect(tiles.map((t) => t.find('h2').text())).toEqual(['local', 'nas']);

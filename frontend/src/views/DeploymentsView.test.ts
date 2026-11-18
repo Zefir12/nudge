@@ -136,7 +136,7 @@ describe('DeploymentsView', () => {
       description: '',
       variables: ['API_IMAGE', 'WORKER_IMAGE'],
     });
-    expect(router.currentRoute.value.fullPath).toBe('/deployments/shop');
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/deployments/shop'));
   });
 
   it('shows a create error', async () => {

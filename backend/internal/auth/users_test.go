@@ -127,7 +127,7 @@ func TestUpdateUser(t *testing.T) {
 		t.Errorf("demote with another admin err = %v", err)
 	}
 
-	// A password reset ends the sessions; the new password works.
+	// A password reset ends the sessions and deletes the API tokens; the new password works.
 	sess, err = s.Login(ctx, "bob", "longenough")
 	if err != nil {
 		t.Fatal(err)
@@ -137,6 +137,9 @@ func TestUpdateUser(t *testing.T) {
 	}
 	if _, err := s.SessionUser(ctx, sess.Token); !errors.Is(err, ErrNoSession) {
 		t.Errorf("session after a reset err = %v", err)
+	}
+	if _, err := s.TokenUser(ctx, token); err == nil {
+		t.Error("an API token survived a password reset")
 	}
 	if _, err := s.Login(ctx, "bob", "evenlonger"); err != nil {
 		t.Errorf("login with the new password err = %v", err)

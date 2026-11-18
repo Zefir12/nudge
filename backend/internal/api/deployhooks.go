@@ -26,8 +26,6 @@ import (
 const (
 	// maxHookBody bounds a trigger's body, read whole before its signature is checked.
 	maxHookBody = 1 << 20
-	// hookReadTimeout bounds reading a trigger's body.
-	hookReadTimeout = 30 * time.Second
 	// hookWaitTimeout bounds how long ?wait=1 waits for a run.
 	hookWaitTimeout = 5 * time.Minute
 )
@@ -45,6 +43,8 @@ type deployHookJSON struct {
 	LastStatus string `json:"last_status"`
 	// URL is the trigger URL; not a secret on its own.
 	URL string `json:"url"`
+	// Orphaned means the creator is no longer an admin: triggers are refused (403).
+	Orphaned bool `json:"orphaned"`
 }
 
 // deployHookSecretJSON is a webhook with its secret, answered only on create and rotate.
@@ -71,6 +71,7 @@ func (s *server) toDeployHookJSON(r *http.Request, h deployhooks.Hook) deployHoo
 		CreatedBy: h.Owner, CreatedAt: h.CreatedAt, LastTriggeredAt: h.LastTriggeredAt,
 		LastStatus: string(h.LastStatus),
 		URL:        s.serverURL(r) + "/api/v1/hooks/" + h.ID,
+		Orphaned:   h.Orphaned,
 	}
 }
 
@@ -283,13 +284,11 @@ func (s *server) triggerDeployHook(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusRequestEntityTooLarge, "the body is too large")
 		return
 	}
-	// A slow sender can't hold the request open; not every writer supports deadlines.
-	// The deadline goes again once the body is in: net/http's read that notices a client
-	// going away would hit it and cancel a ?wait=1 caller's request.
-	rc := http.NewResponseController(w)
-	_ = rc.SetReadDeadline(time.Now().Add(hookReadTimeout))
+	// A slow sender can't hold the request open; the deadline goes once the body is in,
+	// or it would cancel a ?wait=1 caller's request (readDeadline).
+	clearDeadline := readDeadline(w)
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxHookBody))
-	_ = rc.SetReadDeadline(time.Time{})
+	clearDeadline()
 	var tooBig *http.MaxBytesError
 	switch {
 	case errors.As(err, &tooBig):
@@ -303,6 +302,15 @@ func (s *server) triggerDeployHook(w http.ResponseWriter, r *http.Request) {
 	if errors.Is(err, deployhooks.ErrUnauthorized) {
 		s.log.Warn("webhook trigger refused", "ip", ip)
 		s.writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	if errors.Is(err, deployhooks.ErrOrphaned) {
+		// The secret was right: the refusal is the creator's role, recorded in their name.
+		succeeded()
+		auditUser(r, auth.User{ID: h.CreatedBy, Username: h.Owner, Token: "hook:" + h.Name})
+		auditEnvironment(r, strconv.FormatInt(h.Environment, 10))
+		s.log.Warn("webhook trigger refused: creator is no longer an admin", "hook", h.ID, "owner", h.Owner, "ip", ip)
+		s.writeError(w, http.StatusForbidden, "the webhook's creator is no longer an admin")
 		return
 	}
 	if err != nil {
@@ -470,6 +478,8 @@ func deployError(err error) string {
 		// nudge's own words.
 		errors.As(err, &se)
 		return se.msg
+	case errors.As(err, new(*composeExit)):
+		return err.Error()
 	case errors.Is(err, stacks.ErrNoCompose):
 		return "docker-compose is not installed"
 	case errors.Is(err, tunnel.ErrNoControl):

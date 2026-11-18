@@ -61,7 +61,7 @@ func newHookTest(t *testing.T) hookTest {
 	}
 	ht := hookTest{clock: &fakeClock{now: time.Unix(1_700_000_000, 0), after: make(chan time.Time, 1)}}
 	for _, name := range []string{"alice", "bob"} {
-		res, err := st.DB().ExecContext(ctx, `INSERT INTO users (username, password_hash, created_at, updated_at) VALUES (?, 'x', 0, 0)`, name)
+		res, err := st.DB().ExecContext(ctx, `INSERT INTO users (username, password_hash, created_at, updated_at, role) VALUES (?, 'x', 0, 0, 'admin')`, name)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -301,6 +301,40 @@ func TestAuthenticate(t *testing.T) {
 				t.Errorf("Authenticate = %+v, %q, %v; want ci by %q", got, trigger, err, tt.want)
 			}
 		})
+	}
+}
+
+// TestAuthenticateOrphaned refuses the right credential of a webhook whose creator is no
+// longer an admin with ErrOrphaned (and the webhook, for the audit entry); a wrong one
+// stays ErrUnauthorized, and List marks the webhook.
+func TestAuthenticateOrphaned(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	ht := newHookTest(t)
+	h, secret := ht.create(t, ht.alice, "ci")
+	if _, err := ht.svc.db.ExecContext(ctx, `UPDATE users SET role = 'user' WHERE id = ?`, ht.alice.UserID); err != nil {
+		t.Fatal(err)
+	}
+	header := http.Header{"Authorization": {"Bearer " + secret}}
+	got, trigger, err := ht.svc.Authenticate(ctx, h.ID, header, nil)
+	if !errors.Is(err, ErrOrphaned) || got.ID != h.ID || got.Owner != "alice" || trigger != TriggerBearer {
+		t.Errorf("Authenticate = %+v, %q, %v; want ci, ErrOrphaned", got, trigger, err)
+	}
+	header.Set("Authorization", "Bearer "+secret+"x")
+	if _, _, err := ht.svc.Authenticate(ctx, h.ID, header, nil); !errors.Is(err, ErrUnauthorized) {
+		t.Errorf("wrong secret = %v, want ErrUnauthorized", err)
+	}
+	list, err := ht.svc.List(ctx, Actor{Admin: true}, ht.env, "", "")
+	if err != nil || len(list) != 1 || !list[0].Orphaned {
+		t.Errorf("List = %+v, %v; want ci orphaned", list, err)
+	}
+	// An admin again: the webhook works again.
+	if _, err := ht.svc.db.ExecContext(ctx, `UPDATE users SET role = 'admin' WHERE id = ?`, ht.alice.UserID); err != nil {
+		t.Fatal(err)
+	}
+	header.Set("Authorization", "Bearer "+secret)
+	if got, _, err := ht.svc.Authenticate(ctx, h.ID, header, nil); err != nil || got.Orphaned {
+		t.Errorf("Authenticate after promotion = %+v, %v; want ci", got, err)
 	}
 }
 

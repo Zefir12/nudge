@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 	"testing/fstest"
+	"time"
 )
 
 func openTest(t *testing.T, dir string) *Store {
@@ -258,5 +259,62 @@ func TestOpenPathWithURISyntax(t *testing.T) {
 	openTest(t, dir)
 	if _, err := os.Stat(filepath.Join(dir, FileName)); err != nil {
 		t.Fatalf("database not at %s: %v", dir, err)
+	}
+}
+
+// A snapshot must not wait for the shared connection: a backup used to stall every
+// request (session lookups included) for as long as VACUUM INTO ran.
+func TestSnapshotDoesNotHoldSharedConnection(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	s := openTest(t, dir)
+	ctx := context.Background()
+	if _, err := s.DB().ExecContext(ctx, `CREATE TABLE snap (v TEXT)`); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := s.DB().ExecContext(ctx, `INSERT INTO snap VALUES ('committed')`); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	// Occupy the shared connection with an open write transaction.
+	tx, err := s.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback() })
+	if _, err := tx.ExecContext(ctx, `INSERT INTO snap VALUES ('uncommitted')`); err != nil {
+		t.Fatalf("insert in tx: %v", err)
+	}
+
+	snapCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	copyPath := filepath.Join(dir, "copy.db")
+	if err := s.Snapshot(snapCtx, copyPath); err != nil {
+		t.Fatalf("Snapshot while the shared connection is busy: %v", err)
+	}
+
+	cp, err := sql.Open("sqlite", dsn(copyPath))
+	if err != nil {
+		t.Fatalf("open copy: %v", err)
+	}
+	defer func() { _ = cp.Close() }()
+	var vals []string
+	rows, err := cp.QueryContext(ctx, `SELECT v FROM snap ORDER BY v`)
+	if err != nil {
+		t.Fatalf("query copy: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		vals = append(vals, v)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	if strings.Join(vals, ",") != "committed" {
+		t.Fatalf("copy has %v, want only the committed row", vals)
 	}
 }

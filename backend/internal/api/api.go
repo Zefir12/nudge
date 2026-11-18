@@ -88,6 +88,9 @@ type Options struct {
 	// its spec or its image: labels that steer tools on the host such as reverse proxies
 	// (traefik.) or updaters. Empty denies none.
 	DeniedLabels []string
+	// MaxStreams is how many log, stats and exec streams a user may hold open at once in
+	// one environment (admins four times as many); 0 means 32.
+	MaxStreams int
 	// Events is the Docker events hub, shared with the notification watcher; nil means
 	// the API makes its own.
 	Events *events.Hub
@@ -123,6 +126,9 @@ type Options struct {
 	// TrustedProxies are the reverse proxies whose X-Forwarded-For (client IP for the
 	// credential limiter and logs) and X-Forwarded-Proto are believed; empty means none.
 	TrustedProxies []netip.Prefix
+	// StreamRecheck is how often open streams check that their credential and access
+	// still hold; 0 means a minute. Tests shorten it.
+	StreamRecheck time.Duration
 }
 
 // publicRoutes need no session; every other pattern, including the /api/ catch-all,
@@ -408,6 +414,7 @@ func New(opts Options) http.Handler {
 		checks:         make(chan struct{}, maxStackChecks),
 		done:           context.Background(),
 		userRegistries: newRegistrySet(opts.UserRegistries),
+		streams:        newStreamLimiter(opts.MaxStreams),
 	}
 	if s.sso == nil {
 		s.sso = oidcproviders.New(oidcproviders.Options{})
@@ -428,6 +435,10 @@ func New(opts Options) http.Handler {
 	s.now = opts.Now
 	if s.now == nil {
 		s.now = time.Now
+	}
+	s.streamRecheck = opts.StreamRecheck
+	if s.streamRecheck <= 0 {
+		s.streamRecheck = streamRecheck
 	}
 	if s.stackRunner == nil {
 		s.stackRunner = func(environments.Environment) stacks.Runner { return nil }
@@ -501,6 +512,8 @@ type server struct {
 	done context.Context
 	// events fans each environment's Docker events out to the clients watching it.
 	events *events.Hub
+	// streams bounds each user's log, stats and exec streams (streamlimit.go).
+	streams *streamLimiter
 
 	publicURL     string
 	secureCookies bool
@@ -528,6 +541,8 @@ type server struct {
 	after func(time.Duration) <-chan time.Time
 	// now is Options.Now.
 	now func() time.Time
+	// streamRecheck is Options.StreamRecheck.
+	streamRecheck time.Duration
 }
 
 // protect requires a session or an API token for every route outside publicRoutes.
@@ -584,7 +599,8 @@ func (s *server) authenticate(api *http.ServeMux, token bool, lookup func(*http.
 			s.internalError(w, "authenticate", err)
 			return
 		}
-		r = r.WithContext(withUser(r.Context(), u))
+		// Streams check again later (keepAlive) with the same lookup.
+		r = r.WithContext(withRecheck(withUser(r.Context(), u), recheckFor(r, u, lookup)))
 		if token && sessionOnlyRoutes[pattern] {
 			s.serveAudited(s.tokenRefused, w, r)
 			return
@@ -632,13 +648,32 @@ func (s *server) internalError(w http.ResponseWriter, msg string, err error) {
 	s.writeError(w, http.StatusInternalServerError, "internal error")
 }
 
-// maxBodyBytes bounds JSON request bodies.
-const maxBodyBytes = 64 << 10
+const (
+	// maxBodyBytes bounds JSON request bodies.
+	maxBodyBytes = 64 << 10
+	// bodyReadTimeout bounds reading a request body, so a slow sender can't hold a
+	// connection open; public routes (login, setup, enroll) read bodies too. The server
+	// has no global ReadTimeout because of WebSockets and long pulls.
+	bodyReadTimeout = 30 * time.Second
+)
+
+// readDeadline sets a read deadline of bodyReadTimeout on w's connection and returns the
+// func that clears it, to call once the body is in: net/http's read that notices a client
+// going away would hit the deadline and cancel a long-running request. Not every writer
+// supports deadlines; then both are no-ops.
+func readDeadline(w http.ResponseWriter) (clearDeadline func()) {
+	rc := http.NewResponseController(w)
+	_ = rc.SetReadDeadline(time.Now().Add(bodyReadTimeout))
+	return func() { _ = rc.SetReadDeadline(time.Time{}) }
+}
 
 // decodeJSON reads r's body into v, answering 400 itself when it fails.
 func (s *server) decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
+	clearDeadline := readDeadline(w)
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
-	if err := dec.Decode(v); err != nil {
+	err := dec.Decode(v)
+	clearDeadline()
+	if err != nil {
 		s.writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON body: %s", jsonErrorKind(err)))
 		return false
 	}

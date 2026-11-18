@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 import { createMemoryHistory } from 'vue-router';
 
 import { listTokens, setUnauthorizedHandler } from './api/client';
-import { createAppRouter, redirectOnUnauthorized } from './router';
+import { page } from './reconnect';
+import { createAppRouter, isChunkLoadError, redirectOnUnauthorized } from './router';
 import { apiError, currentUser } from './session';
 import { admin, stubApi, user, type Routes } from './test-utils';
 
@@ -12,6 +13,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
+  sessionStorage.clear();
   vi.unstubAllGlobals();
   setUnauthorizedHandler(null);
 });
@@ -118,5 +121,52 @@ describe('401 redirect', () => {
     expect(currentUser.value).toBeNull();
     expect(router.currentRoute.value.name).toBe('login');
     expect(router.currentRoute.value.query.redirect).toBe('/tokens');
+  });
+});
+
+describe('lazy views', () => {
+  it('loads a view on navigation', async () => {
+    stubApi({ 'GET /auth/me': { body: admin } });
+    const router = createAppRouter(createMemoryHistory());
+    await router.push('/env/local/stacks/web');
+    expect(router.currentRoute.value.name).toBe('stack');
+    expect(router.currentRoute.value.matched[0]?.components?.default).toHaveProperty('setup');
+  });
+
+  it('reloads the page once when a chunk is gone', async () => {
+    stubApi({ 'GET /auth/me': { body: admin } });
+    const load = vi.spyOn(page, 'load').mockImplementation(() => {});
+    const router = createAppRouter(createMemoryHistory());
+    let fail = 2;
+    router.addRoute({
+      path: '/broken',
+      component: () =>
+        fail-- > 0
+          ? Promise.reject(new TypeError('Failed to fetch dynamically imported module: /assets/X-abc.js'))
+          : Promise.resolve({ template: '<p/>' }),
+    });
+
+    await expect(router.push('/broken')).rejects.toThrow(TypeError);
+    expect(load).toHaveBeenCalledExactlyOnceWith('/broken');
+
+    // Still missing after the reload: no reload loop.
+    await expect(router.push('/broken')).rejects.toThrow(TypeError);
+    expect(load).toHaveBeenCalledOnce();
+
+    // Loaded at last: a later update reloads again.
+    await router.push('/broken');
+    expect(router.currentRoute.value.path).toBe('/broken');
+    expect(sessionStorage.length).toBe(0);
+  });
+
+  it.each([
+    { err: new TypeError('Failed to fetch dynamically imported module: /a.js'), want: true },
+    { err: new TypeError('error loading dynamically imported module: /a.js'), want: true },
+    { err: new TypeError('Importing a module script failed.'), want: true },
+    { err: new Error('Unable to preload CSS for /assets/a.css'), want: true },
+    { err: new Error('Bad Gateway'), want: false },
+    { err: 'Failed to fetch dynamically imported module', want: false },
+  ])('isChunkLoadError($err) is $want', ({ err, want }) => {
+    expect(isChunkLoadError(err)).toBe(want);
   });
 });

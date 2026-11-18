@@ -82,6 +82,12 @@ func (s *server) containerExec(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Take the slot before the exec is created: each one leaves a process behind.
+	release, ok := s.takeStream(w, r, env.ID)
+	if !ok {
+		return
+	}
+	defer release()
 	ctx, cancel := context.WithTimeout(r.Context(), dockerTimeout)
 	ct, ref, err := s.ownedContainer(ctx, c, id)
 	var execID string
@@ -161,7 +167,7 @@ func (s *server) execSession(parent context.Context, ws *websocket.Conn, c docke
 	defer att.Close()
 	stop := context.AfterFunc(ctx, att.Close)
 	defer stop()
-	wg.Go(func() { keepAlive(ctx, cancel, ws) })
+	wg.Go(func() { s.keepAlive(ctx, cancel, ws, env) })
 	wg.Go(func() { s.execInput(ctx, cancel, ws, c, env, execID, att.Conn) })
 
 	buf := make([]byte, execChunk)

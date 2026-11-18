@@ -30,6 +30,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"git.zefirlabs.net/zefir/nudge/backend/internal/runqueue"
 	"git.zefirlabs.net/zefir/nudge/backend/internal/secretbox"
 )
 
@@ -56,6 +57,10 @@ var (
 	// ErrUnauthorized means the trigger's webhook is unknown, or its credential is
 	// missing or wrong; the caller can't tell which.
 	ErrUnauthorized = errors.New("authentication required")
+	// ErrOrphaned refuses a trigger with the right credential of a webhook whose creator
+	// is no longer an admin: creating webhooks is for admins, and a demoted one's mustn't
+	// keep deploying in their name.
+	ErrOrphaned = errors.New("the webhook's creator is no longer an admin")
 )
 
 // InputError is a validation error whose message can be shown to the user.
@@ -95,8 +100,11 @@ type Hook struct {
 	// means every event runs.
 	TagFilter string
 	// CreatedBy is the user the deploys run as; Owner is their username.
-	CreatedBy       int64
-	Owner           string
+	CreatedBy int64
+	Owner     string
+	// Orphaned means the creator is no longer an admin (or is disabled): its triggers
+	// are refused until an admin deletes it or the creator is an admin again.
+	Orphaned        bool
 	CreatedAt       time.Time
 	LastTriggeredAt *time.Time
 	// LastStatus is the newest run's status; empty if it has none.
@@ -149,13 +157,13 @@ type Service struct {
 	// ctx ends at Close or with Options.Context; runs use it.
 	ctx    context.Context
 	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	// runs runs each webhook's deploys one at a time, with one merged follow-up.
+	runs *runqueue.Queue[string, *active]
 
-	mu     sync.Mutex
-	closed bool
-	// slots holds the webhooks triggered lately: their running and queued run and the
-	// trigger rate. Only authenticated webhooks get one, and idle ones are dropped.
-	slots map[string]*slot
+	mu sync.Mutex
+	// rates holds the trigger rate of the webhooks triggered lately. Only authenticated
+	// webhooks get one, and idle ones are dropped.
+	rates map[string]*rate
 	// dummy is the key a trigger of an unknown webhook checks against, so it costs
 	// what a wrong secret does.
 	dummy []byte
@@ -170,9 +178,10 @@ func New(opts Options) *Service {
 	ctx, cancel := context.WithCancel(parent)
 	s := &Service{
 		db: opts.DB, box: opts.Box, log: opts.Log, clock: opts.Clock,
-		ctx: ctx, cancel: cancel, slots: map[string]*slot{},
+		ctx: ctx, cancel: cancel, rates: map[string]*rate{},
 		dummy: []byte(newSecret()),
 	}
+	s.runs = runqueue.New[string](ctx, s.execute)
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
 	}
@@ -260,7 +269,8 @@ func (s *Service) Create(ctx context.Context, actor Actor, in Input) (Hook, stri
 
 const hookColumns = `h.id, h.name, h.environment_id, h.kind, h.target, h.tag_filter, h.created_by, u.username,
 	h.created_at, h.last_triggered_at,
-	coalesce((SELECT r.status FROM deploy_hook_runs r WHERE r.hook_id = h.id ORDER BY r.id DESC LIMIT 1), '')`
+	coalesce((SELECT r.status FROM deploy_hook_runs r WHERE r.hook_id = h.id ORDER BY r.id DESC LIMIT 1), ''),
+	u.role <> 'admin' OR u.disabled`
 
 type scanner interface{ Scan(dest ...any) error }
 
@@ -269,7 +279,7 @@ func scanHook(row scanner, extra ...any) (Hook, error) {
 	var created int64
 	var last sql.NullInt64
 	err := row.Scan(append([]any{&h.ID, &h.Name, &h.Environment, &h.Kind, &h.Target, &h.TagFilter, &h.CreatedBy, &h.Owner,
-		&created, &last, &h.LastStatus}, extra...)...)
+		&created, &last, &h.LastStatus, &h.Orphaned}, extra...)...)
 	if err != nil {
 		return Hook{}, err
 	}
@@ -416,7 +426,9 @@ func (c credential) verify(secret, body []byte) bool {
 
 // Authenticate checks a trigger of webhook id: its header carries the bearer secret or
 // a signature of body. An unknown webhook, one whose creator is disabled, a missing and
-// a wrong credential are all ErrUnauthorized.
+// a wrong credential are all ErrUnauthorized. The right credential of a webhook whose
+// creator is no longer an admin is ErrOrphaned, with the webhook, so the refusal can be
+// recorded in their name.
 func (s *Service) Authenticate(ctx context.Context, id string, header http.Header, body []byte) (Hook, Trigger, error) {
 	c, ok := credentialOf(header)
 	if !ok {
@@ -445,6 +457,9 @@ func (s *Service) Authenticate(ctx context.Context, id string, header http.Heade
 	}
 	if !c.verify(secret, body) {
 		return Hook{}, "", ErrUnauthorized
+	}
+	if h.Orphaned {
+		return h, c.trigger, ErrOrphaned
 	}
 	return h, c.trigger, nil
 }
