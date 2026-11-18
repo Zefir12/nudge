@@ -23,6 +23,7 @@ async function mountSetup() {
 }
 
 async function fill(wrapper: ReturnType<typeof mount>, password: string, repeat: string) {
+  await wrapper.find('input[name=token]').setValue(' setup-token\n');
   await wrapper.find('input[name=username]').setValue('admin');
   await wrapper.find('input[name=password]').setValue(password);
   await wrapper.find('input[name=repeat]').setValue(repeat);
@@ -39,7 +40,12 @@ describe('SetupView', () => {
     });
     const { router, wrapper } = await mountSetup();
     await fill(wrapper, 'longenough', 'longenough');
-    expect(fetch).toHaveBeenCalledWith('/api/v1/setup', expect.objectContaining({ method: 'POST' }));
+    const post = fetch.mock.calls.find(([url, init]) => url === '/api/v1/setup' && init?.method === 'POST');
+    expect(JSON.parse(String(post?.[1]?.body))).toEqual({
+      username: 'admin',
+      password: 'longenough',
+      token: 'setup-token',
+    });
     expect(currentUser.value).toEqual(admin);
     expect(router.currentRoute.value.name).toBe('dashboard');
   });
@@ -63,6 +69,17 @@ describe('SetupView', () => {
     const { wrapper } = await mountSetup();
     await fill(wrapper, 'longenough', 'longenough');
     expect(wrapper.find('[role=alert]').text()).toBe('username must be 1 to 64 bytes');
+  });
+
+  it('shows a wrong setup token', async () => {
+    stubApi({
+      'GET /setup': { body: { needed: true } },
+      'POST /setup': { status: 403, body: { error: 'wrong setup token: the server logs it at start' } },
+    });
+    const { router, wrapper } = await mountSetup();
+    await fill(wrapper, 'longenough', 'longenough');
+    expect(wrapper.find('[role=alert]').text()).toContain('wrong setup token');
+    expect(router.currentRoute.value.name).toBe('setup');
   });
 
   it('goes to login when someone else finished setup', async () => {

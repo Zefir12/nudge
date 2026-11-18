@@ -206,7 +206,7 @@ provider is out of use until a `PUT` gives the secret again.
 
 ### Setup and login
 `POST /api/v1/setup` and `POST /api/v1/auth/login` take
-`{"username": "admin", "password": "..."}` and answer with the user
+`{"username": "admin", "password": "..."}` (setup also `"token"`, see below) and answer with the user
 `{"id": 1, "username": "admin", "created_at": "2026-10-24T12:00:00Z", "role": "admin", "admin": true, "sso": false}`
 (`201` for setup,
 `200` for login) plus the session cookie: `HttpOnly`, `SameSite=Strict`, `Path=/`,
@@ -218,6 +218,9 @@ whether the user may use the admin routes (`role` is `admin`); the web UI hides
 admin-only pages and actions when it is false. `sso` says the user signs in through
 single sign-on and has no password in nudge. Setup creates an admin.
 
+- Setup needs `"token"`: the setup token the server logs at start while no user exists
+  (docs/config/server.md, First user). A missing or wrong token is
+  `403 {"error":"wrong setup token: the server logs it at start"}`, checked before anything else.
 - Setup works only while no user exists, else `409`. The username is 1 to 64 bytes
   without control characters or surrounding spaces; the password at least 8 characters
   (at most 1024 bytes). Invalid input is `400` with the reason.

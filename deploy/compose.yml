@@ -1,4 +1,5 @@
-# nudge server: `docker compose -f deploy/compose.yml up -d`, then open http://<host>:8080.
+# nudge server: `docker compose -f deploy/compose.yml up -d`, then open http://<host>:8080
+# and create the admin with the setup token from `docker compose -f deploy/compose.yml logs nudge`.
 services:
   nudge:
     image: registrydedic.zefirlabs.net/nudge:latest
