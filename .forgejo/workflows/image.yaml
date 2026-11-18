@@ -71,6 +71,8 @@ jobs:
             echo "MOVING=latest" >> "$FORGEJO_ENV"
           fi
 
+      # --skip-unused-stages builds only the stages the target needs: without it kaniko
+      # builds every stage before the target, so the agent job would build the frontend too.
       # Runs in its own container with the workspace mounted. Credentials go into kaniko's
       # config only on the runs that push; pull requests build without pushing.
       - name: Build and push
@@ -82,13 +84,14 @@ jobs:
           entrypoint: /busybox/sh
           args: |
             -euc '
+            set -- --skip-unused-stages;
             if [ "$PUSH" = true ]; then
               auth=$(printf "%s:%s" "$REGISTRY_USER" "$REGISTRY_PASSWORD" | base64 | tr -d "\n");
               printf "{\"auths\":{\"%s\":{\"auth\":\"%s\"}}}" "${IMAGE%%/*}" "$auth" > /kaniko/.docker/config.json;
-              set -- --destination "$IMAGE:$TAG";
+              set -- "$@" --destination "$IMAGE:$TAG";
               if [ -n "${MOVING:-}" ]; then set -- "$@" --destination "$IMAGE:$MOVING"; fi;
             else
-              set -- --no-push;
+              set -- "$@" --no-push;
             fi;
             /kaniko/executor --context "dir://$PWD" --dockerfile "$PWD/Dockerfile" --target "$TARGET" \
               --build-arg "VERSION=$VERSION" --single-snapshot "$@"

@@ -8,7 +8,8 @@ WORKDIR /web
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY frontend/ ./
-RUN npm run build
+# `vp build` alone: `npm run build` would run vue-tsc again, which ci.yaml already does.
+RUN npx vp build
 
 # The static docker-compose v2 binary that deploys stacks (docs/architecture.md, Stacks).
 FROM docker/compose-bin:v2.39.1 AS compose
