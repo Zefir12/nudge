@@ -459,3 +459,67 @@ func TestStackEnvExample(t *testing.T) {
 	}
 
 }
+
+// TestDeploymentKeepsSecretsAgainstExampleEnvFile is #253: a git stack whose env_path is
+// an example with empty values (embr's deploy/<env>/env.example) and a deployment that
+// waits for healthy services and rolls back. Neither saving the source again, nor a
+// run, nor its rollback may hand compose a .env with the secret blanked.
+func TestDeploymentKeepsSecretsAgainstExampleEnvFile(t *testing.T) {
+	t.Parallel()
+	gt := newGitStackTest(t)
+	const compose = gitCompose + "  migrate:\n    image: nginx:1\n    restart: \"no\"\n"
+	gt.repo.Commit(map[string]string{"compose.yaml": compose, "app.env": "SECRET=\nAPI_IMAGE=\n"})
+	source := fmt.Sprintf(`{"repo_url":%q,"compose_path":"compose.yaml","env_path":"app.env"}`, gt.repo.URL)
+	if c, out := gt.do(t, "PUT", "local", "/web/git", source); c != http.StatusOK {
+		t.Fatalf("set source = %d %s", c, out)
+	}
+	if got := gt.get(t).Env; !strings.Contains(got, "SECRET=keep\n") || strings.Contains(got, "API_IMAGE") {
+		t.Fatalf(".env after saving the source = %q", got)
+	}
+	rec := do(t, gt.h, request{method: "POST", path: "/api/v1/deployments", cookie: gt.cookie,
+		body: fmt.Sprintf(`{"name":"shop","environment":%d,"stack":"web","variables":["API_IMAGE"]}`, gt.ids["local"])})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create deployment = %d %s", rec.Code, rec.Body)
+	}
+	rec = do(t, gt.h, request{method: "PATCH", path: "/api/v1/deployments/shop", cookie: gt.cookie,
+		body: `{"health":{"wait_seconds":60,"rollback":true}}`})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set health = %d %s", rec.Code, rec.Body)
+	}
+	token := deployToken(t, gt.stackTest, "ci", "deploy")
+	deploy := func(image string) deploymentRunJSON {
+		t.Helper()
+		rec := do(t, gt.h, request{method: "POST", path: "/api/v1/deployments/shop/deploys?wait=1",
+			headers: bearer(token), body: `{"variables":{"API_IMAGE":"` + image + `"}}`})
+		return deployRunOf(t, rec.Body.String())
+	}
+	synced := func() string {
+		gt.runner.mu.Lock()
+		defer gt.runner.mu.Unlock()
+		return gt.runner.synced["web"].Env
+	}
+
+	if run := deploy("app:v2"); run.Status != "succeeded" {
+		t.Fatalf("run = %+v", run)
+	}
+	if got := gt.runner.calls[len(gt.runner.calls)-1]; got != "up web pull=true wait=1m0s" {
+		t.Fatalf("compose call = %q", got)
+	}
+	for _, env := range []string{synced(), gt.get(t).Env} {
+		if !strings.Contains(env, "SECRET=keep\n") || !strings.Contains(env, "API_IMAGE=app:v2\n") {
+			t.Fatalf(".env after the run = %q", env)
+		}
+	}
+
+	// A failed run rolls back on the .env that worked, secret included.
+	gt.repo.Commit(map[string]string{"compose.yaml": compose + "# next\n", "app.env": "SECRET=\nAPI_IMAGE=\n"})
+	gt.runner.code = 1
+	if run := deploy("app:v3"); run.Status != "failed" || !strings.Contains(run.Error, "rollback") {
+		t.Fatalf("run = %+v", run)
+	}
+	for _, env := range []string{synced(), gt.get(t).Env} {
+		if !strings.Contains(env, "SECRET=keep\n") || !strings.Contains(env, "API_IMAGE=app:v2\n") {
+			t.Fatalf(".env after the rollback = %q", env)
+		}
+	}
+}

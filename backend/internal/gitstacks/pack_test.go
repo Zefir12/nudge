@@ -3,12 +3,15 @@ package gitstacks
 import (
 	"bytes"
 	"compress/zlib"
+	"context"
 	"crypto/sha1"
 	"encoding/binary"
 	"errors"
 	"io"
 	"runtime"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/go-git/go-billy/v5/memfs"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -17,8 +20,9 @@ import (
 )
 
 const (
-	testMaxObject = 1 << 20
-	copyKiB       = 1 << 10
+	testMaxObject  = 1 << 20
+	testMaxObjects = 4
+	copyKiB        = 1 << 10
 )
 
 // testPack writes a pack by hand: git can't be made to send a delta like these.
@@ -91,6 +95,16 @@ func deltaPack(t *testing.T, delta []byte) []byte {
 	return p.finish()
 }
 
+// tinyPack has n blobs of one byte each.
+func tinyPack(t *testing.T, n int) []byte {
+	t.Helper()
+	p := newTestPack(uint32(n)) // #nosec G115 -- a small test count
+	for i := range n {
+		p.blob(t, []byte{byte(i)})
+	}
+	return p.finish()
+}
+
 func blobPack(t *testing.T, size int) []byte {
 	t.Helper()
 	p := newTestPack(1)
@@ -125,6 +139,8 @@ func TestPackChecker(t *testing.T) {
 		{name: "blob past the bound", pack: blobPack(t, testMaxObject+1), want: errObjectTooLarge},
 		{name: "delta at the bound", pack: deltaPack(t, copies(testMaxObject/copyKiB))},
 		{name: "delta past the bound", pack: deltaPack(t, copies(testMaxObject/copyKiB+1)), want: errObjectTooLarge},
+		{name: "objects at the bound", pack: tinyPack(t, testMaxObjects)},
+		{name: "objects past the bound", pack: tinyPack(t, testMaxObjects+1), want: errTooManyObjects},
 		{name: "padded delta size", pack: deltaPack(t, padded), want: errDeltaHeader},
 		{name: "empty delta", pack: deltaPack(t, nil), want: errDeltaHeader},
 	}
@@ -132,8 +148,9 @@ func TestPackChecker(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			storage := &checkedStorage{
-				Storage:   filesystem.NewStorage(memfs.New(), cache.NewObjectLRU(objectCache)),
-				maxObject: testMaxObject,
+				Storage:    filesystem.NewStorage(memfs.New(), cache.NewObjectLRU(objectCache)),
+				maxObject:  testMaxObject,
+				maxObjects: testMaxObjects,
 			}
 			w, err := storage.PackfileWriter()
 			if err != nil {
@@ -150,8 +167,9 @@ func TestPackChecker(t *testing.T) {
 func TestPackCheckerPassesAPackOn(t *testing.T) {
 	t.Parallel()
 	storage := &checkedStorage{
-		Storage:   filesystem.NewStorage(memfs.New(), cache.NewObjectLRU(objectCache)),
-		maxObject: testMaxObject,
+		Storage:    filesystem.NewStorage(memfs.New(), cache.NewObjectLRU(objectCache)),
+		maxObject:  testMaxObject,
+		maxObjects: testMaxObjects,
 	}
 	w, err := storage.PackfileWriter()
 	if err != nil {
@@ -191,7 +209,7 @@ func TestPackCheckerHoldsBackTheTail(t *testing.T) {
 	t.Parallel()
 	bad := deltaPack(t, copies(testMaxObject/copyKiB+1)) // refused on its last object
 	next := &recordingWriter{}
-	if err := writeThrough(newPackChecker(next, testMaxObject), bad); !errors.Is(err, errObjectTooLarge) {
+	if err := writeThrough(newPackChecker(next, testMaxObject, testMaxObjects), bad); !errors.Is(err, errObjectTooLarge) {
 		t.Fatalf("err = %v", err)
 	}
 	if next.Len() > len(bad)-packTailBytes || !next.closed {
@@ -199,7 +217,7 @@ func TestPackCheckerHoldsBackTheTail(t *testing.T) {
 	}
 	good := blobPack(t, 1<<10)
 	next = &recordingWriter{}
-	if err := writeThrough(newPackChecker(next, testMaxObject), good); err != nil {
+	if err := writeThrough(newPackChecker(next, testMaxObject, testMaxObjects), good); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(next.Bytes(), good) {
@@ -213,8 +231,9 @@ func TestPackCheckerRefusesADeltaBomb(t *testing.T) {
 	const target = 32 << 20
 	pack := deltaPack(t, copies(target/copyKiB))
 	storage := &checkedStorage{
-		Storage:   filesystem.NewStorage(memfs.New(), cache.NewObjectLRU(objectCache)),
-		maxObject: testMaxObject,
+		Storage:    filesystem.NewStorage(memfs.New(), cache.NewObjectLRU(objectCache)),
+		maxObject:  testMaxObject,
+		maxObjects: testMaxObjects,
 	}
 	w, err := storage.PackfileWriter()
 	if err != nil {
@@ -229,5 +248,40 @@ func TestPackCheckerRefusesADeltaBomb(t *testing.T) {
 	}
 	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > target/2 {
 		t.Fatalf("allocated %d bytes for a target of %d", allocated, target)
+	}
+}
+
+// go-git resolves deltas once the pack is in without looking at the context; the clone's
+// files stop it by failing reads. Uncancelled, this pack takes go-git many seconds: 128
+// deltas of 8 MiB each, from a pack of a few KiB that is under every other bound.
+func TestPackResolutionStopsWithTheContext(t *testing.T) {
+	t.Parallel()
+	const deltas, target = 128, 8 << 20
+	p := newTestPack(deltas + 1)
+	base := p.blob(t, make([]byte, copyKiB))
+	for range deltas {
+		p.delta(t, base, copies(target/copyKiB))
+	}
+	pack := p.finish()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	limit := &limitFS{Filesystem: memfs.New(), ctx: ctx, left: new(atomic.Int64)}
+	limit.left.Store(1 << 30)
+	storage := &checkedStorage{
+		Storage:   filesystem.NewStorage(limit, cache.NewObjectLRU(objectCache)),
+		maxObject: target, maxObjects: deltas + 1,
+	}
+	w, err := storage.PackfileWriter()
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	time.AfterFunc(100*time.Millisecond, cancel)
+	err = writeThrough(w, pack)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v", err)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("took %v after the cancel", took)
 	}
 }

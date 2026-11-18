@@ -8,10 +8,13 @@ WORKDIR /web
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY frontend/ ./
-RUN npm run build
+# `vp build` alone: `npm run build` would run vue-tsc again, which ci.yaml already does.
+RUN npx vp build
 
 # The static docker-compose v2 binary that deploys stacks (docs/architecture.md, Stacks).
-FROM docker/compose-bin:v2.39.1 AS compose
+# govulncheck can't see this copied binary: check Compose's security advisories when
+# bumping it, and bump it when one lands (v2.40.2 fixed CVE-2025-62725).
+FROM docker/compose-bin:v2.40.3 AS compose
 
 FROM golang:1.27.4 AS gobase
 

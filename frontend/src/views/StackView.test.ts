@@ -337,6 +337,7 @@ describe('StackView', () => {
     await button(wrapper, 'Delete stack').trigger('click');
     await flushPromises();
     expect(fetch.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(true);
-    expect(router.currentRoute.value.fullPath).toBe('/env/1/stacks');
+    // The list view's chunk loads first.
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/env/1/stacks'));
   });
 });

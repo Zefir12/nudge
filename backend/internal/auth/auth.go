@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"errors"
@@ -112,6 +113,8 @@ type Options struct {
 	// AdminPasswordOnly refuses password login to everyone but AdminUsername, the
 	// break-glass user, when users sign in through SSO.
 	AdminPasswordOnly bool
+	// SetupToken is the token first-run setup requires (a random one by default).
+	SetupToken string
 }
 
 // Service manages users and sessions in the store's database.
@@ -124,6 +127,8 @@ type Service struct {
 	ssoTTL time.Duration
 	// adminOnly is Options.AdminPasswordOnly.
 	adminOnly bool
+	// setupToken is what ValidSetupToken accepts; fixed for the process's life.
+	setupToken string
 
 	hashes  chan struct{}
 	waiters chan struct{}
@@ -137,16 +142,17 @@ type Service struct {
 // New returns a Service.
 func New(opts Options) *Service {
 	s := &Service{
-		db:        opts.DB,
-		log:       opts.Log,
-		now:       opts.Now,
-		params:    opts.Params,
-		ttl:       opts.SessionTTL,
-		ssoTTL:    opts.SSOSessionTTL,
-		adminOnly: opts.AdminPasswordOnly,
-		hashes:    make(chan struct{}, maxConcurrentHashes),
-		waiters:   make(chan struct{}, maxHashWaiters),
-		ipLimit:   newLimiter(ipFailureLimit, failureWindow, maxLimiterKeys),
+		db:         opts.DB,
+		log:        opts.Log,
+		now:        opts.Now,
+		params:     opts.Params,
+		ttl:        opts.SessionTTL,
+		ssoTTL:     opts.SSOSessionTTL,
+		adminOnly:  opts.AdminPasswordOnly,
+		setupToken: opts.SetupToken,
+		hashes:     make(chan struct{}, maxConcurrentHashes),
+		waiters:    make(chan struct{}, maxHashWaiters),
+		ipLimit:    newLimiter(ipFailureLimit, failureWindow, maxLimiterKeys),
 	}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
@@ -163,6 +169,10 @@ func New(opts Options) *Service {
 	if s.ssoTTL == 0 {
 		s.ssoTTL = s.ttl
 	}
+	if s.setupToken == "" {
+		// 128 random bits: whoever can read the server's log may run setup, nobody else.
+		s.setupToken = rand.Text()
+	}
 	// Hash the dummy now, so the first unknown-user login isn't slower than later ones.
 	_, _ = s.dummy()
 	return s
@@ -175,6 +185,15 @@ func (s *Service) SetupNeeded(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("count users: %w", err)
 	}
 	return !exists, nil
+}
+
+// SetupToken returns the one-time token first-run setup requires. The server logs it at
+// start while no user exists, so only someone who can read the log can create the admin.
+func (s *Service) SetupToken() string { return s.setupToken }
+
+// ValidSetupToken reports whether token is the setup token, in constant time.
+func (s *Service) ValidSetupToken(token string) bool {
+	return subtle.ConstantTimeCompare([]byte(strings.TrimSpace(token)), []byte(s.setupToken)) == 1
 }
 
 // CreateFirstUser creates the first admin while no user exists. The check and the insert are
@@ -272,10 +291,12 @@ func (s *Service) Login(ctx context.Context, username, password string) (Session
 var ErrPasswordChanged = errors.New("the password was changed meanwhile")
 
 // ChangePassword sets user id's password to next if current is their password, and ends
-// their other sessions (keep is the session token that asked, which stays). A wrong
+// their other sessions (keep is the session token that asked, which stays); with
+// revokeTokens it also deletes their API tokens, which a stolen session could have
+// minted. A wrong
 // current password is ErrInvalidCredentials, and like a failed login blocks nobody; an SSO
 // user has no password to change (InputError).
-func (s *Service) ChangePassword(ctx context.Context, id int64, keep, current, next string) error {
+func (s *Service) ChangePassword(ctx context.Context, id int64, keep, current, next string, revokeTokens bool) error {
 	if err := validPassword(next); err != nil {
 		return err
 	}
@@ -322,6 +343,11 @@ func (s *Service) ChangePassword(ctx context.Context, id int64, keep, current, n
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ? AND id_hash <> ?`, id, tokenHash(keep)); err != nil {
 		return fmt.Errorf("end other sessions: %w", err)
+	}
+	if revokeTokens {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM api_tokens WHERE user_id = ?`, id); err != nil {
+			return fmt.Errorf("revoke api tokens: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("change password: %w", err)

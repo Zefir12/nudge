@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -216,6 +217,8 @@ func TestRevokeSSO(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	addDeployCredentials(t, s.db, sessions[0].User.ID)
+	addDeployCredentials(t, s.db, sessions[2].User.ID)
 
 	tests := []struct {
 		name, issuer, subject string
@@ -225,7 +228,7 @@ func TestRevokeSSO(t *testing.T) {
 		{name: "unknown subject", issuer: id.Issuer, subject: "u-9"},
 		{name: "other issuer", issuer: "https://other.example.net", subject: "u-1"},
 		{name: "missing subject", issuer: id.Issuer, wantErr: true},
-		{name: "user", issuer: id.Issuer, subject: "u-1", want: Revoked{Username: "alice", Sessions: 2, Tokens: 1}},
+		{name: "user", issuer: id.Issuer, subject: "u-1", want: Revoked{Username: "alice", Sessions: 2, Tokens: 1, Webhooks: 1, DeployTokens: 1}},
 		{name: "again", issuer: id.Issuer, subject: "u-1", want: Revoked{Username: "alice"}},
 	}
 	for _, tt := range tests {
@@ -233,6 +236,14 @@ func TestRevokeSSO(t *testing.T) {
 		if (err != nil) != tt.wantErr || got != tt.want {
 			t.Errorf("%s: RevokeSSO = %+v, %v; want %+v", tt.name, got, err, tt.want)
 		}
+	}
+	var hooks, deployTokens int
+	if err := s.db.QueryRow(`SELECT (SELECT COUNT(*) FROM deploy_hooks WHERE created_by = ?1),
+		(SELECT COUNT(*) FROM deployment_tokens WHERE created_by = ?1)`, sessions[2].User.ID).Scan(&hooks, &deployTokens); err != nil {
+		t.Fatal(err)
+	}
+	if hooks != 1 || deployTokens != 1 {
+		t.Errorf("bob has %d webhooks, %d deploy tokens after alice's revoke; want both kept", hooks, deployTokens)
 	}
 
 	for i, sess := range sessions[:2] {
@@ -404,6 +415,7 @@ func TestRevokeIssuer(t *testing.T) {
 		if _, err := s.db.Exec(`INSERT INTO api_tokens (user_id, name, prefix, token_hash, created_at) VALUES (?, 't', 'p', ?, 0)`, id, fmt.Sprint(id)); err != nil {
 			t.Fatal(err)
 		}
+		addDeployCredentials(t, s.db, id)
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -411,7 +423,7 @@ func TestRevokeIssuer(t *testing.T) {
 	}
 	defer func() { _ = tx.Rollback() }()
 	got, err := RevokeIssuer(ctx, tx, issuer)
-	if err != nil || got != (IssuerRevoked{Sessions: 1, Tokens: 1}) {
+	if err != nil || got != (IssuerRevoked{Sessions: 1, Tokens: 1, Webhooks: 1, DeployTokens: 1}) {
 		t.Fatalf("revoked = %+v, %v", got, err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -482,6 +494,30 @@ func localAdmin(name string) func(*testing.T, *Service) {
 	return func(t *testing.T, s *Service) {
 		t.Helper()
 		if _, err := s.CreateFirstUser(context.Background(), name, "longenoughpassword"); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// addDeployCredentials gives user id a deploy webhook and a deploy token, each in its
+// own environment and deployment.
+func addDeployCredentials(t *testing.T, db *sql.DB, id int64) {
+	t.Helper()
+	name := fmt.Sprint("env-", id)
+	stmts := []struct {
+		q    string
+		args []any
+	}{
+		{`INSERT INTO environments (name, kind, created_at) VALUES (?, 'local', 0)`, []any{name}},
+		{`INSERT INTO deploy_hooks (id, name, environment_id, kind, target, secret_enc, tag_filter, created_by, created_at)
+			VALUES (?, 'ci', (SELECT id FROM environments WHERE name = ?), 'container', 'web', x'00', '', ?, 0)`, []any{name, name, id}},
+		{`INSERT INTO deployments (name, environment_id, stack, created_at, updated_at)
+			VALUES (?, (SELECT id FROM environments WHERE name = ?), 'web', 0, 0)`, []any{name, name}},
+		{`INSERT INTO deployment_tokens (deployment_id, name, prefix, token_hash, scopes, created_by, created_at)
+			VALUES ((SELECT id FROM deployments WHERE name = ?), 'ci', 'p', ?, 'deploy', ?, 0)`, []any{name, name, id}},
+	}
+	for _, st := range stmts {
+		if _, err := db.Exec(st.q, st.args...); err != nil {
 			t.Fatal(err)
 		}
 	}

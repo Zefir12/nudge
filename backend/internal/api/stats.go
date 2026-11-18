@@ -115,15 +115,33 @@ type usageTotals struct {
 }
 
 // environmentStats lists the sampled containers; Skipped counts those that could not be
-// sampled (they stopped meanwhile, or the overview ran out of time).
+// sampled (they stopped meanwhile, or the overview ran out of time). Time is when the
+// metrics collector's tick it comes from started; absent when sampled for the request.
 type environmentStats struct {
+	Time       *time.Time       `json:"time,omitempty"`
 	Containers []containerUsage `json:"containers"`
 	Skipped    int              `json:"skipped"`
 	Total      usageTotals      `json:"total"`
 }
 
-// environmentStats answers one sample of every running container (a user's: of theirs).
+// environmentStats answers one sample of every running container (a user's: of theirs):
+// the metrics collector's latest tick when it is recent, else sampled now.
 func (s *server) environmentStats(w http.ResponseWriter, r *http.Request) {
+	if s.metrics != nil {
+		env, _, ok := s.environment(w, r)
+		if !ok {
+			return
+		}
+		sc, err := s.scopeOf(r.Context())
+		if err != nil {
+			s.internalError(w, "environment stats", err)
+			return
+		}
+		if l, found := s.metrics.LatestTick(env.ID, metrics.Scope{All: sc.all, Owner: sc.key}); found {
+			s.writeJSON(w, http.StatusOK, statsFromTick(l))
+			return
+		}
+	}
 	resp, ok := s.runDocker(r.Context(), w, r, "environment stats", "", statsTimeout, func(ctx context.Context, c docker.Client) (any, error) {
 		sc, err := s.scopeOf(ctx)
 		if err != nil {
@@ -141,6 +159,16 @@ func (s *server) environmentStats(w http.ResponseWriter, r *http.Request) {
 	if ok {
 		s.writeJSON(w, http.StatusOK, resp)
 	}
+}
+
+// statsFromTick is the overview of a collector's tick.
+func statsFromTick(l metrics.Live) environmentStats {
+	at := l.Time
+	resp := environmentStats{Time: &at, Containers: []containerUsage{}, Skipped: l.Skipped, Total: usageTotals(l.Total)}
+	for _, u := range l.Containers {
+		resp.Containers = append(resp.Containers, containerUsage(u))
+	}
+	return resp
 }
 
 // sampleEnvironment takes one sample of every running container sc owns, sorted by name.

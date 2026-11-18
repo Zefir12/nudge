@@ -34,6 +34,9 @@ const (
 	// DefaultMaxObjectBytes bounds one object once inflated, which is what go-git holds
 	// in memory to index it. Forges refuse files over 100 MiB; this leaves room above that.
 	DefaultMaxObjectBytes = 128 << 20
+	// DefaultMaxObjects bounds a clone's objects, which go-git indexes in memory at about
+	// half a KiB each. A shallow clone of Linux has under 100k.
+	DefaultMaxObjects = 200_000
 	// DefaultFetchTimeout bounds one look at a repository, clone included.
 	DefaultFetchTimeout = 2 * time.Minute
 	// maxFileBytes bounds a compose or env file; an agent takes 2 MB of files per stack.
@@ -65,6 +68,7 @@ func (e *Error) Unwrap() error { return e.Err }
 var (
 	errCloneTooLarge  = errors.New("clone too large")
 	errObjectTooLarge = errors.New("object too large")
+	errTooManyObjects = errors.New("too many objects")
 )
 
 // fetchError names what went wrong in a look at a repository.
@@ -76,6 +80,8 @@ func fetchError(err error) *Error {
 		msg = "the repository is too large to clone"
 	case errors.Is(err, errObjectTooLarge):
 		msg = "the repository has a file too large to unpack"
+	case errors.Is(err, errTooManyObjects):
+		msg = "the repository has too many files to clone"
 	case errors.Is(err, context.DeadlineExceeded):
 		msg = "the repository did not answer in time"
 	case errors.Is(err, context.Canceled):
@@ -154,9 +160,12 @@ func (s *Service) Fetch(ctx context.Context, src Source) (Result, error) {
 			s.log.Warn("remove clone", "err", err)
 		}
 	}()
-	limit := &limitFS{Filesystem: osfs.New(dir), left: new(atomic.Int64)}
+	limit := &limitFS{Filesystem: osfs.New(dir), ctx: ctx, left: new(atomic.Int64)}
 	limit.left.Store(s.maxClone)
-	storage := &checkedStorage{Storage: filesystem.NewStorage(limit, cache.NewObjectLRU(objectCache)), maxObject: s.maxObject}
+	storage := &checkedStorage{
+		Storage:   filesystem.NewStorage(limit, cache.NewObjectLRU(objectCache)),
+		maxObject: s.maxObject, maxObjects: s.maxObjs,
+	}
 	repo, err := git.CloneContext(ctx, storage, nil, &git.CloneOptions{
 		URL: src.RepoURL, Auth: auth, ReferenceName: ref, SingleBranch: true, Depth: 1, Tags: git.NoTags, NoCheckout: true,
 	})
@@ -398,15 +407,24 @@ func knownHostAlgorithms(known string) ([]string, error) {
 	return algorithms, nil
 }
 
-// limitFS fails writes past a total, which bounds what a clone puts on disk.
+// limitFS fails writes past a total, which bounds what a clone puts on disk, and reads
+// once ctx is done. go-git resolves a pack's deltas after the download without looking at
+// the context, but reads the pack back from disk for every object, so this stops it.
 type limitFS struct {
 	billy.Filesystem
+	ctx  context.Context
 	left *atomic.Int64
 }
 
 // Create is the Filesystem's Create, bounded.
 func (l *limitFS) Create(name string) (billy.File, error) {
 	f, err := l.Filesystem.Create(name)
+	return l.wrap(f, err)
+}
+
+// Open is the Filesystem's Open, bounded.
+func (l *limitFS) Open(name string) (billy.File, error) {
+	f, err := l.Filesystem.Open(name)
 	return l.wrap(f, err)
 }
 
@@ -428,18 +446,19 @@ func (l *limitFS) Chroot(p string) (billy.Filesystem, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &limitFS{Filesystem: fs, left: l.left}, nil
+	return &limitFS{Filesystem: fs, ctx: l.ctx, left: l.left}, nil
 }
 
 func (l *limitFS) wrap(f billy.File, err error) (billy.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &limitFile{File: f, left: l.left}, nil
+	return &limitFile{File: f, ctx: l.ctx, left: l.left}, nil
 }
 
 type limitFile struct {
 	billy.File
+	ctx  context.Context
 	left *atomic.Int64
 }
 
@@ -449,4 +468,20 @@ func (f *limitFile) Write(p []byte) (int, error) {
 		return 0, errCloneTooLarge
 	}
 	return f.File.Write(p)
+}
+
+// Read is the File's Read, failing once the context is done.
+func (f *limitFile) Read(p []byte) (int, error) {
+	if err := f.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return f.File.Read(p)
+}
+
+// ReadAt is the File's ReadAt, failing once the context is done.
+func (f *limitFile) ReadAt(p []byte, off int64) (int, error) {
+	if err := f.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return f.File.ReadAt(p, off)
 }
