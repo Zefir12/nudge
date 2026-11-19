@@ -7,7 +7,12 @@
 # a push to main (a merged release) as `main-<sha>` and `latest`; run by hand for a branch,
 # it pushes `<branch>-<sha>` only.
 # Jobs get no Docker socket, so kaniko builds the image: no daemon, no privileges, and
-# it pushes straight to the registry.
+# it pushes straight to the registry. It's the osscontainertools fork (the Google project
+# is archived), and it runs as the job's container rather than a `uses: docker://` step:
+# the runner doesn't remove those step containers, which leaked one container and one
+# network per build on the dind daemon. That container has no node, so no JavaScript
+# actions: the `meta` job checks out and computes the tags, the image jobs fetch the
+# commit as an archive.
 name: image
 
 on:
@@ -31,8 +36,49 @@ concurrency:
   cancel-in-progress: ${{ forgejo.event_name == 'pull_request' }}
 
 jobs:
+  # The version and tags need git and the full history, which the kaniko image lacks.
+  meta:
+    name: meta
+    runs-on: docker
+    timeout-minutes: 10
+    container:
+      image: node:24.22.1@sha256:d862bb5d082c5ae0210ac07e8c0344cb8cf7bef6d78e9b8c50c179da923108ea # keep in sync with the Dockerfile
+    outputs:
+      sha: ${{ steps.tag.outputs.sha }}
+      version: ${{ steps.tag.outputs.version }}
+      tag: ${{ steps.tag.outputs.tag }}
+      moving: ${{ steps.tag.outputs.moving }}
+    steps:
+      # Full history: scripts/version.sh counts merges (main included).
+      - name: Checkout
+        uses: https://data.forgejo.org/actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+
+      # SHA is the commit the image jobs build. TAG is pushed on every run; MOVING is
+      # `develop` from develop and `latest` from a push to main (a manual run on main
+      # pushes `main-<sha>` only). VERSION is the binaries' version (vMAJOR.MINOR.PATCH),
+      # shown in the web UI.
+      # The branch name comes in through env, never pasted into the script: a branch
+      # named `$(...)` would otherwise run as shell.
+      - name: Tag
+        id: tag
+        env:
+          REF_NAME: ${{ forgejo.ref_name }}
+          EVENT_NAME: ${{ forgejo.event_name }}
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$FORGEJO_OUTPUT"
+          echo "version=$(scripts/version.sh)" >> "$FORGEJO_OUTPUT"
+          branch=$(printf '%s\n' "$REF_NAME" | tr -c 'A-Za-z0-9_.\n-' '-')
+          echo "tag=$branch-$(git rev-parse --short=12 HEAD)" >> "$FORGEJO_OUTPUT"
+          if [ "$branch" = develop ]; then echo "moving=develop" >> "$FORGEJO_OUTPUT"; fi
+          if [ "$branch" = main ] && [ "$EVENT_NAME" = push ]; then
+            echo "moving=latest" >> "$FORGEJO_OUTPUT"
+          fi
+
   image:
     name: image (${{ matrix.target }})
+    needs: meta
     runs-on: docker
     timeout-minutes: 30
     strategy:
@@ -43,66 +89,70 @@ jobs:
             image: registrydedic.zefirlabs.net/nudge
           - target: agent
             image: registrydedic.zefirlabs.net/nudge-agent
+    # kaniko unpacks each stage's base image into its own container's root, which is why
+    # it must be the job container (it skips mounts such as the workspace, /kaniko and
+    # /busybox). The debug variant has the busybox shell the run steps need. To bump it,
+    # take the index digest of the new `vX.Y.Z-debug` tag.
     container:
-      image: node:24.22.1@sha256:d862bb5d082c5ae0210ac07e8c0344cb8cf7bef6d78e9b8c50c179da923108ea # keep in sync with the Dockerfile
+      image: ghcr.io/osscontainertools/kaniko:v1.29.1-debug@sha256:ebc38a988e5aa1aaea99240e931aeeeff9d8e6bb5a0bd0e00eaf79973bf0a773
     env:
       IMAGE: ${{ matrix.image }}
       TARGET: ${{ matrix.target }}
-      PUSH: ${{ forgejo.event_name != 'pull_request' }}
+      SHA: ${{ needs.meta.outputs.sha }}
+      VERSION: ${{ needs.meta.outputs.version }}
+      TAG: ${{ needs.meta.outputs.tag }}
+      MOVING: ${{ needs.meta.outputs.moving }}
 
     steps:
-      # Full history: scripts/version.sh counts merges (main included).
-      - name: Checkout
-        uses: https://data.forgejo.org/actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          fetch-depth: 0
-
-      # TAG is pushed on every run; MOVING is `develop` from develop and `latest` from a
-      # push to main (a manual run on main pushes `main-<sha>` only). VERSION is the
-      # binaries' version (vMAJOR.MINOR.PATCH), shown in the web UI.
-      # The branch name comes in through env, never pasted into the script: a branch
-      # named `$(...)` would otherwise run as shell.
-      - name: Tag
+      # The commit as an archive (no git in this image), unpacked into `context` in the
+      # workspace. The workspace is a mount, so it survives the build; later steps find
+      # the context by that fixed path, not through $FORGEJO_ENV.
+      # busybox wget has no header file option, so the token is on its command line; only
+      # this step runs in the container then. It speaks TLS but doesn't validate the
+      # server's certificate. The job token is scoped to this repo and expires with the job.
+      - name: Fetch source
         env:
-          REF_NAME: ${{ forgejo.ref_name }}
+          TOKEN: ${{ forgejo.token }}
+          URL: ${{ forgejo.server_url }}/api/v1/repos/${{ forgejo.repository }}/archive
+        run: |
+          wget -q -O src.tar.gz --header "Authorization: token $TOKEN" "$URL/$SHA.tar.gz"
+          mkdir src
+          tar -xzf src.tar.gz -C src
+          rm src.tar.gz
+          set -- src/*
+          if [ $# -ne 1 ] || [ ! -f "$1/Dockerfile" ]; then
+            echo "unexpected archive layout: $*" >&2
+            exit 1
+          fi
+          mv "$1" context
+
+      # Builds without any registry credentials in this container: the Dockerfile's RUN
+      # steps run here, as root, so whatever the build can read a RUN step can read too.
+      # On the runs that push, the image goes to a tarball in the workspace and the next
+      # step pushes it. kaniko builds only the stages the target needs: the fork's default
+      # since v1.27.0, where --skip-unused-stages became a deprecated no-op.
+      - name: Build
+        env:
           EVENT_NAME: ${{ forgejo.event_name }}
         run: |
-          version=$(scripts/version.sh)
-          echo "VERSION=$version" >> "$FORGEJO_ENV"
-          branch=$(printf '%s\n' "$REF_NAME" | tr -c 'A-Za-z0-9_.\n-' '-')
-          echo "TAG=$branch-$(git rev-parse --short=12 HEAD)" >> "$FORGEJO_ENV"
-          if [ "$branch" = develop ]; then echo "MOVING=develop" >> "$FORGEJO_ENV"; fi
-          if [ "$branch" = main ] && [ "$EVENT_NAME" = push ]; then
-            echo "MOVING=latest" >> "$FORGEJO_ENV"
+          set -- --target "$TARGET" --build-arg "VERSION=$VERSION" --single-snapshot --no-push
+          if [ "$EVENT_NAME" != pull_request ]; then
+            set -- "$@" --destination "$IMAGE:$TAG" --tar-path "$PWD/image.tar"
           fi
+          /kaniko/executor --context "dir://$PWD/context" --dockerfile "$PWD/context/Dockerfile" "$@"
 
-      # --skip-unused-stages builds only the stages the target needs: without it kaniko
-      # builds every stage before the target, so the agent job would build the frontend too.
-      # Runs in its own container with the workspace mounted. Credentials go into kaniko's
-      # config only on the runs that push; pull requests build without pushing. The
-      # Dockerfile's RUN steps run in this same container, so the shell drops the
-      # credentials from its environment and execs kaniko in its place (PID 1), so
-      # /proc/1/environ no longer holds them. config.json stays readable to them, which is why the Dockerfile
-      # runs `npm ci --ignore-scripts`.
-      - name: Build and push
-        uses: docker://gcr.io/kaniko-project/executor:v1.24.0-debug@sha256:2562c4fe551399514277ffff7dcca9a3b1628c4ea38cb017d7286dc6ea52f4cd
+      # Credentials appear only now, after the build. Pull requests build without pushing.
+      # `executor login` writes $DOCKER_CONFIG/config.json and `executor push` reads it
+      # (the image sets the same path; /kaniko survives the build).
+      - name: Push
+        if: forgejo.event_name != 'pull_request'
         env:
+          DOCKER_CONFIG: /kaniko/.docker
           REGISTRY_USER: ${{ secrets.REGISTRY_USER }}
           REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
-        with:
-          entrypoint: /busybox/sh
-          args: |
-            -euc '
-            set -- --skip-unused-stages;
-            if [ "$PUSH" = true ]; then
-              auth=$(printf "%s:%s" "$REGISTRY_USER" "$REGISTRY_PASSWORD" | base64 | tr -d "\n");
-              printf "{\"auths\":{\"%s\":{\"auth\":\"%s\"}}}" "${IMAGE%%/*}" "$auth" > /kaniko/.docker/config.json;
-              set -- "$@" --destination "$IMAGE:$TAG";
-              if [ -n "${MOVING:-}" ]; then set -- "$@" --destination "$IMAGE:$MOVING"; fi;
-            else
-              set -- "$@" --no-push;
-            fi;
-            unset REGISTRY_USER REGISTRY_PASSWORD auth;
-            exec /kaniko/executor --context "dir://$PWD" --dockerfile "$PWD/Dockerfile" --target "$TARGET" \
-              --build-arg "VERSION=$VERSION" --single-snapshot "$@"
-            '
+        run: |
+          printf '%s' "$REGISTRY_PASSWORD" |
+            /kaniko/executor login "${IMAGE%%/*}" --username "$REGISTRY_USER" --password-stdin
+          set -- --destination "$IMAGE:$TAG"
+          if [ -n "$MOVING" ]; then set -- "$@" --destination "$IMAGE:$MOVING"; fi
+          /kaniko/executor push "$PWD/image.tar" "$@"
