@@ -57,6 +57,9 @@ jobs:
       - name: Version script tests
         run: sh ../scripts/version_test.sh
 
+      - name: Compose check script tests
+        run: sh ../scripts/compose-check_test.sh
+
   lint:
     name: lint (golangci-lint)
     runs-on: docker

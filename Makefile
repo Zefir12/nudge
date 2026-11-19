@@ -41,10 +41,11 @@ endif
 
 # --- DEV ---
 
-# Go tests (race detector), the version script's, then the frontend's.
+# Go tests (race detector), the shell scripts', then the frontend's.
 test: frontend/node_modules
 	$(GO) test -race ./...
 	$(SH) scripts/version_test.sh
+	$(SH) scripts/compose-check_test.sh
 	$(NPX) vp test run
 
 # golangci-lint (vet, staticcheck, gosec, gofmt/goimports …; backend/.golangci.yml),

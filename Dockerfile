@@ -16,10 +16,10 @@ COPY frontend/ ./
 # `vp build` alone: `npm run build` would run vue-tsc again, which ci.yaml already does.
 RUN npx vp build
 
-# The static docker-compose v2 binary that deploys stacks (docs/architecture.md, Stacks).
-# govulncheck can't see this copied binary: check Compose's security advisories when
-# bumping it, and bump it when one lands (v2.40.2 fixed CVE-2025-62725).
-FROM docker/compose-bin:v2.40.3@sha256:e39da8206cc48c6e2c99ce371935eef9d7eff7db600a993fd357de8b75621edf AS compose
+# The static docker-compose v5 binary that deploys stacks (docs/architecture.md, Stacks).
+# govulncheck can't see this copied binary: nightly.yaml runs scripts/compose-check.sh,
+# which fails on a newer compose-bin release or an advisory against this one.
+FROM docker/compose-bin:v5.8.0@sha256:c9f99a4efa43ca83e5acc056da938c38504010c10a2dd804569032be5d3b0dd5 AS compose
 
 FROM golang:1.27.4@sha256:205c7636d74e0ffbe3d007162df7d74f859f5a8c8322dfb9f907977686c126cf AS gobase
 
