@@ -35,7 +35,6 @@ concurrency:
   group: image-${{ forgejo.ref }}
   cancel-in-progress: ${{ forgejo.event_name == 'pull_request' }}
 
-
 jobs:
   # The version and tags need git and the full history, which the kaniko image lacks.
   meta:
@@ -105,7 +104,12 @@ jobs:
       MOVING: ${{ needs.meta.outputs.moving }}
 
     steps:
-      # The commit as an archive (no git in this image), unpacked into the workspace.
+      # The commit as an archive (no git in this image), unpacked into `context` in the
+      # workspace. The workspace is a mount, so it survives the build; later steps find
+      # the context by that fixed path, not through $FORGEJO_ENV.
+      # busybox wget has no header file option, so the token is on its command line; only
+      # this step runs in the container then. It speaks TLS but doesn't validate the
+      # server's certificate. The job token is scoped to this repo and expires with the job.
       - name: Fetch source
         env:
           TOKEN: ${{ forgejo.token }}
@@ -120,12 +124,13 @@ jobs:
             echo "unexpected archive layout: $*" >&2
             exit 1
           fi
-          echo "CONTEXT=$PWD/$1" >> "$FORGEJO_ENV"
+          mv "$1" context
 
       # Builds without any registry credentials in this container: the Dockerfile's RUN
       # steps run here, as root, so whatever the build can read a RUN step can read too.
       # On the runs that push, the image goes to a tarball in the workspace and the next
-      # step pushes it. kaniko builds only the stages the target needs.
+      # step pushes it. kaniko builds only the stages the target needs: the fork's default
+      # since v1.27.0, where --skip-unused-stages became a deprecated no-op.
       - name: Build
         env:
           EVENT_NAME: ${{ forgejo.event_name }}
@@ -134,12 +139,15 @@ jobs:
           if [ "$EVENT_NAME" != pull_request ]; then
             set -- "$@" --destination "$IMAGE:$TAG" --tar-path "$PWD/image.tar"
           fi
-          /kaniko/executor --context "dir://$CONTEXT" --dockerfile "$CONTEXT/Dockerfile" "$@"
+          /kaniko/executor --context "dir://$PWD/context" --dockerfile "$PWD/context/Dockerfile" "$@"
 
       # Credentials appear only now, after the build. Pull requests build without pushing.
+      # `executor login` writes $DOCKER_CONFIG/config.json and `executor push` reads it
+      # (the image sets the same path; /kaniko survives the build).
       - name: Push
         if: forgejo.event_name != 'pull_request'
         env:
+          DOCKER_CONFIG: /kaniko/.docker
           REGISTRY_USER: ${{ secrets.REGISTRY_USER }}
           REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
         run: |
