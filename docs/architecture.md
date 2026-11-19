@@ -359,7 +359,7 @@ at deploy with a clear error rather than mounting an empty host directory.
 
 ### Running compose
 The image is distroless with no Docker CLI. Options (zefir approved 1):
-1. Ship the static `docker-compose` binary (compose v2 standalone, ~60 MB) in the image
+1. Ship the static `docker-compose` binary (compose standalone, ~60 MB) in the image
    and run it with fixed arguments: `docker-compose -p <name> --project-directory <dir>
    -f compose.yaml up -d --remove-orphans [--pull always]`, `down [--volumes]`,
    `config --quiet` (validate). `DOCKER_HOST` is the local socket.
@@ -369,6 +369,24 @@ The image is distroless with no Docker CLI. Options (zefir approved 1):
 Recommended: 1. It's isolated, its version can move independently, and its output is
 what users know from the CLI. nudge parses only the exit code; output lines are streamed
 to the UI as they are.
+
+The binary comes from `docker/compose-bin`, pinned by tag and digest in the Dockerfile.
+v2 stopped at v2.40.3; the image moved to v5 in #265. Every flag `internal/stacks` passes
+(`-p`, `--project-directory`, `-f`, `--ansi never`, `--progress plain`; `up --detach
+--remove-orphans --pull always --wait --wait-timeout`; `down --remove-orphans --volumes`;
+`config --quiet|--format json --no-env-resolution --no-path-resolution`) is unchanged in
+v5. Two v5 changes matter here:
+- Builds: v5 dropped compose's built-in BuildKit builder. Without the buildx plugin, which
+  the image doesn't ship, `build:` services use the daemon's classic builder and compose
+  prints a warning; BuildKit-only Dockerfile features (`RUN --mount`, build secrets, ssh,
+  additional contexts, multi-arch) fail. Images with `image:` only are unaffected.
+- `jobs:` (v5.8): `up` refuses a project with scheduled jobs on an engine without the jobs
+  extension. Projects without `jobs:` behave as before.
+
+`govulncheck` can't see the binary, so nightly.yaml's `compose` job runs
+`scripts/compose-check.sh` (tests in `scripts/compose-check_test.sh`, part of `make
+test`): it fails when Docker Hub has a newer `vX.Y.Z` compose-bin tag or OSV lists an
+advisory against the pinned version.
 
 ### Files
 - Server: `<stacks dir>/<env>/<name>/` holds `compose.yaml`, `.env` (variables set in the

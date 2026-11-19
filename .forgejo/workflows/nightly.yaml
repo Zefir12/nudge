@@ -1,5 +1,6 @@
-# Finds newly published vulnerabilities even when the repo is quiet. Forgejo runs
-# `schedule` from the default branch only, so the cron starts once this reaches it.
+# Finds newly published vulnerabilities, and a stale bundled docker-compose, even when
+# the repo is quiet. Forgejo runs `schedule` from the default branch only, so the cron
+# starts once this reaches it.
 name: nightly
 
 on:
@@ -51,10 +52,29 @@ jobs:
       - name: npm audit
         run: npm audit --omit=dev --audit-level=high
 
+  # The docker-compose binary the image copies from docker/compose-bin is invisible to
+  # govulncheck: fail on a newer compose-bin release or an OSV advisory against the pin.
+  compose:
+    name: compose (bundled docker-compose)
+    runs-on: docker
+    timeout-minutes: 5
+    container:
+      image: golang:1.27.4 # only for sh and curl; same image as vuln, so nothing extra to pull
+    steps:
+      # The Go image has no Node, which JavaScript actions such as checkout need.
+      - name: Install Node for actions
+        run: apt-get update -qq && apt-get install -y -qq --no-install-recommends nodejs
+
+      - name: Checkout
+        uses: https://data.forgejo.org/actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Check compose-bin
+        run: sh scripts/compose-check.sh
+
   notify:
     name: notify
     runs-on: docker
-    needs: [vuln, npm-audit]
+    needs: [vuln, npm-audit, compose]
     if: always()
     timeout-minutes: 5
     container:
@@ -65,6 +85,7 @@ jobs:
           WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           VULN: ${{ needs.vuln.result }}
           NPM_AUDIT: ${{ needs.npm-audit.result }}
+          COMPOSE: ${{ needs.compose.result }}
           REPO: ${{ forgejo.repository }}
           # The web UI numbers runs by run_number; run_id is a different, instance-wide id.
           RUN_URL: ${{ forgejo.server_url }}/${{ forgejo.repository }}/actions/runs/${{ forgejo.run_number }}
@@ -74,13 +95,13 @@ jobs:
             exit 1
           fi
 
-          if [ "$VULN" = "success" ] && [ "$NPM_AUDIT" = "success" ]; then
+          if [ "$VULN" = "success" ] && [ "$NPM_AUDIT" = "success" ] && [ "$COMPOSE" = "success" ]; then
             COLOR=3066993;  TITLE="Nightly run passed"
           else
             COLOR=15158332; TITLE="Nightly run FAILED"
           fi
 
-          DESC="**$REPO**\ngovulncheck: $VULN\nnpm audit: $NPM_AUDIT\n[View run]($RUN_URL)"
+          DESC="**$REPO**\ngovulncheck: $VULN\nnpm audit: $NPM_AUDIT\ncompose: $COMPOSE\n[View run]($RUN_URL)"
 
           curl -fsS -H "Content-Type: application/json" \
             -d "{\"embeds\":[{\"title\":\"$TITLE\",\"description\":\"$DESC\",\"color\":$COLOR}]}" \
